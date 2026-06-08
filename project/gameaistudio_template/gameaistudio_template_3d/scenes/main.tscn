@@ -1,0 +1,215 @@
+[gd_scene load_steps=28 format=3]
+
+[ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
+[ext_resource type="Script" path="res://scripts/enemy.gd" id="2_enemy"]
+[ext_resource type="Shader" path="res://assets/shaders/world/floor_checkerboard.gdshader" id="3_floor"]
+[ext_resource type="Shader" path="res://assets/shaders/world/water.gdshader" id="4_water"]
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.48, 0.62, 0.78, 1)
+ambient_light_source = 1
+ambient_light_color = Color(0.82, 0.88, 0.95, 1)
+ambient_light_energy = 0.55
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_floor"]
+shader = ExtResource("3_floor")
+shader_parameter/color_a = Color(0.34, 0.38, 0.41, 1)
+shader_parameter/color_b = Color(0.52, 0.56, 0.6, 1)
+shader_parameter/tiles_per_meter = 0.5
+shader_parameter/side_shade = 0.72
+shader_parameter/roughness = 0.94
+shader_parameter/metallic = 0.02
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(40, 1, 40)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(40, 1, 40)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_water"]
+shader = ExtResource("4_water")
+shader_parameter/water_color = Color(0.3, 0.62, 0.92, 1)
+shader_parameter/deep_color = Color(0.1, 0.32, 0.66, 1)
+shader_parameter/foam_color = Color(0.95, 0.99, 1, 1)
+shader_parameter/water_alpha = 0.94
+shader_parameter/wave_amp = 0.1
+shader_parameter/wave_freq = 0.45
+shader_parameter/wave_speed = 0.55
+shader_parameter/foam_scale = 3.5
+shader_parameter/foam_thickness = 0.025
+shader_parameter/foam_softness = 0.018
+shader_parameter/foam_intensity = 1.1
+shader_parameter/foam_drift = 0.06
+shader_parameter/fresnel_power = 3.5
+shader_parameter/fresnel_strength = 0.3
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_water"]
+size = Vector2(400, 400)
+subdivide_width = 64
+subdivide_depth = 64
+
+[sub_resource type="StandardMaterial3D" id="Material_player"]
+albedo_color = Color(0.1, 0.72, 0.94, 1)
+roughness = 0.55
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
+material = SubResource("Material_player")
+radius = 0.45
+height = 1.8
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.45
+height = 1.8
+
+[sub_resource type="StandardMaterial3D" id="Material_enemy"]
+albedo_color = Color(0.95, 0.27, 0.22, 1)
+roughness = 0.58
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_enemy"]
+material = SubResource("Material_enemy")
+radius = 0.4
+height = 1.5
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_enemy"]
+radius = 0.4
+height = 1.5
+
+[sub_resource type="StandardMaterial3D" id="Material_cube"]
+albedo_color = Color(0.96, 0.66, 0.24, 1)
+roughness = 0.5
+
+[sub_resource type="BoxMesh" id="BoxMesh_cube"]
+material = SubResource("Material_cube")
+size = Vector3(1.4, 1.4, 1.4)
+
+[sub_resource type="StandardMaterial3D" id="Material_sphere"]
+albedo_color = Color(0.64, 0.42, 0.95, 1)
+roughness = 0.38
+
+[sub_resource type="SphereMesh" id="SphereMesh_sphere"]
+material = SubResource("Material_sphere")
+radius = 0.7
+height = 1.4
+
+[sub_resource type="StandardMaterial3D" id="Material_cylinder"]
+albedo_color = Color(0.95, 0.9, 0.38, 1)
+roughness = 0.46
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_cylinder"]
+material = SubResource("Material_cylinder")
+top_radius = 0.55
+bottom_radius = 0.55
+height = 1.6
+
+[sub_resource type="StandardMaterial3D" id="Material_platform"]
+albedo_color = Color(0.42, 0.55, 0.68, 1)
+roughness = 0.7
+
+[sub_resource type="BoxMesh" id="BoxMesh_platform"]
+material = SubResource("Material_platform")
+size = Vector3(4, 0.35, 2)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_platform"]
+size = Vector3(4, 0.35, 2)
+
+[sub_resource type="StandardMaterial3D" id="Material_nose"]
+albedo_color = Color(0.98, 0.85, 0.3, 1)
+roughness = 0.4
+
+[sub_resource type="BoxMesh" id="BoxMesh_nose"]
+material = SubResource("Material_nose")
+size = Vector3(0.3, 0.3, 0.5)
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-45, 35, 0)
+light_energy = 2.0
+shadow_enabled = true
+
+[node name="Player" type="CharacterBody3D" parent="."]
+position = Vector3(0, 1.2, 4)
+script = ExtResource("1_player")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
+shape = SubResource("CapsuleShape3D_player")
+
+[node name="Visual" type="Node3D" parent="Player"]
+
+[node name="Body" type="MeshInstance3D" parent="Player/Visual"]
+mesh = SubResource("CapsuleMesh_player")
+
+[node name="Nose" type="MeshInstance3D" parent="Player/Visual"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, -0.55)
+mesh = SubResource("BoxMesh_nose")
+
+[node name="CameraPivot" type="Node3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="Player/CameraPivot"]
+spring_length = 5.0
+
+[node name="Camera3D" type="Camera3D" parent="Player/CameraPivot/SpringArm3D"]
+current = true
+
+[node name="Floor" type="StaticBody3D" parent="."]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+material_override = SubResource("ShaderMaterial_floor")
+mesh = SubResource("BoxMesh_floor")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+shape = SubResource("BoxShape3D_floor")
+
+[node name="Water" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.35, 0)
+material_override = SubResource("ShaderMaterial_water")
+mesh = SubResource("PlaneMesh_water")
+
+[node name="Platform" type="StaticBody3D" parent="."]
+position = Vector3(0, 1.3, -4)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Platform"]
+shape = SubResource("BoxShape3D_platform")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Platform"]
+mesh = SubResource("BoxMesh_platform")
+
+[node name="BasicObjects" type="Node3D" parent="."]
+
+[node name="Cube" type="MeshInstance3D" parent="BasicObjects"]
+position = Vector3(-3, 0.7, -2)
+mesh = SubResource("BoxMesh_cube")
+
+[node name="Sphere" type="MeshInstance3D" parent="BasicObjects"]
+position = Vector3(3, 0.7, -1)
+mesh = SubResource("SphereMesh_sphere")
+
+[node name="Cylinder" type="MeshInstance3D" parent="BasicObjects"]
+position = Vector3(0, 0.8, 0)
+mesh = SubResource("CylinderMesh_cylinder")
+
+[node name="Enemy" type="CharacterBody3D" parent="."]
+position = Vector3(-4, 0.95, 2)
+script = ExtResource("2_enemy")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Enemy"]
+shape = SubResource("CapsuleShape3D_enemy")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Enemy"]
+mesh = SubResource("CapsuleMesh_enemy")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="HUD" type="Label" parent="CanvasLayer"]
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 420.0
+offset_bottom = 96.0
+text = "第三人称模板 · 棋盘地面 + 卡通水面  WASD 移动 · 空格跳跃 · 鼠标转视角 · Esc 释放鼠标"

@@ -16,3 +16,6 @@ project/.vite/
 .idea/
 .vscode/
 Thumbs.db
+
+# Local engine binaries
+project/engine/*.exe

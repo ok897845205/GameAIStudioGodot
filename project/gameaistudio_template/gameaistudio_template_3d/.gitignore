@@ -1,0 +1,11 @@
+# Godot generated files.
+.godot/
+.import/
+*.import
+*.uid
+
+# Local build outputs.
+build/
+*.tmp
+
+# Keep export_presets.cfg committed, but do not store credentials or passwords in it.

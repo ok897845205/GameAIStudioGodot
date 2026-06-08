@@ -1,0 +1,22 @@
+[gd_scene load_steps=2 format=3]
+
+[sub_resource type="LabelSettings" id="LabelSettings_hud"]
+font_size = 22
+font_color = Color(0.94, 0.97, 1, 1)
+
+[node name="HUD" type="CanvasLayer"]
+
+[node name="HBoxContainer" type="HBoxContainer" parent="."]
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 320.0
+offset_bottom = 60.0
+theme_override_constants/separation = 24
+
+[node name="ScoreLabel" type="Label" parent="HBoxContainer"]
+text = "Score: 0"
+label_settings = SubResource("LabelSettings_hud")
+
+[node name="LifeLabel" type="Label" parent="HBoxContainer"]
+text = "Life: 3"
+label_settings = SubResource("LabelSettings_hud")

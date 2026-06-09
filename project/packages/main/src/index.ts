@@ -5,7 +5,9 @@ import { AgentContextService } from "./services/agent-context-service";
 import { AgentService } from "./services/agent-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
 import { CliService } from "./services/cli-service";
+import { EnvironmentService } from "./services/environment-service";
 import { ExportService } from "./services/export-service";
+import { GitService } from "./services/git-service";
 import { GodotRuntimeService } from "./services/godot-runtime-service";
 import { GodotService } from "./services/godot-service";
 import { PreviewServer } from "./services/preview-server";
@@ -54,7 +56,9 @@ app.whenReady().then(async () => {
 
   const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
   const cliService = new CliService();
+  const environmentService = new EnvironmentService();
   const projectService = new ProjectService(paths, store);
+  const gitService = new GitService(projectService);
   const contextService = new AgentContextService();
   const snapshotService = new ProjectSnapshotService(projectService, store);
   const processRegistry = new ProcessRegistry();
@@ -80,6 +84,8 @@ app.whenReady().then(async () => {
   registerIpcHandlers({
     paths,
     cliService,
+    environmentService,
+    gitService,
     projectService,
     snapshotService,
     agentService,

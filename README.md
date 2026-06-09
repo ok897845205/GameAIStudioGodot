@@ -17,8 +17,10 @@ pnpm dev
 - Electron, Vite, and React desktop shell for Windows.
 - Built-in Godot 2D and 3D templates copied into the user's GameAIStudio workspace.
 - Bundled Godot runtime diagnostics, project opening, Web export, preview, and zip packaging.
+- Git and Node.js environment diagnostics surfaced in the desktop UI.
 - Local CLI discovery and install diagnostics for Codex, Claude, KSCC, and Kimi.
 - Producer, designer, programmer, artist, and QA agent workflow with streaming output, cancellation, file change summaries, project snapshots, and restore.
+- Project Git version management: new projects try to initialize a repository automatically, existing projects can enable Git and commit versions from the UI.
 - Project-local AI context files: `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md`.
 - Web export inspection, `gameaistudio-export.json` manifest generation, and Windows-safe Web zip names.
 

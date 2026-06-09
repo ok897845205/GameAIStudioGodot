@@ -40,6 +40,7 @@ Desktop packages built with `pnpm dist:win` produce a named NSIS installer at `d
 - Copies clean Godot template source into new projects while excluding generated `.godot`, `build`, and `dist` artifacts from previous template runs.
 - Validates the selected template's `project.godot` and Web export preset before copying it into a user project.
 - Shows create-and-generate preflight checks for local AI CLI availability, selected Godot template availability, and Web preview/export readiness.
+- Shows system environment health for Git and Node.js, with refreshable diagnostics and clear missing-tool actions.
 - Shows bundled Godot runtime health for the engine directory, GUI/console executables, version probe, and 2D/3D templates including their Web export presets.
 - Opens the current project in the bundled Godot GUI executable from the desktop UI.
 - Detects Codex, Claude, KSCC, and Kimi from the system PATH.
@@ -55,6 +56,7 @@ Desktop packages built with `pnpm dist:win` produce a named NSIS installer at `d
 - Persists Agent run records, streams run state/output changes into the desktop UI, and can cancel active local CLI runs.
 - Captures per-Agent Godot project file changes and shows them in both the conversation and run timeline.
 - Creates project version snapshots before/after Agent work and supports restoring a previous snapshot with a safety snapshot first.
+- Uses Git for project version management when available: new projects are initialized with a project `.gitignore` and initial commit, existing projects can enable Git, inspect branch/head/changed files, and commit versions from the right-side Git panel.
 - Watches Godot project files and refreshes the Web preview after source or asset changes.
 - Reloads the embedded preview frame after preview events and serves preview files with no-cache headers to reduce stale Web builds during iteration.
 - Keeps local preview HTTP requests confined to the generated Web build directory.

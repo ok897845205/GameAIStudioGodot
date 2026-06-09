@@ -3,6 +3,7 @@ import type {
   CliToolId,
   CreateProjectInput,
   CreateSnapshotInput,
+  GitCommitInput,
   PreviewEvent,
   RunAgentTurnInput,
   RunStudioWorkflowInput,
@@ -12,6 +13,7 @@ import type {
 
 const api: StudioApi = {
   bootstrap: () => ipcRenderer.invoke("studio:bootstrap"),
+  refreshEnvironment: () => ipcRenderer.invoke("environment:refresh"),
   refreshCliTools: () => ipcRenderer.invoke("cli:refresh"),
   installCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:install", toolId),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke("projects:create", input),
@@ -20,6 +22,8 @@ const api: StudioApi = {
   listSnapshots: (projectId: string) => ipcRenderer.invoke("snapshots:list", projectId),
   createSnapshot: (input: CreateSnapshotInput) => ipcRenderer.invoke("snapshots:create", input),
   restoreSnapshot: (projectId: string, snapshotId: string) => ipcRenderer.invoke("snapshots:restore", projectId, snapshotId),
+  getProjectGitStatus: (projectId: string) => ipcRenderer.invoke("projects:git-status", projectId),
+  commitProjectGit: (input: GitCommitInput) => ipcRenderer.invoke("projects:git-commit", input),
   runAgentTurn: (input: RunAgentTurnInput) => ipcRenderer.invoke("agents:run-turn", input),
   runStudioWorkflow: (input: RunStudioWorkflowInput) => ipcRenderer.invoke("agents:run-workflow", input),
   listRuns: (projectId: string) => ipcRenderer.invoke("runs:list", projectId),

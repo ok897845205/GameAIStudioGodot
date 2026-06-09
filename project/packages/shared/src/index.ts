@@ -171,6 +171,7 @@ export interface ProjectDetails extends StudioProject {
   messages: AgentMessage[];
   runs: StudioRun[];
   snapshots: ProjectSnapshot[];
+  gitStatus?: GitProjectStatus;
 }
 
 export interface CreateProjectInput {
@@ -303,11 +304,64 @@ export interface GodotRuntime {
   lastCheckedAt: string;
 }
 
+export type EnvironmentToolId = "git" | "node";
+
+export type EnvironmentToolStatus = "available" | "missing" | "error";
+
+export type SystemEnvironmentStatus = "ready" | "partial" | "missing";
+
+export interface EnvironmentTool {
+  id: EnvironmentToolId;
+  label: string;
+  command: string;
+  installed: boolean;
+  status: EnvironmentToolStatus;
+  executablePath?: string;
+  version?: string;
+  diagnostics: RuntimeDiagnostic[];
+  lastCheckedAt: string;
+}
+
+export interface SystemEnvironment {
+  status: SystemEnvironmentStatus;
+  tools: EnvironmentTool[];
+  lastCheckedAt: string;
+}
+
+export interface GitProjectStatus {
+  projectId: string;
+  available: boolean;
+  initialized: boolean;
+  clean: boolean;
+  branch?: string;
+  head?: string;
+  changedFiles: string[];
+  message: string;
+  error?: string;
+  lastCheckedAt: string;
+}
+
+export interface GitCommitInput {
+  projectId: string;
+  message: string;
+}
+
+export interface GitCommitResult {
+  ok: boolean;
+  project: ProjectDetails;
+  status: GitProjectStatus;
+  message: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
 export interface StudioBootstrap {
   dataRoot: string;
   templatesRoot: string;
   godotExecutablePath?: string;
   godotRuntime: GodotRuntime;
+  environment: SystemEnvironment;
   projects: StudioProject[];
   agents: AgentProfile[];
   cliTools: CliTool[];
@@ -315,6 +369,7 @@ export interface StudioBootstrap {
 
 export interface StudioApi {
   bootstrap(): Promise<StudioBootstrap>;
+  refreshEnvironment(): Promise<SystemEnvironment>;
   refreshCliTools(): Promise<CliTool[]>;
   installCliTool(toolId: CliToolId): Promise<GodotRunResult>;
   createProject(input: CreateProjectInput): Promise<ProjectDetails>;
@@ -328,6 +383,8 @@ export interface StudioApi {
   listSnapshots(projectId: string): Promise<ProjectSnapshot[]>;
   createSnapshot(input: CreateSnapshotInput): Promise<ProjectSnapshot>;
   restoreSnapshot(projectId: string, snapshotId: string): Promise<RestoreSnapshotResult>;
+  getProjectGitStatus(projectId: string): Promise<GitProjectStatus>;
+  commitProjectGit(input: GitCommitInput): Promise<GitCommitResult>;
   startPreview(projectId: string): Promise<PreviewResult>;
   startAutoPreview(projectId: string): Promise<PreviewResult>;
   stopAutoPreview(projectId: string): Promise<PreviewEvent>;

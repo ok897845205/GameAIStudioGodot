@@ -39,6 +39,7 @@ button {
 }
 
 button:disabled,
+input:disabled,
 textarea:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -272,6 +273,15 @@ select:focus {
 .icon-button:hover,
 .project-item:hover {
   background: #eef4fb;
+}
+
+.text-button {
+  width: fit-content;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .create-panel .button,
@@ -1094,6 +1104,134 @@ select:focus {
   padding: 14px;
 }
 
+.git-panel,
+.environment-panel {
+  padding: 14px;
+}
+
+.git-panel dl {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 6px 8px;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.git-panel dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.git-panel dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-change-list {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.git-change-list button {
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--ink);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-change-list small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-commit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.git-commit-row .button {
+  white-space: nowrap;
+}
+
+.environment-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.environment-summary p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-tool-list {
+  display: grid;
+  gap: 8px;
+}
+
+.environment-tool {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  padding: 9px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.environment-tool div,
+.environment-tool strong,
+.environment-tool span,
+.environment-tool p {
+  min-width: 0;
+}
+
+.environment-tool strong,
+.environment-tool div > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-tool strong {
+  font-size: 13px;
+}
+
+.environment-tool div > span,
+.environment-tool p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.environment-tool p {
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .snapshot-list {
   display: grid;
   gap: 8px;
@@ -1207,6 +1345,22 @@ select:focus {
 .status-pill.ready {
   color: #187653;
   background: #e5f6ef;
+}
+
+.status-pill.available {
+  color: #187653;
+  background: #e5f6ef;
+}
+
+.status-pill.partial {
+  color: #8a550f;
+  background: #fff1d7;
+}
+
+.status-pill.missing,
+.status-pill.error {
+  color: #a22f45;
+  background: #fde8ec;
 }
 
 .status-pill.failed {

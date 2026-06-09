@@ -7,6 +7,7 @@ import {
   FileJson,
   FolderOpen,
   Gamepad2,
+  GitBranch,
   Hammer,
   Loader2,
   Package,
@@ -28,7 +29,9 @@ import {
   type AgentProfile,
   type CliTool,
   type CliToolId,
+  type EnvironmentTool,
   type GameDimension,
+  type GitProjectStatus,
   type ProjectFileChange,
   type ProjectSnapshot,
   type PreviewEvent,
@@ -41,8 +44,23 @@ import {
 import { getSendTurnButtonState } from "./agent-action-state";
 import { getCreateProjectButtonState } from "./create-project-state";
 import { agentTurnPreviewNotice } from "./preview-notice";
+import { pickBootstrapProjectId } from "./project-selection";
 
-type BusyAction = "boot" | "create" | "send" | "workflow" | "snapshot" | "preview" | "export" | "godot" | "editor" | "validate" | "cli" | undefined;
+type BusyAction =
+  | "boot"
+  | "create"
+  | "send"
+  | "workflow"
+  | "snapshot"
+  | "preview"
+  | "export"
+  | "godot"
+  | "editor"
+  | "validate"
+  | "cli"
+  | "environment"
+  | "git"
+  | undefined;
 type TeamCliRouteStatus = "default" | "fallback" | "missing";
 type PreflightStatus = "ready" | "warning" | "blocked";
 
@@ -192,6 +210,27 @@ function runtimeStatusLabel(status: StudioBootstrap["godotRuntime"]["status"]): 
   return labels[status];
 }
 
+function environmentStatusLabel(status?: StudioBootstrap["environment"]["status"]): string {
+  if (!status) {
+    return "未检查";
+  }
+  const labels: Record<StudioBootstrap["environment"]["status"], string> = {
+    ready: "就绪",
+    partial: "部分可用",
+    missing: "缺失"
+  };
+  return labels[status];
+}
+
+function environmentToolStatusLabel(status: EnvironmentTool["status"]): string {
+  const labels: Record<EnvironmentTool["status"], string> = {
+    available: "可用",
+    missing: "缺失",
+    error: "异常"
+  };
+  return labels[status];
+}
+
 function runtimeSeverityLabel(severity: StudioBootstrap["godotRuntime"]["diagnostics"][number]["severity"]): string {
   const labels: Record<StudioBootstrap["godotRuntime"]["diagnostics"][number]["severity"], string> = {
     ok: "正常",
@@ -200,6 +239,32 @@ function runtimeSeverityLabel(severity: StudioBootstrap["godotRuntime"]["diagnos
     error: "错误"
   };
   return labels[severity];
+}
+
+function gitStatusLabel(status?: GitProjectStatus): string {
+  if (!status) {
+    return "未检查";
+  }
+  if (!status.available) {
+    return "Git 缺失";
+  }
+  if (!status.initialized) {
+    return "未启用";
+  }
+  return status.clean ? "干净" : `${status.changedFiles.length} 变更`;
+}
+
+function gitStatusClass(status?: GitProjectStatus): string {
+  if (!status) {
+    return "missing";
+  }
+  if (!status.available || status.error) {
+    return "error";
+  }
+  if (!status.initialized || !status.clean) {
+    return "partial";
+  }
+  return "ready";
 }
 
 function teamRouteStatusLabel(status: TeamCliRouteStatus, defaultCli: CliToolId): string {
@@ -272,6 +337,7 @@ export function App() {
   const [busy, setBusy] = useState<BusyAction>("boot");
   const [notice, setNotice] = useState<string>("");
   const [previewNotice, setPreviewNotice] = useState<string>("");
+  const [gitCommitMessage, setGitCommitMessage] = useState<string>("保存当前游戏版本");
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -283,6 +349,8 @@ export function App() {
   );
   const activeTool = tools.find((tool) => tool.id === selectedCli);
   const activeCliInstalled = Boolean(activeTool?.installed);
+  const environment = bootstrap?.environment;
+  const gitEnvironmentTool = environment?.tools.find((tool) => tool.id === "git");
   const selectedTemplate = bootstrap?.godotRuntime.templates.find((template) => template.dimension === form.dimension);
   const createPreflight = useMemo(
     () => [
@@ -348,12 +416,14 @@ export function App() {
       const data = await window.studio.bootstrap();
       setBootstrap(data);
       setProjects(data.projects);
-      const target = selectProjectId ?? selectedProject?.id ?? data.projects[0]?.id;
+      const target = pickBootstrapProjectId(data.projects, selectProjectId, selectedProject?.id);
       if (target) {
         const detail = await window.studio.getProject(target);
         setSelectedProject(detail);
         setActiveAgentId(detail.activeAgentId);
         setSelectedCli(pickDefaultCli(detail.activeAgentId, data.cliTools));
+      } else {
+        setSelectedProject(undefined);
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -401,6 +471,12 @@ export function App() {
   useEffect(() => {
     setSelectedCli(pickDefaultCli(activeAgentId, tools));
   }, [activeAgentId, tools]);
+
+  useEffect(() => {
+    if (selectedProject) {
+      setGitCommitMessage(`保存 ${selectedProject.name} 当前版本`);
+    }
+  }, [selectedProject?.id, selectedProject?.name]);
 
   async function createProject() {
     setBusy("create");
@@ -462,6 +538,33 @@ export function App() {
     }
   }
 
+  async function refreshEnvironment() {
+    setBusy("environment");
+    try {
+      const nextEnvironment = await window.studio.refreshEnvironment();
+      setBootstrap((current) => (current ? { ...current, environment: nextEnvironment } : current));
+      if (selectedProject) {
+        await refreshGitStatus(selectedProject.id);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function refreshGitStatus(projectId = selectedProject?.id) {
+    if (!projectId) {
+      return;
+    }
+    try {
+      const gitStatus = await window.studio.getProjectGitStatus(projectId);
+      setSelectedProject((current) => (current && current.id === projectId ? { ...current, gitStatus } : current));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function installCli(toolId: CliToolId) {
     setBusy("cli");
     setNotice(`正在安装 ${CLI_TOOL_LABELS[toolId]}...`);
@@ -469,6 +572,26 @@ export function App() {
       const result = await window.studio.installCliTool(toolId);
       setNotice(result.ok ? `${CLI_TOOL_LABELS[toolId]} 安装完成。` : result.stderr || result.stdout || "安装失败。");
       await refreshCliTools();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function commitGitVersion() {
+    if (!selectedProject) {
+      return;
+    }
+    setBusy("git");
+    try {
+      const result = await window.studio.commitProjectGit({
+        projectId: selectedProject.id,
+        message: gitCommitMessage.trim() || `保存 ${selectedProject.name} 当前版本`
+      });
+      setSelectedProject(result.project);
+      setProjects(await window.studio.listProjects());
+      setNotice(result.message);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -727,6 +850,22 @@ export function App() {
     selectedCliInstalled: activeCliInstalled,
     selectedCliLabel: CLI_TOOL_LABELS[selectedCli]
   });
+  const gitStatus = selectedProject?.gitStatus;
+  const gitCommitDisabled =
+    !selectedProject ||
+    isBusy ||
+    !gitStatus?.available ||
+    (gitStatus.initialized && gitStatus.clean) ||
+    !gitCommitMessage.trim();
+  const gitCommitTitle = !selectedProject
+    ? "先创建或选择项目。"
+    : !gitStatus?.available
+      ? gitStatus?.message ?? "未检测到 Git。"
+      : gitStatus.initialized && gitStatus.clean
+        ? "当前 Git 工作区没有未提交变更。"
+        : gitStatus.initialized
+          ? "提交当前 Git 变更。"
+          : "为此项目启用 Git 版本管理并提交当前状态。";
 
   return (
     <main className="app-shell">
@@ -1094,6 +1233,54 @@ export function App() {
           ) : null}
         </section>
 
+        <section className="panel git-panel">
+          <div className="section-title split">
+            <span>
+              <GitBranch size={17} />
+              Git 版本
+            </span>
+            <span className={`status-pill git-status ${gitStatusClass(gitStatus)}`}>{gitStatusLabel(gitStatus)}</span>
+          </div>
+          {selectedProject ? (
+            <>
+              <dl>
+                <dt>分支</dt>
+                <dd>{gitStatus?.branch ?? "未初始化"}</dd>
+                <dt>提交</dt>
+                <dd>{gitStatus?.head ?? "无"}</dd>
+                <dt>状态</dt>
+                <dd title={gitStatus?.error ?? gitStatus?.message}>{gitStatus?.message ?? "未检查"}</dd>
+              </dl>
+              {gitStatus?.changedFiles.length ? (
+                <div className="git-change-list">
+                  {gitStatus.changedFiles.slice(0, 8).map((file) => (
+                    <button key={file} onClick={() => openPath(projectFilePath(selectedProject.rootPath, file))} title={projectFilePath(selectedProject.rootPath, file)}>
+                      {file}
+                    </button>
+                  ))}
+                  {gitStatus.changedFiles.length > 8 ? <small>还有 {gitStatus.changedFiles.length - 8} 个变更</small> : null}
+                </div>
+              ) : null}
+              <div className="git-commit-row">
+                <input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} disabled={isBusy} />
+                <Button
+                  icon={busy === "git" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+                  onClick={commitGitVersion}
+                  disabled={gitCommitDisabled}
+                  title={gitCommitTitle}
+                >
+                  {gitStatus?.initialized ? "提交版本" : "启用 Git"}
+                </Button>
+              </div>
+              <button className="text-button" onClick={() => refreshGitStatus()} disabled={isBusy}>
+                刷新 Git 状态
+              </button>
+            </>
+          ) : (
+            <p className="empty-text">暂无项目</p>
+          )}
+        </section>
+
         <section className="panel runs-panel">
           <div className="section-title">
             <Terminal size={17} />
@@ -1225,6 +1412,40 @@ export function App() {
           <section className="notice">
             {notice.includes("失败") || notice.includes("未找到") ? <XCircle size={17} /> : <CheckCircle2 size={17} />}
             <p>{notice}</p>
+          </section>
+        ) : null}
+
+        {environment ? (
+          <section className="panel environment-panel">
+            <div className="section-title split">
+              <span>
+                <Terminal size={17} />
+                系统环境
+              </span>
+              <button className="icon-button" title="刷新环境" onClick={refreshEnvironment} disabled={isBusy}>
+                <RefreshCw size={15} className={busy === "environment" ? "spin" : ""} />
+              </button>
+            </div>
+            <div className="environment-summary">
+              <span className={`status-pill environment-status ${environment.status}`}>{environmentStatusLabel(environment.status)}</span>
+              <p>Git：{gitEnvironmentTool ? environmentToolStatusLabel(gitEnvironmentTool.status) : "未检查"}</p>
+            </div>
+            <div className="environment-tool-list">
+              {environment.tools.map((tool) => (
+                <div className={`environment-tool ${tool.status}`} key={tool.id}>
+                  <div>
+                    <strong>{tool.label}</strong>
+                    <span title={tool.executablePath ?? tool.command}>{tool.version ?? tool.command}</span>
+                  </div>
+                  <span className={`status-pill environment-tool-status ${tool.status}`}>{environmentToolStatusLabel(tool.status)}</span>
+                  {tool.diagnostics.map((diagnostic) => (
+                    <p key={diagnostic.id} title={diagnostic.detail}>
+                      {diagnostic.action ?? diagnostic.detail}
+                    </p>
+                  ))}
+                </div>
+              ))}
+            </div>
           </section>
         ) : null}
 

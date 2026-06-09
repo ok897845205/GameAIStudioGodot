@@ -53,6 +53,17 @@ describe("runProcess", () => {
     expect(stderrChunks.join("")).toContain("hello from stderr");
   });
 
+  it("writes stdin to the child process and closes the pipe", async () => {
+    const result = await runProcess(
+      process.execPath,
+      ["-e", "let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(input));"],
+      { stdin: "hello from stdin", timeoutMs: 5000 }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello from stdin");
+  });
+
   it("can cancel a registered process by run id", async () => {
     const registry = new ProcessRegistry();
     const running = runProcess(process.execPath, ["-e", "setTimeout(() => {}, 30000);"], {

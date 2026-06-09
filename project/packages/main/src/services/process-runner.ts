@@ -11,6 +11,7 @@ export interface ProcessRunOptions {
   cwd?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  stdin?: string;
   processKey?: string;
   registry?: ProcessRegistry;
   onStdout?: (chunk: string) => void;
@@ -126,6 +127,8 @@ export function runProcess(command: string, args: string[], options: ProcessRunO
     if (options.processKey && options.registry) {
       options.registry.register(options.processKey, child);
     }
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(options.stdin ?? "");
     const timeout = options.timeoutMs
       ? setTimeout(() => {
           if (settled) {

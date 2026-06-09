@@ -10,7 +10,8 @@ import {
   cliExecutableCandidates,
   evaluateCredentialStatus,
   findExecutableInDirectory,
-  npmGlobalBinPath
+  npmGlobalBinPath,
+  selectExecutableFromLocatorOutput
 } from "./cli-service";
 
 describe("evaluateCredentialStatus", () => {
@@ -54,11 +55,24 @@ describe("npmGlobalBinPath", () => {
 describe("npm global executable fallback", () => {
   it("checks Windows command shim candidates in npm global bin", () => {
     expect(cliExecutableCandidates("codex", "C:\\Users\\KSG\\AppData\\Roaming\\npm", "win32")).toEqual([
-      "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex",
       "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.cmd",
       "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.exe",
-      "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.bat"
+      "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.bat",
+      "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex"
     ]);
+  });
+
+  it("prefers Windows executable shims from locator output over extensionless npm scripts", () => {
+    expect(
+      selectExecutableFromLocatorOutput(
+        [
+          "C:\\Users\\KSG\\AppData\\Roaming\\npm\\kscc",
+          "C:\\Users\\KSG\\AppData\\Roaming\\npm\\kscc.cmd",
+          "C:\\Users\\KSG\\AppData\\Roaming\\npm\\kscc.exe"
+        ].join("\n"),
+        "win32"
+      )
+    ).toBe("C:\\Users\\KSG\\AppData\\Roaming\\npm\\kscc.cmd");
   });
 
   it("finds a CLI command shim inside a global bin directory", async () => {
@@ -79,7 +93,17 @@ describe("npm global executable fallback", () => {
     const command = service.buildAgentCommand("codex", "hello", "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.cmd");
 
     expect(command.command).toBe("C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.cmd");
-    expect(command.args).toEqual(["exec", "--skip-git-repo-check", "hello"]);
+    expect(command.args).toEqual(["exec", "--skip-git-repo-check", "-"]);
+    expect(command.stdin).toBe("hello");
+  });
+
+  it("builds Kimi Agent commands with prompt on stdin instead of a positional command", () => {
+    const service = new CliService();
+    const command = service.buildAgentCommand("kimi", "hello", "C:\\Users\\KSG\\.local\\bin\\kimi.exe");
+
+    expect(command.command).toBe("C:\\Users\\KSG\\.local\\bin\\kimi.exe");
+    expect(command.args).toEqual(["--print"]);
+    expect(command.stdin).toBe("hello");
   });
 
   it("builds install commands with the discovered install manager executable path", () => {

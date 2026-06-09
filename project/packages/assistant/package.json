@@ -1,0 +1,27 @@
+{
+  "name": "@gameaistudio/assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tap": "./src/tap/index.ts",
+    "./stream": "./src/stream/index.ts",
+    "./stream/utils": "./src/stream/utils.ts",
+    "./react": "./src/react/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "nanoid": "^5.0.0",
+    "secure-json-parse": "^4.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "react": "^19.1.0",
+    "@types/react": "^19.1.6"
+  }
+}

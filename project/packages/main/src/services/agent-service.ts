@@ -121,6 +121,7 @@ function processOutput(result: ProcessRunResult): string {
 
 export function buildAgentProcessMessage(input: {
   toolLabel: string;
+  toolId?: CliToolId;
   result: ProcessRunResult;
   fileChangeCount: number;
 }): string {
@@ -142,10 +143,24 @@ export function buildAgentProcessMessage(input: {
   const reason = input.result.timedOut
     ? `${input.toolLabel} CLI 运行超时。`
     : `${input.toolLabel} CLI 执行失败（exitCode=${input.result.exitCode ?? "unknown"}）。`;
+  const hint = buildCliFailureHint(input.toolId, output);
   if (output) {
-    return `${reason}\n\n${output}`;
+    return `${reason}\n\n${output}${hint ? `\n\n${hint}` : ""}`;
   }
   return `${reason}\n\n没有返回可读输出。请在终端运行该 CLI，确认它已登录并支持非交互模式。`;
+}
+
+function buildCliFailureHint(toolId: CliToolId | undefined, output: string): string | undefined {
+  if (!/(invalid bearer token|invalid_authentication_error|api key appears to be invalid|failed to authenticate)/i.test(output)) {
+    return undefined;
+  }
+  if (toolId === "claude") {
+    return "修复建议：Claude 交互界面能打开不一定代表 `claude --print` 可用。请在终端运行 `claude auth status` 检查状态；如果仍然 401，运行 `claude setup-token` 或重新登录后再刷新 GameAIStudio。";
+  }
+  if (toolId === "kimi") {
+    return "修复建议：Kimi 非交互模式需要有效的 Kimi/Moonshot 认证。请在终端运行 `kimi login`，或配置有效的 `KIMI_API_KEY` / `MOONSHOT_API_KEY` 后再刷新 GameAIStudio。";
+  }
+  return "修复建议：该 CLI 非交互模式认证失败。请在终端用同样的非交互参数测试登录状态，再回到 GameAIStudio 刷新 CLI。";
 }
 
 export function buildAgentStepMessage(input: {
@@ -301,6 +316,7 @@ export class AgentService {
     const result = await runProcess(command.command, command.args, {
       cwd: project.rootPath,
       timeoutMs: 15 * 60 * 1000,
+      stdin: command.stdin,
       processKey: outputRunId && outputStepId ? `${outputRunId}:${outputStepId}` : undefined,
       registry: this.processRegistry,
       onStdout: scheduleOutputFlush,
@@ -323,6 +339,7 @@ export class AgentService {
       role: "agent",
       content: buildAgentProcessMessage({
         toolLabel: CLI_TOOL_LABELS[input.cliToolId],
+        toolId: input.cliToolId,
         result,
         fileChangeCount: fileChanges.length
       }),

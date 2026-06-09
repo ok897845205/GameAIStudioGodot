@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import CodeEditor from "@uiw/react-textarea-code-editor";
+// Legacy stylesheet is scoped to this (lazy-loaded) legacy view only. It uses
+// unlayered element rules (button/input/*) that would otherwise override the
+// new UI's Tailwind utilities, so it must NOT load on the default StudioApp.
+import "./styles.css";
 import {
   Bot,
   CheckCircle2,

@@ -11,6 +11,7 @@ interface CliSpec {
   installCommand: string[];
   installHint: string;
   defaultArgs: string[];
+  promptStdinArgs: string[];
   credentialEnvVars: string[];
   credentialHint: string;
 }
@@ -22,7 +23,8 @@ const CLI_SPECS: CliSpec[] = [
     versionArgs: ["--version"],
     installCommand: ["npm", "install", "-g", "@openai/codex"],
     installHint: "通过 npm 全局安装 OpenAI Codex CLI，或把已安装的 codex 加入 PATH。",
-    defaultArgs: ["exec", "--skip-git-repo-check"],
+    defaultArgs: ["exec", "--skip-git-repo-check", "-"],
+    promptStdinArgs: ["exec", "--skip-git-repo-check", "-"],
     credentialEnvVars: ["OPENAI_API_KEY"],
     credentialHint: "Codex CLI 通常需要登录或提供 OPENAI_API_KEY。若已在 CLI 内登录，可忽略环境变量提示。"
   },
@@ -33,6 +35,7 @@ const CLI_SPECS: CliSpec[] = [
     installCommand: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
     installHint: "通过 npm 全局安装 Claude Code，或把已安装的 claude 加入 PATH。",
     defaultArgs: ["--print"],
+    promptStdinArgs: ["--print"],
     credentialEnvVars: ["ANTHROPIC_API_KEY"],
     credentialHint: "Claude CLI 通常需要登录或提供 ANTHROPIC_API_KEY。若已完成 claude 登录，可忽略环境变量提示。"
   },
@@ -43,6 +46,7 @@ const CLI_SPECS: CliSpec[] = [
     installCommand: ["npm", "install", "-g", "kscc"],
     installHint: "安装 KSCC CLI，或在系统 PATH 中提供 kscc 命令。",
     defaultArgs: ["--print"],
+    promptStdinArgs: ["--print"],
     credentialEnvVars: ["KSCC_API_KEY"],
     credentialHint: "KSCC CLI 可能需要登录或配置 KSCC_API_KEY，具体以本机 kscc 命令要求为准。"
   },
@@ -53,6 +57,7 @@ const CLI_SPECS: CliSpec[] = [
     installCommand: ["npm", "install", "-g", "@moonshot-ai/kimi-cli"],
     installHint: "安装 Kimi CLI，或在系统 PATH 中提供 kimi 命令。",
     defaultArgs: ["--print"],
+    promptStdinArgs: ["--print"],
     credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
     credentialHint: "Kimi CLI 通常需要 Moonshot/Kimi API Key，可尝试配置 MOONSHOT_API_KEY 或 KIMI_API_KEY。"
   }
@@ -72,11 +77,18 @@ async function findExecutable(command: string): Promise<string | undefined> {
       ? { command: "where.exe", args: [command] }
       : { command: "sh", args: ["-lc", `command -v ${command}`] };
   const result = await runProcess(locator.command, locator.args, { timeoutMs: 3000 });
-  const firstLine = result.stdout
+  return result.exitCode === 0 ? selectExecutableFromLocatorOutput(result.stdout) : undefined;
+}
+
+export function selectExecutableFromLocatorOutput(stdout: string, platform = process.platform): string | undefined {
+  const candidates = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .find(Boolean);
-  return result.exitCode === 0 ? firstLine : undefined;
+    .filter(Boolean);
+  if (platform !== "win32") {
+    return candidates[0];
+  }
+  return candidates.find((candidate) => /\.(?:cmd|exe|bat|com)$/i.test(candidate)) ?? candidates[0];
 }
 
 export function cliExecutableCandidates(command: string, directory: string, platform = process.platform): string[] {
@@ -85,7 +97,7 @@ export function cliExecutableCandidates(command: string, directory: string, plat
   if (platform !== "win32" || path.extname(command)) {
     return [basePath];
   }
-  return [basePath, `${basePath}.cmd`, `${basePath}.exe`, `${basePath}.bat`];
+  return [`${basePath}.cmd`, `${basePath}.exe`, `${basePath}.bat`, basePath];
 }
 
 export function findExecutableInDirectory(command: string, directory?: string, platform = process.platform): string | undefined {
@@ -346,11 +358,12 @@ export class CliService {
     };
   }
 
-  buildAgentCommand(toolId: CliToolId, prompt: string, executablePath?: string): { command: string; args: string[] } {
+  buildAgentCommand(toolId: CliToolId, prompt: string, executablePath?: string): { command: string; args: string[]; stdin: string } {
     const spec = getSpec(toolId);
     return {
       command: executablePath ?? spec.command,
-      args: [...spec.defaultArgs, prompt]
+      args: spec.promptStdinArgs,
+      stdin: prompt
     };
   }
 }

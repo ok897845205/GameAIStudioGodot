@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { StudioProject } from "@gameaistudio/shared";
 import { ExportService, buildExportManifest, buildWebZipPath, inspectWebBuildPath, inspectWebZipEntries, inspectWebZipPath } from "./export-service";
+import { getProjectLogger } from "./logger";
 
 function createProject(rootPath: string): StudioProject {
   return {
@@ -102,6 +103,10 @@ describe("ExportService", () => {
       expect(inspection.ok).toBe(false);
       expect(project.latestWebBuildInspection).toEqual(inspection);
       expect(project.latestWebBuildInspection?.missingRequiredFiles).toEqual(["index.html", "*.wasm", "*.pck"]);
+      await getProjectLogger(project.rootPath).flush();
+      const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
+      expect(log).toContain("[export] Web 构建产物检查完成");
+      expect(log).toContain("index.html");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -152,6 +157,10 @@ describe("ExportService", () => {
       expect(manifest.project.rootPath).toBeUndefined();
       expect(manifest.webBuild.requiredFiles).toEqual(["index.html", "*.wasm", "*.pck"]);
       expect(manifest.webBuild.files).toEqual(["game.pck", "game.wasm", "index.html"]);
+      await getProjectLogger(project.rootPath).flush();
+      const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
+      expect(log).toContain("[export] 开始打包 Web zip");
+      expect(log).toContain("[export] Web zip 打包完成");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

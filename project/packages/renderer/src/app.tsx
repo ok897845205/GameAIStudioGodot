@@ -72,7 +72,7 @@ type BusyAction =
   | "delete"
   | "file"
   | undefined;
-type TeamCliRouteStatus = "default" | "fallback" | "missing";
+type TeamCliRouteStatus = "default" | "fallback" | "missing" | "error";
 type PreflightStatus = "ready" | "warning" | "blocked";
 
 interface CreateForm {
@@ -174,10 +174,10 @@ function agentById(agentId: string): AgentProfile {
 
 function pickDefaultCli(agentId: string, tools: CliTool[]): CliToolId {
   const agent = agentById(agentId);
-  if (tools.some((tool) => tool.id === agent.defaultCli && tool.installed)) {
+  if (tools.some((tool) => tool.id === agent.defaultCli && tool.installed && tool.status === "available")) {
     return agent.defaultCli;
   }
-  return tools.find((tool) => tool.installed)?.id ?? agent.defaultCli;
+  return tools.find((tool) => tool.installed && tool.status === "available")?.id ?? agent.defaultCli;
 }
 
 function upsertRun(runs: StudioRun[], run: StudioRun): StudioRun[] {
@@ -246,6 +246,35 @@ function diagnosticSeverityLabel(severity: CliTool["diagnostics"][number]["sever
     error: "错误"
   };
   return labels[severity];
+}
+
+function cliHealthValueLabel(value: CliTool["health"]["headlessOk"]): string {
+  if (value === true) {
+    return "可用";
+  }
+  if (value === false) {
+    return "失败";
+  }
+  return "未知";
+}
+
+function imageInputModeLabel(mode: CliTool["capabilities"]["imageInputMode"]): string {
+  const labels: Record<CliTool["capabilities"]["imageInputMode"], string> = {
+    "file-flag": "图片参数",
+    "prompt-path-reference": "图片路径",
+    base64: "Base64",
+    unsupported: "不支持"
+  };
+  return labels[mode];
+}
+
+function runModelLabel(model: CliTool["capabilities"]["runModel"]): string {
+  const labels: Record<CliTool["capabilities"]["runModel"], string> = {
+    local: "本机",
+    cloud: "云端",
+    gateway: "网关"
+  };
+  return labels[model];
 }
 
 function runtimeStatusLabel(status: StudioBootstrap["godotRuntime"]["status"]): string {
@@ -322,6 +351,9 @@ function teamRouteStatusLabel(status: TeamCliRouteStatus, defaultCli: CliToolId)
   if (status === "fallback") {
     return `回退自 ${CLI_TOOL_LABELS[defaultCli]}`;
   }
+  if (status === "error") {
+    return "不可用";
+  }
   return "缺失";
 }
 
@@ -377,13 +409,16 @@ export function App() {
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
   const activeAgent = agentById(activeAgentId);
-  const hasInstalledCli = tools.some((tool) => tool.installed);
+  const hasAvailableCli = tools.some((tool) => tool.installed && tool.status === "available");
   const activeMessages = useMemo(
     () => (selectedProject?.messages ?? []).filter((message) => message.agentId === activeAgentId || message.role === "system"),
     [selectedProject, activeAgentId]
   );
   const activeTool = tools.find((tool) => tool.id === selectedCli);
   const activeCliInstalled = Boolean(activeTool?.installed);
+  const activeCliAvailable = Boolean(activeTool?.installed && activeTool.status === "available");
+  const activeCliSupportsImages = Boolean(activeTool?.capabilities.supportsImages);
+  const activeCliUnavailableReason = activeTool?.status === "error" ? activeTool.health.detail ?? `${activeTool.label} 当前不可用。` : undefined;
   const environment = bootstrap?.environment;
   const gitEnvironmentTool = environment?.tools.find((tool) => tool.id === "git");
   const selectedTemplate = bootstrap?.godotRuntime.templates.find((template) => template.dimension === form.dimension);
@@ -391,9 +426,9 @@ export function App() {
     () => [
       {
         id: "cli",
-        status: hasInstalledCli ? ("ready" as const) : ("warning" as const),
+        status: hasAvailableCli ? ("ready" as const) : ("warning" as const),
         title: "本地 AI CLI",
-        detail: hasInstalledCli ? "已检测到可用于 Agent 的本地 CLI。" : "未检测到本地 AI CLI；会先创建 Godot 项目，安装 CLI 后再运行团队工作流。"
+        detail: hasAvailableCli ? "已检测到可用于 Agent 的本地 CLI。" : "未检测到可用的本地 AI CLI；会先创建 Godot 项目，修复 CLI 后再运行团队工作流。"
       },
       {
         id: "template",
@@ -408,7 +443,7 @@ export function App() {
         detail: bootstrap?.godotRuntime.consolePath ? "Godot Console 可用于导出、打包和刷新预览。" : "未检测到 Godot Console，Agent 可工作但 Web 预览/导出/zip 会失败。"
       }
     ],
-    [bootstrap?.godotRuntime.consolePath, form.dimension, hasInstalledCli, selectedTemplate?.available, selectedTemplate?.path]
+    [bootstrap?.godotRuntime.consolePath, form.dimension, hasAvailableCli, selectedTemplate?.available, selectedTemplate?.path]
   );
   const templateBlocked = Boolean(bootstrap && !selectedTemplate?.available);
   const teamCliRoutes = useMemo(
@@ -416,7 +451,13 @@ export function App() {
       agents.map((agent) => {
         const cliToolId = chooseAgentCli(agent, tools);
         const tool = tools.find((candidate) => candidate.id === cliToolId);
-        const status: TeamCliRouteStatus = tool?.installed ? (cliToolId === agent.defaultCli ? "default" : "fallback") : "missing";
+        const status: TeamCliRouteStatus = !tool?.installed
+          ? "missing"
+          : tool.status !== "available"
+            ? "error"
+            : cliToolId === agent.defaultCli
+              ? "default"
+              : "fallback";
         return {
           agent,
           cliToolId,
@@ -465,6 +506,10 @@ export function App() {
 
   async function attachImages(files: FileList | null) {
     if (!files?.length) {
+      return;
+    }
+    if (!activeCliSupportsImages) {
+      setNotice(`${activeTool?.label ?? CLI_TOOL_LABELS[selectedCli]} Adapter 不支持图片输入，请切换支持图片的 CLI。`);
       return;
     }
     try {
@@ -603,8 +648,8 @@ export function App() {
         return;
       }
 
-      if (!refreshedTools.some((tool) => tool.installed)) {
-        setNotice(`已创建项目：${project.name}。请先安装至少一个本地 AI CLI，再运行团队工作流。`);
+      if (!refreshedTools.some((tool) => tool.installed && tool.status === "available")) {
+        setNotice(`已创建项目：${project.name}。请先安装或修复至少一个可用的本地 AI CLI，再运行团队工作流。`);
         return;
       }
 
@@ -737,6 +782,10 @@ export function App() {
 
   async function sendTurn() {
     if (!selectedProject || (!draft.trim() && pendingAttachments.length === 0)) {
+      return;
+    }
+    if (pendingAttachments.length > 0 && !activeCliSupportsImages) {
+      setNotice(`${activeTool?.label ?? CLI_TOOL_LABELS[selectedCli]} Adapter 不支持图片输入，请移除图片或切换 CLI。`);
       return;
     }
     setBusy("send");
@@ -935,7 +984,7 @@ export function App() {
     prompt: form.prompt,
     templateBlocked,
     autoRunWorkflow: form.autoRunWorkflow,
-    hasInstalledCli
+    hasInstalledCli: hasAvailableCli
   });
   const sendTurnButton = getSendTurnButtonState({
     hasSelectedProject: Boolean(selectedProject),
@@ -943,6 +992,9 @@ export function App() {
     attachmentCount: pendingAttachments.length,
     isBusy,
     selectedCliInstalled: activeCliInstalled,
+    selectedCliAvailable: activeCliAvailable,
+    selectedCliUnavailableReason: activeCliUnavailableReason,
+    selectedCliSupportsImages: activeCliSupportsImages,
     selectedCliLabel: CLI_TOOL_LABELS[selectedCli]
   });
   const gitStatus = selectedProject?.gitStatus;
@@ -1082,6 +1134,21 @@ export function App() {
                     {credentialStatusLabel(tool.credentialStatus)}
                     {tool.detectedCredentialEnvVars.length > 0 ? `：${tool.detectedCredentialEnvVars.join(", ")}` : ""}
                   </span>
+                  <span title={tool.health.detail ?? "Adapter 分层健康状态"}>
+                    Headless：{cliHealthValueLabel(tool.health.headlessOk)}
+                  </span>
+                  <span title={`认证：${cliHealthValueLabel(tool.health.authed)}`}>
+                    Auth：{cliHealthValueLabel(tool.health.authed)}
+                  </span>
+                </div>
+                <div className="cli-capabilities">
+                  <span>{runModelLabel(tool.capabilities.runModel)}</span>
+                  <span>{tool.capabilities.headless ? "Headless" : "交互"}</span>
+                  <span>{tool.capabilities.supportsStream ? "流式" : "一次性"}</span>
+                  <span className={tool.capabilities.supportsImages ? "" : "muted"}>
+                    图片：{tool.capabilities.supportsImages ? imageInputModeLabel(tool.capabilities.imageInputMode) : "不支持"}
+                  </span>
+                  {tool.capabilities.supportsResume ? <span>续聊</span> : null}
                 </div>
                 <div className="cli-diagnostics">
                   {tool.diagnostics.map((diagnostic) => (
@@ -1262,14 +1329,21 @@ export function App() {
             </div>
           ) : null}
           <div className="composer-actions">
-            <label className="attach-button" title="添加图片给 AI 识别">
+            <label
+              className={`attach-button ${activeCliSupportsImages ? "" : "disabled"}`}
+              title={
+                activeCliSupportsImages
+                  ? `添加图片；当前 Adapter 会以${imageInputModeLabel(activeTool?.capabilities.imageInputMode ?? "unsupported")}方式交给 AI。`
+                  : `${activeTool?.label ?? CLI_TOOL_LABELS[selectedCli]} Adapter 不支持图片输入`
+              }
+            >
               <Paperclip size={15} />
               <span>图片</span>
               <input
                 type="file"
                 accept="image/*"
                 multiple
-                disabled={!selectedProject || isBusy}
+                disabled={!selectedProject || isBusy || !activeCliSupportsImages}
                 onChange={(event) => {
                   void attachImages(event.currentTarget.files);
                   event.currentTarget.value = "";
@@ -1282,6 +1356,8 @@ export function App() {
             <span>Agent 修改 Godot 文件后自动刷新 Web 预览</span>
           </label>
           {selectedProject && !activeCliInstalled ? <p className="warning">{activeTool?.installHint ?? sendTurnButton.title}</p> : null}
+          {selectedProject && activeCliInstalled && !activeCliAvailable ? <p className="warning">{activeCliUnavailableReason ?? sendTurnButton.title}</p> : null}
+          {selectedProject && pendingAttachments.length > 0 && !activeCliSupportsImages ? <p className="warning">当前 Adapter 不支持图片输入，请移除图片或切换 CLI。</p> : null}
         </footer>
       </section>
 
@@ -1321,7 +1397,7 @@ export function App() {
           <Button
             icon={busy === "workflow" ? <Loader2 className="spin" size={16} /> : <Bot size={16} />}
             onClick={runWorkflow}
-            disabled={!selectedProject || isBusy || !hasInstalledCli}
+            disabled={!selectedProject || isBusy || !hasAvailableCli}
             title="团队工作流会按角色自动选择默认 CLI，当前 CLI 下拉框只影响单个 Agent 对话。"
           >
             团队工作流
@@ -1334,7 +1410,7 @@ export function App() {
                 <small>{teamRouteStatusLabel(route.status, route.agent.defaultCli)}</small>
               </div>
             ))}
-            {!hasInstalledCli ? <p>安装至少一个本地 AI CLI 后才能运行团队工作流。</p> : null}
+            {!hasAvailableCli ? <p>安装或修复至少一个可用的本地 AI CLI 后才能运行团队工作流。</p> : null}
           </div>
           {activeRun ? (
             <Button variant="danger" icon={<StopCircle size={16} />} onClick={cancelActiveRun}>

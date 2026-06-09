@@ -8,6 +8,31 @@ export type CliCredentialStatus = "configured" | "missing" | "unknown";
 
 export type CliDiagnosticSeverity = "ok" | "info" | "warning" | "error";
 
+export type CliRunModel = "local" | "cloud" | "gateway";
+
+export type CliImageInputMode = "file-flag" | "prompt-path-reference" | "base64" | "unsupported";
+
+export type CliHealthValue = boolean | "unknown";
+
+export interface CliToolCapabilities {
+  runModel: CliRunModel;
+  supportsImages: boolean;
+  imageInputMode: CliImageInputMode;
+  supportsStream: boolean;
+  supportsResume: boolean;
+  headless: boolean;
+}
+
+export interface CliToolHealth {
+  installed: boolean;
+  authed: CliHealthValue;
+  headlessOk: CliHealthValue;
+  imagesOk?: CliHealthValue;
+  writable?: CliHealthValue;
+  version?: string;
+  detail?: string;
+}
+
 export interface CliDiagnostic {
   id: string;
   severity: CliDiagnosticSeverity;
@@ -36,6 +61,8 @@ export interface CliTool {
   credentialEnvVars: string[];
   detectedCredentialEnvVars: string[];
   credentialHint: string;
+  capabilities: CliToolCapabilities;
+  health: CliToolHealth;
   diagnostics: CliDiagnostic[];
   lastCheckedAt: string;
 }
@@ -132,6 +159,20 @@ export interface StudioRunEvent {
   run: StudioRun;
 }
 
+/**
+ * Incremental token stream for an in-flight agent turn. The renderer
+ * accumulates `delta`s into a streaming assistant message (id `messageId`,
+ * authored by `agentId`) so the chat bubble types live; `runAgentTurn`'s
+ * resolved canonical messages replace it when the turn settles.
+ */
+export interface AgentStreamEvent {
+  projectId: string;
+  agentId: string;
+  messageId: string;
+  delta: string;
+  done: boolean;
+}
+
 export type PreviewStatus = "watching" | "exporting" | "ready" | "failed" | "stopped";
 
 export interface PreviewEvent {
@@ -148,6 +189,7 @@ export interface StudioProject {
   name: string;
   dimension: GameDimension;
   prompt: string;
+  agentCliToolIds?: Partial<Record<string, CliToolId>>;
   rootPath: string;
   webBuildPath: string;
   createdAt: string;
@@ -172,6 +214,7 @@ export interface CreateProjectInput {
   name: string;
   dimension: GameDimension;
   prompt: string;
+  agentCliToolIds?: Partial<Record<string, CliToolId>>;
 }
 
 export interface RunAgentTurnInput {
@@ -195,6 +238,7 @@ export interface RunStudioWorkflowInput {
   projectId: string;
   message: string;
   agentIds?: string[];
+  agentCliToolIds?: Partial<Record<string, CliToolId>>;
   preferredCliToolId?: CliToolId;
   autoExportWeb: boolean;
   autoPackageWebZip: boolean;
@@ -330,10 +374,20 @@ export interface GitProjectStatus {
   branch?: string;
   head?: string;
   recentCommits: GitCommit[];
+  changes: GitFileChange[];
   changedFiles: string[];
   message: string;
   error?: string;
   lastCheckedAt: string;
+}
+
+export type GitFileChangeKind = "added" | "modified" | "deleted" | "renamed" | "copied" | "untracked" | "conflicted" | "unknown";
+
+export interface GitFileChange {
+  path: string;
+  kind: GitFileChangeKind;
+  rawStatus: string;
+  originalPath?: string;
 }
 
 export interface GitCommit {
@@ -416,6 +470,7 @@ export interface StudioApi {
   bootstrap(): Promise<StudioBootstrap>;
   refreshEnvironment(): Promise<SystemEnvironment>;
   refreshCliTools(): Promise<CliTool[]>;
+  testCliTool(toolId: CliToolId): Promise<CliTool>;
   installCliTool(toolId: CliToolId): Promise<GodotRunResult>;
   createProject(input: CreateProjectInput): Promise<ProjectDetails>;
   deleteProject(projectId: string): Promise<DeleteProjectResult>;
@@ -426,6 +481,7 @@ export interface StudioApi {
   listRuns(projectId: string): Promise<StudioRun[]>;
   cancelRun(runId: string): Promise<StudioRun>;
   onRunEvent(callback: (event: StudioRunEvent) => void): () => void;
+  onAgentStream(callback: (event: AgentStreamEvent) => void): () => void;
   getProjectGitStatus(projectId: string): Promise<GitProjectStatus>;
   commitProjectGit(input: GitCommitInput): Promise<GitCommitResult>;
   restoreProjectGit(input: GitRestoreInput): Promise<GitRestoreResult>;
@@ -497,8 +553,9 @@ export const CLI_TOOL_LABELS: Record<CliToolId, string> = {
 };
 
 export function chooseAgentCli(agent: AgentProfile, tools: CliTool[], preferredCliToolId?: CliToolId): CliToolId {
-  const preferred = preferredCliToolId ? tools.find((tool) => tool.id === preferredCliToolId && tool.installed) : undefined;
-  const defaultTool = tools.find((tool) => tool.id === agent.defaultCli && tool.installed);
-  const fallback = tools.find((tool) => tool.installed);
+  const usable = (tool: CliTool): boolean => tool.installed && tool.status === "available";
+  const preferred = preferredCliToolId ? tools.find((tool) => tool.id === preferredCliToolId && usable(tool)) : undefined;
+  const defaultTool = tools.find((tool) => tool.id === agent.defaultCli && usable(tool));
+  const fallback = tools.find(usable);
   return preferred?.id ?? defaultTool?.id ?? fallback?.id ?? preferredCliToolId ?? agent.defaultCli;
 }

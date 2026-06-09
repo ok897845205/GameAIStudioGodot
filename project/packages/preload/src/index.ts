@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  AgentStreamEvent,
   CliToolId,
   CreateProjectInput,
   GitCommitInput,
@@ -16,6 +17,7 @@ const api: StudioApi = {
   bootstrap: () => ipcRenderer.invoke("studio:bootstrap"),
   refreshEnvironment: () => ipcRenderer.invoke("environment:refresh"),
   refreshCliTools: () => ipcRenderer.invoke("cli:refresh"),
+  testCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:test", toolId),
   installCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:install", toolId),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke("projects:create", input),
   deleteProject: (projectId: string) => ipcRenderer.invoke("projects:delete", projectId),
@@ -33,6 +35,11 @@ const api: StudioApi = {
     const handler = (_event: Electron.IpcRendererEvent, event: StudioRunEvent) => callback(event);
     ipcRenderer.on("runs:event", handler);
     return () => ipcRenderer.removeListener("runs:event", handler);
+  },
+  onAgentStream: (callback: (event: AgentStreamEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: AgentStreamEvent) => callback(event);
+    ipcRenderer.on("agent:stream", handler);
+    return () => ipcRenderer.removeListener("agent:stream", handler);
   },
   startPreview: (projectId: string) => ipcRenderer.invoke("projects:preview", projectId),
   startAutoPreview: (projectId: string) => ipcRenderer.invoke("projects:auto-preview:start", projectId),

@@ -25,6 +25,7 @@ export function Composer({
   const threadRuntime = useThreadRuntime();
   const { isRunning, capabilities } = useThread();
   const canStop = isRunning && capabilities.cancel;
+  const canAttachImages = Boolean(capabilities.attachments);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Create one object URL per pending attachment (not per render) and revoke
@@ -61,7 +62,7 @@ export function Composer({
   };
 
   const addFiles = (files: FileList | null) => {
-    if (!files) return;
+    if (!files || !canAttachImages) return;
     for (const file of Array.from(files)) {
       if (file.type.startsWith("image/")) {
         void composerRuntime.addAttachment(file);
@@ -113,8 +114,13 @@ export function Composer({
 
       <div className="flex items-end gap-2">
         <label
-          className="flex size-9 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          title="添加图片"
+          className={cn(
+            "flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors",
+            canAttachImages
+              ? "cursor-pointer hover:bg-accent hover:text-foreground"
+              : "cursor-not-allowed opacity-45",
+          )}
+          title={canAttachImages ? "添加图片" : "当前 CLI 不支持图片输入"}
         >
           <Paperclip className="size-4" />
           <input
@@ -122,6 +128,7 @@ export function Composer({
             accept="image/*"
             multiple
             className="hidden"
+            disabled={!canAttachImages}
             onChange={(e) => {
               addFiles(e.currentTarget.files);
               e.currentTarget.value = "";

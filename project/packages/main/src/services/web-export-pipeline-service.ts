@@ -3,6 +3,7 @@ import { ExportService } from "./export-service";
 import { GodotService } from "./godot-service";
 import { ProjectService } from "./project-service";
 import { RunService } from "./run-service";
+import { getProjectLogger } from "./logger";
 
 function summarizeRunResult(result: GodotRunResult, successMessage: string): string {
   if (result.ok) {
@@ -27,6 +28,12 @@ function inspectionOutput(result: WebBuildInspection): string {
     .join("\n");
 }
 
+function shortOutput(value?: string, maxLength = 1200): string | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…(+${text.length - maxLength})` : text;
+}
+
 export class WebExportPipelineService {
   constructor(
     private readonly projectService: ProjectService,
@@ -37,6 +44,8 @@ export class WebExportPipelineService {
 
   async exportWebZip(projectId: string): Promise<WebExportResult> {
     const project = await this.projectService.requireProject(projectId);
+    const log = getProjectLogger(project.rootPath);
+    const startedAt = Date.now();
     const run = await this.runService.createRun({
       projectId,
       kind: "godot-export",
@@ -47,6 +56,13 @@ export class WebExportPipelineService {
         { title: "Web 构建产物检查", message: "确认 build/web 包含 index.html、wasm 和 pck。" },
         { title: "打包 Web zip", message: "压缩 build/web 为可分享的 zip 文件。" }
       ]
+    });
+    log.info("export", "开始 Web zip 导出流水线", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      webBuildPath: project.webBuildPath,
+      runId: run.id
     });
 
     const [validateStep, exportStep, inspectStep, zipStep] = run.steps;
@@ -63,6 +79,16 @@ export class WebExportPipelineService {
 
     if (!validationResult.ok) {
       const failedRun = await this.runService.finishRun(run.id, "failed", "Godot 校验失败，已停止导出。");
+      log.warn("export", "Web zip 导出流水线失败：Godot 校验失败", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        exitCode: validationResult.exitCode,
+        durationMs: Date.now() - startedAt,
+        godotDurationMs: validationResult.durationMs,
+        stdout: shortOutput(validationResult.stdout, 600),
+        stderr: shortOutput(validationResult.stderr)
+      });
       return {
         ok: false,
         project: await this.projectService.getProject(projectId),
@@ -84,6 +110,16 @@ export class WebExportPipelineService {
 
     if (!exportResult.ok) {
       const failedRun = await this.runService.finishRun(run.id, "failed", "Godot Web 导出失败，已停止 zip 打包。");
+      log.warn("export", "Web zip 导出流水线失败：Godot Web 导出失败", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        exitCode: exportResult.exitCode,
+        durationMs: Date.now() - startedAt,
+        godotDurationMs: exportResult.durationMs,
+        stdout: shortOutput(exportResult.stdout, 600),
+        stderr: shortOutput(exportResult.stderr)
+      });
       return {
         ok: false,
         project: await this.projectService.getProject(projectId),
@@ -111,6 +147,13 @@ export class WebExportPipelineService {
         message
       });
       const failedRun = await this.runService.finishRun(run.id, "failed", "Web 构建产物检查失败，已停止 zip 打包。");
+      log.error("export", "Web zip 导出流水线失败：构建产物检查异常", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        durationMs: Date.now() - startedAt,
+        error
+      });
       return {
         ok: false,
         project: await this.projectService.getProject(projectId),
@@ -124,6 +167,16 @@ export class WebExportPipelineService {
 
     if (!inspectionResult.ok) {
       const failedRun = await this.runService.finishRun(run.id, "failed", "Web 构建产物不完整，已停止 zip 打包。");
+      log.warn("export", "Web zip 导出流水线失败：构建产物不完整", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        webBuildPath: inspectionResult.webBuildPath,
+        missingRequiredFiles: inspectionResult.missingRequiredFiles,
+        fileCount: inspectionResult.files.length,
+        durationMs: Date.now() - startedAt,
+        message: inspectionResult.message
+      });
       return {
         ok: false,
         project: await this.projectService.getProject(projectId),
@@ -144,6 +197,16 @@ export class WebExportPipelineService {
         message: `Web zip 已生成：${zipResult.zipPath}`
       });
       const completedRun = await this.runService.finishRun(run.id, "completed", `Web zip 已导出：${zipResult.zipPath}`);
+      log.info("export", "Web zip 导出流水线完成", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        webBuildPath: zipResult.webBuildPath,
+        zipPath: zipResult.zipPath,
+        manifestPath: zipResult.manifestPath,
+        fileCount: (zipResult.inspection ?? inspectionResult).files.length,
+        durationMs: Date.now() - startedAt
+      });
       return {
         ok: true,
         project: await this.projectService.getProject(projectId),
@@ -162,6 +225,13 @@ export class WebExportPipelineService {
         message
       });
       const failedRun = await this.runService.finishRun(run.id, "failed", "Web zip 打包失败。");
+      log.error("export", "Web zip 导出流水线失败：zip 打包异常", {
+        projectId: project.id,
+        project: project.name,
+        runId: run.id,
+        durationMs: Date.now() - startedAt,
+        error
+      });
       return {
         ok: false,
         project: await this.projectService.getProject(projectId),

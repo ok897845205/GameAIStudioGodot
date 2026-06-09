@@ -106,6 +106,29 @@ describe("npm global executable fallback", () => {
     expect(command.stdin).toBe("hello");
   });
 
+  it("delegates Agent turns to the selected adapter", async () => {
+    const service = new CliService({} as never, {
+      requireLocalCli: () => ({
+        runTurn: async function* () {
+          yield { type: "text-delta", text: "hello" };
+          yield { type: "final", content: "hello", exitCode: 0, durationMs: 2 };
+        }
+      })
+    } as never);
+
+    const chunks: unknown[] = [];
+    for await (const chunk of service.runTurn("codex", {
+      prompt: "hi",
+      workingDir: "E:/project",
+      images: [],
+      signal: new AbortController().signal
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.at(-1)).toMatchObject({ type: "final", content: "hello" });
+  });
+
   it("builds install commands with the discovered install manager executable path", () => {
     const command = buildInstallCommand(
       ["npm", "install", "-g", "@openai/codex"],

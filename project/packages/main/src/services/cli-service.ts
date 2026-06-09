@@ -1,111 +1,34 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
-import type { CliCredentialStatus, CliDiagnostic, CliTool, CliToolId, GodotRunResult } from "@gameaistudio/shared";
+import type {
+  CliCredentialStatus,
+  CliDiagnostic,
+  CliTool,
+  CliToolId,
+  CliToolCapabilities,
+  CliToolHealth,
+  GodotRunResult,
+} from "@gameaistudio/shared";
 import { CLI_TOOL_LABELS } from "@gameaistudio/shared";
 import { runProcess } from "./process-runner";
+import {
+  createRuntimeEnvironment,
+  type RuntimeEnvironment,
+} from "../ai/runtime-environment";
+import {
+  createAdapterRegistry,
+  type AdapterRegistry,
+} from "../ai/adapter-registry";
+import type { AgentTurnRequest, TurnChunk } from "../ai/adapter-contract";
+import type { LocalCliAdapter } from "../ai/adapters/local-cli-adapter";
+import { getAppLogger } from "./logger";
 
-interface CliSpec {
-  id: CliToolId;
-  command: string;
-  versionArgs: string[];
-  installCommand: string[];
-  installHint: string;
-  defaultArgs: string[];
-  promptStdinArgs: string[];
-  credentialEnvVars: string[];
-  credentialHint: string;
-}
-
-const CLI_SPECS: CliSpec[] = [
-  {
-    id: "codex",
-    command: "codex",
-    versionArgs: ["--version"],
-    installCommand: ["npm", "install", "-g", "@openai/codex"],
-    installHint: "通过 npm 全局安装 OpenAI Codex CLI，或把已安装的 codex 加入 PATH。",
-    defaultArgs: ["exec", "--skip-git-repo-check", "-"],
-    promptStdinArgs: ["exec", "--skip-git-repo-check", "-"],
-    credentialEnvVars: ["OPENAI_API_KEY"],
-    credentialHint: "Codex CLI 通常需要登录或提供 OPENAI_API_KEY。若已在 CLI 内登录，可忽略环境变量提示。"
-  },
-  {
-    id: "claude",
-    command: "claude",
-    versionArgs: ["--version"],
-    installCommand: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
-    installHint: "通过 npm 全局安装 Claude Code，或把已安装的 claude 加入 PATH。",
-    defaultArgs: ["--print"],
-    promptStdinArgs: ["--print"],
-    credentialEnvVars: ["ANTHROPIC_API_KEY"],
-    credentialHint: "Claude CLI 通常需要登录或提供 ANTHROPIC_API_KEY。若已完成 claude 登录，可忽略环境变量提示。"
-  },
-  {
-    id: "kscc",
-    command: "kscc",
-    versionArgs: ["--version"],
-    installCommand: ["npm", "install", "-g", "kscc"],
-    installHint: "安装 KSCC CLI，或在系统 PATH 中提供 kscc 命令。",
-    defaultArgs: ["--print"],
-    promptStdinArgs: ["--print"],
-    credentialEnvVars: ["KSCC_API_KEY"],
-    credentialHint: "KSCC CLI 可能需要登录或配置 KSCC_API_KEY，具体以本机 kscc 命令要求为准。"
-  },
-  {
-    id: "kimi",
-    command: "kimi",
-    versionArgs: ["--version"],
-    installCommand: ["npm", "install", "-g", "@moonshot-ai/kimi-cli"],
-    installHint: "安装 Kimi CLI，或在系统 PATH 中提供 kimi 命令。",
-    defaultArgs: ["--print"],
-    promptStdinArgs: ["--print"],
-    credentialEnvVars: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
-    credentialHint: "Kimi CLI 通常需要 Moonshot/Kimi API Key，可尝试配置 MOONSHOT_API_KEY 或 KIMI_API_KEY。"
-  }
-];
-
-function getSpec(toolId: CliToolId): CliSpec {
-  const spec = CLI_SPECS.find((candidate) => candidate.id === toolId);
-  if (!spec) {
-    throw new Error(`Unknown CLI tool: ${toolId}`);
-  }
-  return spec;
-}
-
-async function findExecutable(command: string): Promise<string | undefined> {
-  const locator =
-    process.platform === "win32"
-      ? { command: "where.exe", args: [command] }
-      : { command: "sh", args: ["-lc", `command -v ${command}`] };
-  const result = await runProcess(locator.command, locator.args, { timeoutMs: 3000 });
-  return result.exitCode === 0 ? selectExecutableFromLocatorOutput(result.stdout) : undefined;
-}
-
-export function selectExecutableFromLocatorOutput(stdout: string, platform = process.platform): string | undefined {
-  const candidates = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (platform !== "win32") {
-    return candidates[0];
-  }
-  return candidates.find((candidate) => /\.(?:cmd|exe|bat|com)$/i.test(candidate)) ?? candidates[0];
-}
-
-export function cliExecutableCandidates(command: string, directory: string, platform = process.platform): string[] {
-  const pathModule = platform === "win32" ? path.win32 : path.posix;
-  const basePath = pathModule.join(directory, command);
-  if (platform !== "win32" || path.extname(command)) {
-    return [basePath];
-  }
-  return [`${basePath}.cmd`, `${basePath}.exe`, `${basePath}.bat`, basePath];
-}
-
-export function findExecutableInDirectory(command: string, directory?: string, platform = process.platform): string | undefined {
-  if (!directory) {
-    return undefined;
-  }
-  return cliExecutableCandidates(command, directory, platform).find((candidate) => existsSync(candidate));
-}
+// Re-exported from their canonical home (ai/runtime-environment) so existing
+// imports/tests against `./cli-service` keep working.
+export {
+  selectExecutableFromLocatorOutput,
+  cliExecutableCandidates,
+  findExecutableInDirectory,
+  npmGlobalBinPath,
+} from "../ai/runtime-environment";
 
 export function evaluateCredentialStatus(
   credentialEnvVars: string[],
@@ -124,8 +47,8 @@ export function evaluateCredentialStatus(
   };
 }
 
-function installManagerCommand(spec: CliSpec): string {
-  return spec.installCommand[0] ?? "npm";
+function installManagerCommand(installCommand: string[]): string {
+  return installCommand[0] ?? "npm";
 }
 
 export function buildInstallCommand(
@@ -149,33 +72,24 @@ export function buildInstallManagerUnavailableResult(installManager: string, sta
   };
 }
 
-export function npmGlobalBinPath(prefix: string, platform = process.platform): string | undefined {
-  const normalized = prefix.trim();
-  if (!normalized || normalized === "undefined" || normalized === "null") {
-    return undefined;
-  }
-  return platform === "win32" ? normalized : `${normalized.replace(/\/+$/, "")}/bin`;
-}
-
-async function getNpmGlobalBinPath(npmExecutable: string): Promise<string | undefined> {
-  const prefix = await runProcess(npmExecutable, ["config", "get", "prefix"], { timeoutMs: 4000 });
-  if (prefix.exitCode !== 0) {
-    return undefined;
-  }
-  return npmGlobalBinPath((prefix.stdout || prefix.stderr).trim().split(/\r?\n/)[0] ?? "");
+function shortOutput(value?: string, maxLength = 1200): string | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…(+${text.length - maxLength})` : text;
 }
 
 async function getInstallManagerInfo(
-  spec: CliSpec
+  installCommand: string[],
+  env: RuntimeEnvironment
 ): Promise<{ available: boolean; version?: string; globalBinPath?: string; executablePath?: string }> {
-  const manager = installManagerCommand(spec);
-  const executable = await findExecutable(manager);
+  const manager = installManagerCommand(installCommand);
+  const executable = await env.which(manager);
   if (!executable) {
     return { available: false };
   }
   const [version, globalBinPath] = await Promise.all([
     runProcess(executable, ["--version"], { timeoutMs: 4000 }),
-    manager === "npm" ? getNpmGlobalBinPath(executable) : Promise.resolve(undefined)
+    manager === "npm" ? env.npmGlobalBin(executable) : Promise.resolve(undefined)
   ]);
   const versionText = (version.stdout || version.stderr).trim().split(/\r?\n/)[0];
   return {
@@ -201,6 +115,8 @@ export function buildCliDiagnostics(input: {
   detectedCredentialEnvVars: string[];
   installHint: string;
   credentialHint: string;
+  capabilities?: CliToolCapabilities;
+  health?: CliToolHealth;
 }): CliDiagnostic[] {
   const diagnostics: CliDiagnostic[] = [];
 
@@ -225,9 +141,35 @@ export function buildCliDiagnostics(input: {
     diagnostics.push({
       id: "cli-version-error",
       severity: "warning",
-      title: "版本检测异常",
-      detail: "命令存在，但 --version 返回异常。Agent 运行时可能失败。",
-      action: "尝试在终端手动运行该 CLI，确认它可以正常启动。"
+      title: input.health?.headlessOk === false ? "非交互模式异常" : "版本检测异常",
+      detail:
+        input.health?.detail ??
+        (input.health?.headlessOk === false
+          ? "命令存在，但非交互 Agent 调用失败。"
+          : "命令存在，但 --version 返回异常。Agent 运行时可能失败。"),
+      action:
+        input.health?.headlessOk === false
+          ? "在终端用该 CLI 的非交互模式测试登录状态，修复后刷新 CLI。"
+          : "尝试在终端手动运行该 CLI，确认它可以正常启动。"
+    });
+  }
+
+  if (input.installed && input.health?.authed === false) {
+    diagnostics.push({
+      id: "cli-auth-error",
+      severity: "error",
+      title: "认证不可用",
+      detail: input.health.detail ?? input.credentialHint,
+      action: input.credentialHint
+    });
+  }
+
+  if (input.installed && input.health?.headlessOk === true) {
+    diagnostics.push({
+      id: "cli-headless-ok",
+      severity: "ok",
+      title: "非交互可用",
+      detail: "已通过 Agent headless 调用探测。"
     });
   }
 
@@ -268,102 +210,166 @@ export function buildCliDiagnostics(input: {
     });
   }
 
+  if (input.capabilities) {
+    diagnostics.push({
+      id: "cli-capabilities",
+      severity: "info",
+      title: "Adapter 能力",
+      detail: [
+        input.capabilities.runModel,
+        input.capabilities.headless ? "headless" : "interactive",
+        input.capabilities.supportsStream ? "stream" : "one-shot",
+        input.capabilities.supportsImages ? `image:${input.capabilities.imageInputMode}` : "image:unsupported"
+      ].join(" / ")
+    });
+  }
+
   return diagnostics;
 }
 
+/**
+ * Facade over the AI adapter registry. Keeps the existing IPC contract
+ * (`discover`/`install`/`buildAgentCommand` + the `CliTool` shape) while the
+ * per-CLI knowledge now lives in `ai/adapters/*`.
+ */
 export class CliService {
+  constructor(
+    private readonly env: RuntimeEnvironment = createRuntimeEnvironment(),
+    private readonly registry: AdapterRegistry = createAdapterRegistry()
+  ) {}
+
+  private async toCliTool(
+    adapter: LocalCliAdapter,
+    checkedAt: string,
+    options: { probe?: boolean } = {}
+  ): Promise<CliTool> {
+    const { config } = adapter;
+    const installManager = installManagerCommand(config.installCommand);
+    const installManagerInfo = await getInstallManagerInfo(config.installCommand, this.env);
+    // adapter.discover already applies the npm-global-bin fallback.
+    const discovered = await adapter.discover(this.env);
+    const executablePath = discovered.executablePath;
+    // Discovery stays fast and free of real API calls (`probe: false`); the
+    // explicit "test connection" action passes `probe: true` to run the
+    // headless probe that surfaces 401 / not-logged-in.
+    const health = executablePath
+      ? await adapter.health(this.env, { probe: options.probe ?? false })
+      : ({
+          installed: false,
+          authed: "unknown",
+          headlessOk: "unknown",
+          detail: "未在 PATH 或安装目录中找到该 CLI。"
+        } satisfies CliToolHealth);
+    const credential = evaluateCredentialStatus(config.credentialEnvVars, this.env.env);
+
+    const sharedFields = {
+      id: config.id as CliToolId,
+      label: CLI_TOOL_LABELS[config.id as CliToolId],
+      command: config.command,
+      installCommand: config.installCommand,
+      installHint: config.installHint,
+      installManager,
+      installManagerPath: installManagerInfo.executablePath,
+      installManagerAvailable: installManagerInfo.available,
+      installManagerVersion: installManagerInfo.version,
+      installGlobalBinPath: installManagerInfo.globalBinPath,
+      defaultArgs: config.promptArgs,
+      credentialStatus: credential.status,
+      credentialEnvVars: config.credentialEnvVars,
+      detectedCredentialEnvVars: credential.detectedCredentialEnvVars,
+      credentialHint: config.credentialHint,
+      capabilities: adapter.capabilities,
+      health,
+      lastCheckedAt: checkedAt
+    };
+
+    if (!executablePath) {
+      const baseTool = {
+        ...sharedFields,
+        installed: false,
+        status: "missing" as const
+      };
+      return { ...baseTool, diagnostics: buildCliDiagnostics(baseTool) } satisfies CliTool;
+    }
+
+    const status =
+      health.installed && health.authed !== false && health.headlessOk !== false ? ("available" as const) : ("error" as const);
+    const baseTool = {
+      ...sharedFields,
+      installed: true,
+      status,
+      executablePath,
+      version: health.version
+    };
+    return { ...baseTool, diagnostics: buildCliDiagnostics(baseTool) } satisfies CliTool;
+  }
+
   async discover(): Promise<CliTool[]> {
     const checkedAt = new Date().toISOString();
-    return Promise.all(
-      CLI_SPECS.map(async (spec) => {
-        const installManager = installManagerCommand(spec);
-        const installManagerInfo = await getInstallManagerInfo(spec);
-        const executablePath =
-          (await findExecutable(spec.command)) ?? findExecutableInDirectory(spec.command, installManagerInfo.globalBinPath);
-        const credential = evaluateCredentialStatus(spec.credentialEnvVars);
-        if (!executablePath) {
-          const baseTool = {
-            id: spec.id,
-            label: CLI_TOOL_LABELS[spec.id],
-            command: spec.command,
-            installed: false,
-            status: "missing" as const,
-            installCommand: spec.installCommand,
-            installHint: spec.installHint,
-            installManager,
-            installManagerPath: installManagerInfo.executablePath,
-            installManagerAvailable: installManagerInfo.available,
-            installManagerVersion: installManagerInfo.version,
-            installGlobalBinPath: installManagerInfo.globalBinPath,
-            defaultArgs: spec.defaultArgs,
-            credentialStatus: credential.status,
-            credentialEnvVars: spec.credentialEnvVars,
-            detectedCredentialEnvVars: credential.detectedCredentialEnvVars,
-            credentialHint: spec.credentialHint,
-            lastCheckedAt: checkedAt
-          };
-          return {
-            ...baseTool,
-            diagnostics: buildCliDiagnostics(baseTool)
-          } satisfies CliTool;
-        }
+    return Promise.all(this.registry.listLocalCli().map((adapter) => this.toCliTool(adapter, checkedAt)));
+  }
 
-        const version = await runProcess(executablePath, spec.versionArgs, { timeoutMs: 4000 });
-        const versionText = (version.stdout || version.stderr).trim().split(/\r?\n/)[0];
-        const baseTool = {
-          id: spec.id,
-          label: CLI_TOOL_LABELS[spec.id],
-          command: spec.command,
-          installed: true,
-          status: version.exitCode === 0 ? ("available" as const) : ("error" as const),
-          executablePath,
-          version: versionText || undefined,
-          installCommand: spec.installCommand,
-          installHint: spec.installHint,
-          installManager,
-          installManagerPath: installManagerInfo.executablePath,
-          installManagerAvailable: installManagerInfo.available,
-          installManagerVersion: installManagerInfo.version,
-          installGlobalBinPath: installManagerInfo.globalBinPath,
-          defaultArgs: spec.defaultArgs,
-          credentialStatus: credential.status,
-          credentialEnvVars: spec.credentialEnvVars,
-          detectedCredentialEnvVars: credential.detectedCredentialEnvVars,
-          credentialHint: spec.credentialHint,
-          lastCheckedAt: checkedAt
-        };
-        return {
-          ...baseTool,
-          diagnostics: buildCliDiagnostics(baseTool)
-        } satisfies CliTool;
-      })
-    );
+  /**
+   * Full health check for one CLI, including the headless probe (a real model
+   * call). Triggered explicitly from the UI's "test connection" — this is what
+   * surfaces `headlessOk: false` (e.g. `claude --print` 401).
+   */
+  async testTool(toolId: CliToolId): Promise<CliTool> {
+    const startedAt = Date.now();
+    getAppLogger().info("cli", "开始测试 AI CLI 非交互连接", {
+      toolId,
+      label: CLI_TOOL_LABELS[toolId]
+    });
+    const adapter = this.registry.requireLocalCli(toolId);
+    const tool = await this.toCliTool(adapter, new Date().toISOString(), { probe: true });
+    getAppLogger().log(tool.status === "available" ? "info" : "warn", "cli", "AI CLI 非交互测试完成", {
+      toolId,
+      label: tool.label,
+      installed: tool.installed,
+      status: tool.status,
+      executablePath: tool.executablePath,
+      version: tool.version,
+      authed: tool.health.authed,
+      headlessOk: tool.health.headlessOk,
+      supportsImages: tool.capabilities.supportsImages,
+      detail: tool.health.detail,
+      durationMs: Date.now() - startedAt
+    });
+    return tool;
   }
 
   async install(toolId: CliToolId): Promise<GodotRunResult> {
-    const spec = getSpec(toolId);
     const startedAt = Date.now();
-    const installManagerInfo = await getInstallManagerInfo(spec);
-    if (!installManagerInfo.available) {
-      return buildInstallManagerUnavailableResult(installManagerCommand(spec), startedAt);
-    }
-    const { command, args } = buildInstallCommand(spec.installCommand, installManagerInfo.executablePath);
-    const result = await runProcess(command, args, { timeoutMs: 20 * 60 * 1000 });
-    return {
-      ok: result.exitCode === 0,
+    const adapter = this.registry.requireLocalCli(toolId);
+    getAppLogger().info("cli", "开始安装 AI CLI", {
+      toolId,
+      label: CLI_TOOL_LABELS[toolId],
+      installCommand: adapter.config.installCommand
+    });
+    const result = await adapter.install!(this.env);
+    getAppLogger().log(result.ok ? "info" : "warn", "cli", "AI CLI 安装完成", {
+      toolId,
+      label: CLI_TOOL_LABELS[toolId],
+      ok: result.ok,
       exitCode: result.exitCode,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      durationMs: Date.now() - startedAt
-    };
+      durationMs: Date.now() - startedAt,
+      commandDurationMs: result.durationMs,
+      stdout: shortOutput(result.stdout, 600),
+      stderr: shortOutput(result.stderr)
+    });
+    return result;
   }
 
   buildAgentCommand(toolId: CliToolId, prompt: string, executablePath?: string): { command: string; args: string[]; stdin: string } {
-    const spec = getSpec(toolId);
+    const { config } = this.registry.requireLocalCli(toolId);
     return {
-      command: executablePath ?? spec.command,
-      args: spec.promptStdinArgs,
+      command: executablePath ?? config.command,
+      args: config.promptArgs,
       stdin: prompt
     };
+  }
+
+  runTurn(toolId: CliToolId, request: AgentTurnRequest): AsyncIterable<TurnChunk> {
+    return this.registry.requireLocalCli(toolId).runTurn(request, this.env);
   }
 }

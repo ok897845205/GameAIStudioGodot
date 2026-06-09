@@ -4,6 +4,7 @@ import type { ExportResult, StudioProject, WebBuildInspection } from "@gameaistu
 import { sanitizeProjectName } from "./naming";
 import { ProjectService } from "./project-service";
 import { runProcess } from "./process-runner";
+import { getProjectLogger } from "./logger";
 
 const REQUIRED_WEB_BUILD_FILES = ["index.html", "*.wasm", "*.pck"];
 const EXPORT_MANIFEST_FILENAME = "gameaistudio-export.json";
@@ -20,6 +21,12 @@ export interface WebZipInspection {
 
 function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function shortOutput(value?: string, maxLength = 1200): string | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…(+${text.length - maxLength})` : text;
 }
 
 async function collectFiles(rootPath: string, currentPath = rootPath): Promise<Array<{ relativePath: string; size: number }>> {
@@ -175,6 +182,17 @@ export class ExportService {
   async inspectWebBuild(projectId: string): Promise<WebBuildInspection> {
     const project = await this.projectService.requireProject(projectId);
     const inspection = await inspectWebBuildPath(project.id, project.webBuildPath);
+    getProjectLogger(project.rootPath).log(inspection.ok ? "info" : "warn", "export", "Web 构建产物检查完成", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      webBuildPath: project.webBuildPath,
+      ok: inspection.ok,
+      fileCount: inspection.files.length,
+      totalBytes: inspection.totalBytes,
+      missingRequiredFiles: inspection.missingRequiredFiles,
+      message: inspection.message
+    });
     await this.projectService.updateProject({
       ...project,
       latestWebBuildInspection: inspection
@@ -184,9 +202,26 @@ export class ExportService {
 
   async zipWebBuild(projectId: string): Promise<ExportResult> {
     const project = await this.projectService.requireProject(projectId);
+    const log = getProjectLogger(project.rootPath);
+    const startedAt = Date.now();
+    log.info("export", "开始打包 Web zip", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      webBuildPath: project.webBuildPath
+    });
     const inspection = await inspectWebBuildPath(project.id, project.webBuildPath);
     if (!inspection.ok) {
       await this.projectService.updateProject({ ...project, latestWebBuildInspection: inspection });
+      log.warn("export", "Web zip 打包失败：构建产物不完整", {
+        projectId: project.id,
+        project: project.name,
+        webBuildPath: project.webBuildPath,
+        missingRequiredFiles: inspection.missingRequiredFiles,
+        fileCount: inspection.files.length,
+        message: inspection.message,
+        durationMs: Date.now() - startedAt
+      });
       throw new Error(inspection.message);
     }
     const manifestPath = await writeExportManifest(project, inspection);
@@ -202,6 +237,15 @@ export class ExportService {
         timeoutMs: 10 * 60 * 1000
       });
       if (result.exitCode !== 0) {
+        log.warn("export", "Web zip 打包失败：Compress-Archive 异常", {
+          projectId: project.id,
+          project: project.name,
+          zipPath,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          stdout: shortOutput(result.stdout, 600),
+          stderr: shortOutput(result.stderr)
+        });
         throw new Error(result.stderr || result.stdout || "Compress-Archive failed.");
       }
     } else {
@@ -210,12 +254,30 @@ export class ExportService {
         timeoutMs: 10 * 60 * 1000
       });
       if (result.exitCode !== 0) {
+        log.warn("export", "Web zip 打包失败：zip 命令异常", {
+          projectId: project.id,
+          project: project.name,
+          zipPath,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          stdout: shortOutput(result.stdout, 600),
+          stderr: shortOutput(result.stderr)
+        });
         throw new Error(result.stderr || result.stdout || "zip failed.");
       }
     }
 
     const zipInspection = await inspectWebZipPath(zipPath);
     if (!zipInspection.ok) {
+      log.warn("export", "Web zip 打包失败：zip 内容检查未通过", {
+        projectId: project.id,
+        project: project.name,
+        zipPath,
+        missingRequiredFiles: zipInspection.missingRequiredFiles,
+        entryCount: zipInspection.entries.length,
+        message: zipInspection.message,
+        durationMs: Date.now() - startedAt
+      });
       throw new Error(zipInspection.message);
     }
 
@@ -224,6 +286,17 @@ export class ExportService {
       exportZipPath: zipPath,
       latestExportManifestPath: manifestPath,
       latestWebBuildInspection: inspection
+    });
+    log.info("export", "Web zip 打包完成", {
+      projectId: updated.id,
+      project: updated.name,
+      rootPath: updated.rootPath,
+      webBuildPath: updated.webBuildPath,
+      zipPath,
+      manifestPath,
+      fileCount: inspection.files.length,
+      totalBytes: inspection.totalBytes,
+      durationMs: Date.now() - startedAt
     });
     return {
       projectId: updated.id,

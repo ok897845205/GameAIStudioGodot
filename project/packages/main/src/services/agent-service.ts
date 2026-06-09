@@ -6,17 +6,19 @@ import {
   type AgentAttachment,
   type AgentAttachmentInput,
   type AgentMessage,
+  type AgentStreamEvent,
   type CliToolId,
   type RunAgentTurnInput,
   type RunAgentTurnResult
 } from "@gameaistudio/shared";
 import { AgentContextService, type AgentContextBundle } from "./agent-context-service";
 import { appendAgentJournal, buildAgentJournalEntry } from "./agent-journal-service";
+import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
 import { ProjectFileChangeService } from "./project-file-change-service";
 import { ProjectService } from "./project-service";
-import { ProcessRegistry, type ProcessRunResult, runProcess } from "./process-runner";
+import { ProcessRegistry, type ProcessRunResult } from "./process-runner";
 import { RunService } from "./run-service";
 
 export function buildAgentPrompt(input: {
@@ -181,6 +183,41 @@ export function buildAgentStepMessage(input: {
   return firstLine ?? `${input.agentTitle} 执行失败。`;
 }
 
+function watchRunCancellation(input: {
+  runId?: string;
+  runService: RunService;
+  processRegistry: ProcessRegistry;
+  controller: AbortController;
+}): () => void {
+  if (!input.runId) {
+    return () => undefined;
+  }
+
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const tick = async (): Promise<void> => {
+    if (stopped || input.controller.signal.aborted) {
+      return;
+    }
+    if (await input.runService.isCancelled(input.runId!)) {
+      input.controller.abort();
+      input.processRegistry.cancelRun(input.runId!);
+      return;
+    }
+    timer = setTimeout(() => {
+      void tick();
+    }, 350);
+  };
+
+  void tick();
+  return () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export class AgentService {
   constructor(
     private readonly projectService: ProjectService,
@@ -188,7 +225,8 @@ export class AgentService {
     private readonly runService: RunService,
     private readonly processRegistry: ProcessRegistry,
     private readonly fileChangeService: ProjectFileChangeService,
-    private readonly contextService: AgentContextService
+    private readonly contextService: AgentContextService,
+    private readonly emitStream: (event: AgentStreamEvent) => void = () => {}
   ) {}
 
   async runTurn(
@@ -197,6 +235,17 @@ export class AgentService {
   ): Promise<RunAgentTurnResult> {
     const project = await this.projectService.requireProject(input.projectId);
     const agent = AGENT_PROFILES.find((profile) => profile.id === input.agentId) ?? AGENT_PROFILES[0];
+    const plog = getProjectLogger(project.rootPath);
+    const turnStartedAt = Date.now();
+    plog.info("agent-turn", "开始", {
+      project: project.name,
+      agent: agent.title,
+      cli: CLI_TOOL_LABELS[input.cliToolId],
+      cliToolId: input.cliToolId,
+      message: input.message.replace(/\s+/g, " ").slice(0, 200),
+      attachments: input.attachments?.length ?? 0,
+      parentRunId: options.parentRunId,
+    });
     const shouldRecordRun = options.recordRun !== false;
     const run = shouldRecordRun
       ? await this.runService.createRun({
@@ -236,13 +285,25 @@ export class AgentService {
 
     const tools = await this.cliService.discover();
     const selectedTool = tools.find((tool) => tool.id === input.cliToolId);
-    if (!selectedTool?.installed) {
+    const unavailableMessage = !selectedTool?.installed
+      ? `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。请先安装或加入 PATH。\n建议命令：${selectedTool?.installCommand.join(" ") ?? "查看 CLI 设置"}`
+      : selectedTool.status !== "available"
+        ? `${selectedTool.label} CLI 当前不可用，暂不执行 Agent 回合。\n${selectedTool.health.detail ?? "请先在设置中查看分层健康状态，修复登录或非交互模式后刷新 CLI。"}`
+        : attachments.length > 0 && !selectedTool.capabilities.supportsImages
+          ? `${selectedTool.label} Adapter 不支持图片输入。请移除图片附件，或切换到支持图片的 CLI。`
+          : undefined;
+    if (unavailableMessage) {
+      plog.warn("agent-turn", "CLI 不可用，跳过执行", {
+        agent: agent.title,
+        cli: CLI_TOOL_LABELS[input.cliToolId],
+        reason: unavailableMessage.split(/\r?\n/)[0],
+      });
       const missingMessage: AgentMessage = {
         id: createMessageId(),
         projectId: project.id,
         agentId: input.agentId,
         role: "system",
-        content: `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。请先安装或加入 PATH。\n建议命令：${selectedTool?.installCommand.join(" ") ?? "查看 CLI 设置"}`,
+        content: unavailableMessage,
         createdAt: new Date().toISOString(),
         cliToolId: input.cliToolId
       };
@@ -264,7 +325,7 @@ export class AgentService {
           status: "failed",
           message: missingMessage.content
         });
-        await this.runService.finishRun(run.id, "failed", `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。`);
+        await this.runService.finishRun(run.id, "failed", unavailableMessage.split(/\r?\n/)[0]);
       }
       return {
         project: await this.projectService.getProject(project.id),
@@ -290,11 +351,30 @@ export class AgentService {
       context,
       attachments
     });
-    const command = this.cliService.buildAgentCommand(input.cliToolId, prompt, selectedTool.executablePath);
     const beforeFiles = await this.fileChangeService.createSnapshot(project.rootPath);
+    // Stable id for the in-flight assistant message: emitted with each stream
+    // delta and reused as the final message id so the streaming bubble and the
+    // persisted message are the same node (no flicker on settle).
+    const streamingMessageId = createMessageId();
+    const controller = new AbortController();
+    const stopCancellationWatcher = watchRunCancellation({
+      runId: outputRunId,
+      runService: this.runService,
+      processRegistry: this.processRegistry,
+      controller
+    });
     let outputTail = "";
     let lastOutputFlushAt = 0;
     let outputFlush = Promise.resolve();
+    let streamedStdout = "";
+    let streamedStderr = "";
+    let finalStdout = "";
+    let finalStderr = "";
+    let adapterError = "";
+    let exitCode: number | null = null;
+    let durationMs = 0;
+    let cancelled = false;
+    let timedOut = false;
 
     const scheduleOutputFlush = (chunk: string): void => {
       outputTail = `${outputTail}${chunk}`.slice(-6000);
@@ -313,15 +393,78 @@ export class AgentService {
         .catch(() => undefined);
     };
 
-    const result = await runProcess(command.command, command.args, {
-      cwd: project.rootPath,
-      timeoutMs: 15 * 60 * 1000,
-      stdin: command.stdin,
-      processKey: outputRunId && outputStepId ? `${outputRunId}:${outputStepId}` : undefined,
-      registry: this.processRegistry,
-      onStdout: scheduleOutputFlush,
-      onStderr: scheduleOutputFlush
-    });
+    try {
+      for await (const chunk of this.cliService.runTurn(input.cliToolId, {
+        prompt,
+        workingDir: project.rootPath,
+        contextPath: context.contextPath,
+        images: attachments.map((attachment, index) => ({
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          dataUrl: input.attachments?.[index]?.dataUrl ?? "",
+          path: path.join(project.rootPath, attachment.projectRelativePath)
+        })),
+        signal: controller.signal
+      })) {
+        switch (chunk.type) {
+          case "text-delta":
+            streamedStdout += chunk.text;
+            scheduleOutputFlush(chunk.text);
+            this.emitStream({
+              projectId: project.id,
+              agentId: input.agentId,
+              messageId: streamingMessageId,
+              delta: chunk.text,
+              done: false
+            });
+            break;
+          case "stderr-delta":
+            streamedStderr += chunk.text;
+            scheduleOutputFlush(chunk.text);
+            break;
+          case "step":
+            scheduleOutputFlush(`\n[${chunk.title}]\n`);
+            break;
+          case "error":
+            adapterError = adapterError ? `${adapterError}\n${chunk.error}` : chunk.error;
+            scheduleOutputFlush(`\n${chunk.error}\n`);
+            break;
+          case "final":
+            finalStdout = chunk.content;
+            finalStderr = chunk.stderr ?? "";
+            exitCode = chunk.exitCode;
+            durationMs = chunk.durationMs;
+            cancelled = Boolean(chunk.cancelled);
+            timedOut = Boolean(chunk.timedOut);
+            break;
+        }
+      }
+    } catch (error) {
+      adapterError = error instanceof Error ? error.message : String(error);
+      scheduleOutputFlush(`\n${adapterError}\n`);
+    } finally {
+      stopCancellationWatcher();
+      this.emitStream({
+        projectId: project.id,
+        agentId: input.agentId,
+        messageId: streamingMessageId,
+        delta: "",
+        done: true
+      });
+    }
+
+    const result: ProcessRunResult = {
+      exitCode,
+      stdout: finalStdout || streamedStdout,
+      stderr: finalStderr || streamedStderr || adapterError,
+      durationMs,
+      cancelled: cancelled || controller.signal.aborted,
+      timedOut
+    };
+    const finalVisibleOutput = processOutput(result);
+    if (finalVisibleOutput && finalVisibleOutput !== outputTail.trim()) {
+      outputTail = finalVisibleOutput.slice(-6000);
+    }
     if (outputRunId && outputStepId && outputTail) {
       outputFlush = outputFlush
         .then(() => this.runService.updateStep(outputRunId, outputStepId, { output: outputTail, outputUpdatedAt: new Date().toISOString() }))
@@ -333,7 +476,7 @@ export class AgentService {
     const fileChanges = this.fileChangeService.compareSnapshots(beforeFiles, afterFiles);
 
     const agentMessage: AgentMessage = {
-      id: createMessageId(),
+      id: streamingMessageId,
       projectId: project.id,
       agentId: input.agentId,
       role: "agent",
@@ -356,6 +499,17 @@ export class AgentService {
     });
     const messages = await this.projectService.appendMessages(project.id, [userMessage, agentMessage]);
     const succeeded = result.exitCode === 0;
+    const turnStatus = result.cancelled ? "cancelled" : succeeded ? "completed" : "failed";
+    plog.log(turnStatus === "failed" ? "error" : "info", "agent-turn", `结束(${turnStatus})`, {
+      agent: agent.title,
+      cli: CLI_TOOL_LABELS[input.cliToolId],
+      exitCode: result.exitCode ?? null,
+      durationMs: Date.now() - turnStartedAt,
+      cliDurationMs: result.durationMs,
+      timedOut: result.timedOut,
+      fileChanges: fileChanges.length,
+      stderr: turnStatus === "failed" ? result.stderr.trim().slice(-800) || undefined : undefined,
+    });
     await appendAgentJournal(
       project.rootPath,
       buildAgentJournalEntry({

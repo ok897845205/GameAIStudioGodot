@@ -4,6 +4,7 @@ import type {
   GitCommit,
   GitCommitInput,
   GitCommitResult,
+  GitFileChange,
   GitProjectStatus,
   GitRestoreInput,
   GitRestoreResult,
@@ -12,6 +13,7 @@ import type {
 } from "@gameaistudio/shared";
 import { ProjectService } from "./project-service";
 import { runProcess, type ProcessRunResult, type ProcessRunOptions } from "./process-runner";
+import { getProjectLogger } from "./logger";
 
 type CommandRunner = typeof runProcess;
 
@@ -37,12 +39,28 @@ export function buildProjectGitignore(): string {
 }
 
 export function parseGitStatusPorcelain(stdout: string): string[] {
+  return parseGitStatusChanges(stdout).map((change) => change.path);
+}
+
+export function parseGitStatusChanges(stdout: string): GitFileChange[] {
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => line.slice(3).trim())
-    .filter(Boolean);
+    .map((line) => {
+      const rawStatus = line.slice(0, 2);
+      const rawPath = line.slice(3).trim();
+      const [originalPath, nextPath] =
+        rawStatus.includes("R") || rawStatus.includes("C") ? rawPath.split(" -> ") : [undefined, rawPath];
+      const path = (nextPath ?? rawPath).trim();
+      return {
+        path,
+        kind: gitChangeKind(rawStatus),
+        rawStatus,
+        ...(originalPath && nextPath ? { originalPath: originalPath.trim() } : {})
+      } satisfies GitFileChange;
+    })
+    .filter((change) => Boolean(change.path));
 }
 
 export function parseGitLog(stdout: string): GitCommit[] {
@@ -83,6 +101,23 @@ function commitResultMessage(result: ProcessRunResult): string {
   return firstOutputLine(result) ?? "Git 命令未返回输出。";
 }
 
+function shortOutput(value?: string, maxLength = 1200): string | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…(+${text.length - maxLength})` : text;
+}
+
+function gitChangeKind(rawStatus: string): GitFileChange["kind"] {
+  if (rawStatus === "??") return "untracked";
+  if (rawStatus.includes("U") || rawStatus === "AA" || rawStatus === "DD") return "conflicted";
+  if (rawStatus.includes("R")) return "renamed";
+  if (rawStatus.includes("C")) return "copied";
+  if (rawStatus.includes("D")) return "deleted";
+  if (rawStatus.includes("A")) return "added";
+  if (rawStatus.includes("M")) return "modified";
+  return "unknown";
+}
+
 export class GitService {
   constructor(
     private readonly projectService: ProjectService,
@@ -101,6 +136,7 @@ export class GitService {
         initialized: false,
         clean: true,
         recentCommits: [],
+        changes: [],
         changedFiles: [],
         message: "未检测到 Git，无法启用项目版本管理。",
         error: commitResultMessage(gitVersion),
@@ -115,6 +151,7 @@ export class GitService {
         initialized: false,
         clean: true,
         recentCommits: [],
+        changes: [],
         changedFiles: [],
         message: "此项目尚未启用 Git 版本管理。",
         lastCheckedAt: checkedAt
@@ -135,6 +172,7 @@ export class GitService {
         initialized: false,
         clean: true,
         recentCommits: [],
+        changes: [],
         changedFiles: [],
         message: "Git 仓库状态读取失败。",
         error: commitResultMessage(status),
@@ -142,7 +180,8 @@ export class GitService {
       };
     }
 
-    const changedFiles = parseGitStatusPorcelain(status.stdout);
+    const changes = parseGitStatusChanges(status.stdout);
+    const changedFiles = changes.map((change) => change.path);
     return {
       projectId,
       available: true,
@@ -151,6 +190,7 @@ export class GitService {
       branch: branch.exitCode === 0 ? firstOutputLine(branch) : undefined,
       head: head.exitCode === 0 ? firstOutputLine(head) : undefined,
       recentCommits: log.exitCode === 0 ? parseGitLog(log.stdout) : [],
+      changes,
       changedFiles,
       message: changedFiles.length === 0 ? "Git 工作区干净。" : `Git 工作区有 ${changedFiles.length} 个未提交变更。`,
       lastCheckedAt: checkedAt
@@ -159,8 +199,15 @@ export class GitService {
 
   async initializeProject(projectId: string, message = "初始化 GameAIStudio Godot 项目"): Promise<GitCommitResult> {
     const project = await this.projectService.requireProject(projectId);
+    getProjectLogger(project.rootPath).info("git", "开始初始化 Git 版本库", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      message
+    });
     const unavailable = await this.unavailableResult(project, "未检测到 Git，已跳过 Git 初始化。");
     if (unavailable) {
+      this.logGitResult(project, "Git 初始化跳过", unavailable);
       return unavailable;
     }
 
@@ -168,18 +215,28 @@ export class GitService {
     if (!(await pathExists(path.join(project.rootPath, ".git")))) {
       const init = await this.git(project, ["init"], { timeoutMs: 10000 });
       if (init.exitCode !== 0) {
-        return this.commandFailure(project, init, "Git 初始化失败。");
+        const failed = await this.commandFailure(project, init, "Git 初始化失败。");
+        this.logGitResult(project, "Git 初始化失败", failed);
+        return failed;
       }
     }
 
-    return this.commitTrackedChanges(project, message);
+    const result = await this.commitTrackedChanges(project, message);
+    this.logGitResult(project, "Git 初始化完成", result);
+    return result;
   }
 
   async commit(input: GitCommitInput): Promise<GitCommitResult> {
     const project = await this.projectService.requireProject(input.projectId);
+    getProjectLogger(project.rootPath).info("git", "开始保存 Git 版本", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      message: input.message
+    });
     const status = await this.getStatus(project.id);
     if (!status.available) {
-      return this.withProject(project, {
+      const result = await this.withProject(project, {
         ok: false,
         status,
         message: status.message,
@@ -187,20 +244,34 @@ export class GitService {
         stderr: status.error ?? status.message,
         exitCode: null
       });
+      this.logGitResult(project, "Git 保存失败", result);
+      return result;
     }
     if (!status.initialized) {
+      getProjectLogger(project.rootPath).info("git", "项目尚未启用 Git，保存动作将先初始化版本库", {
+        projectId: project.id,
+        project: project.name
+      });
       return this.initializeProject(project.id, input.message);
     }
 
     await this.writeGitignore(project);
-    return this.commitTrackedChanges(project, input.message);
+    const result = await this.commitTrackedChanges(project, input.message);
+    this.logGitResult(project, "Git 保存完成", result);
+    return result;
   }
 
   async restore(input: GitRestoreInput): Promise<GitRestoreResult> {
     const project = await this.projectService.requireProject(input.projectId);
+    getProjectLogger(project.rootPath).info("git", "开始还原 Git 版本", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      commitHash: input.commitHash
+    });
     const status = await this.getStatus(project.id);
     if (!status.available || !status.initialized) {
-      return this.withProject(project, {
+      const result = await this.withProject(project, {
         ok: false,
         status,
         message: status.initialized ? "Git 不可用，无法还原版本。" : "项目尚未启用 Git，无法还原版本。",
@@ -208,11 +279,13 @@ export class GitService {
         stderr: status.error ?? status.message,
         exitCode: null
       });
+      this.logGitResult(project, "Git 还原失败", result);
+      return result;
     }
 
     const target = await this.resolveCommit(project, status, input.commitHash.trim());
     if (!target) {
-      return this.withProject(project, {
+      const result = await this.withProject(project, {
         ok: false,
         status,
         message: "未找到要还原的 Git 提交。",
@@ -220,12 +293,14 @@ export class GitService {
         stderr: input.commitHash,
         exitCode: null
       });
+      this.logGitResult(project, "Git 还原失败", result, { requestedCommitHash: input.commitHash });
+      return result;
     }
 
     const result = await this.git(project, ["reset", "--hard", target.hash], { timeoutMs: 20000 });
     if (result.exitCode !== 0) {
       const nextStatus = await this.getStatus(project.id);
-      return this.withProject(project, {
+      const failed = await this.withProject(project, {
         ok: false,
         status: nextStatus,
         message: "Git 版本还原失败。",
@@ -233,10 +308,15 @@ export class GitService {
         stderr: result.stderr || commitResultMessage(result),
         exitCode: result.exitCode
       });
+      this.logGitResult(project, "Git 还原失败", failed, {
+        targetHash: target.hash,
+        targetShortHash: target.shortHash
+      });
+      return failed;
     }
 
     const nextStatus = await this.getStatus(project.id);
-    return this.withProject(project, {
+    const restored = await this.withProject(project, {
       ok: true,
       status: nextStatus,
       message: `已还原到 Git 版本：${target.shortHash} ${target.message}`,
@@ -244,6 +324,12 @@ export class GitService {
       stderr: result.stderr,
       exitCode: result.exitCode
     });
+    this.logGitResult(project, "Git 还原完成", restored, {
+      targetHash: target.hash,
+      targetShortHash: target.shortHash,
+      targetMessage: target.message
+    });
+    return restored;
   }
 
   private async unavailableResult(project: StudioProject, message: string): Promise<GitCommitResult | undefined> {
@@ -360,6 +446,32 @@ export class GitService {
         gitStatus: result.status
       } satisfies ProjectDetails
     };
+  }
+
+  private logGitResult(
+    project: StudioProject,
+    message: string,
+    result: Omit<GitCommitResult, "project"> | Omit<GitRestoreResult, "project">,
+    extra: Record<string, unknown> = {}
+  ): void {
+    const changedFiles = result.status.changedFiles ?? [];
+    getProjectLogger(project.rootPath).log(result.ok ? "info" : "warn", "git", message, {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      ok: result.ok,
+      exitCode: result.exitCode,
+      resultMessage: result.message,
+      branch: result.status.branch,
+      head: result.status.head,
+      initialized: result.status.initialized,
+      clean: result.status.clean,
+      changedFileCount: changedFiles.length,
+      changedFiles: changedFiles.slice(0, 20),
+      stdout: shortOutput(result.stdout, 600),
+      stderr: shortOutput(result.stderr),
+      ...extra
+    });
   }
 
   private async writeGitignore(project: StudioProject): Promise<void> {

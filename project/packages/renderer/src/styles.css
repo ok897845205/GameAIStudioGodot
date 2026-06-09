@@ -344,6 +344,10 @@ select:focus {
   color: var(--red);
 }
 
+.team-cli-route.error small {
+  color: var(--red);
+}
+
 .team-cli-routes p {
   margin: 4px 0 0;
   color: var(--amber);
@@ -596,6 +600,32 @@ select:focus {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cli-capabilities {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.cli-capabilities span {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow: hidden;
+  border: 1px solid #dbe6f2;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #536174;
+  font-size: 10px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-capabilities span.muted {
+  color: #8a94a6;
+  background: #f2f5f8;
 }
 
 .cli-diagnostics {
@@ -1015,6 +1045,16 @@ select:focus {
   inset: 0;
   opacity: 0;
   cursor: pointer;
+}
+
+.attach-button.disabled {
+  color: #8a94a6;
+  background: #eef3f8;
+  cursor: not-allowed;
+}
+
+.attach-button.disabled input {
+  cursor: not-allowed;
 }
 
 .composer-option {

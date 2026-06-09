@@ -8,6 +8,7 @@ import {
   type ProjectDetails,
   type StudioProject
 } from "@gameaistudio/shared";
+import { getAppLogger, getProjectLogger } from "./logger";
 import { createMessageId, createProjectId, sanitizeProjectName } from "./naming";
 import { getTemplatePath, type StudioPaths } from "./resource-paths";
 import { StudioStore } from "./store";
@@ -78,6 +79,7 @@ export class ProjectService {
       name: input.name.trim() || safeName,
       dimension: input.dimension,
       prompt: input.prompt.trim(),
+      agentCliToolIds: input.agentCliToolIds,
       rootPath,
       webBuildPath: path.join(rootPath, "build", "web"),
       createdAt: now,
@@ -93,6 +95,15 @@ export class ProjectService {
 
     const introMessages = this.createIntroMessages(project);
     await this.store.appendMessages(introMessages);
+
+    getProjectLogger(rootPath).info("project", "创建项目", {
+      project: project.name,
+      projectId: id,
+      dimension: project.dimension,
+      prompt: project.prompt,
+      agentCliToolIds: project.agentCliToolIds,
+      rootPath,
+    });
 
     return {
       ...project,
@@ -134,6 +145,11 @@ export class ProjectService {
 
   async deleteProject(projectId: string): Promise<StudioProject> {
     const project = await this.requireProject(projectId);
+    getAppLogger().info("project", "删除项目", {
+      project: project.name,
+      projectId,
+      rootPath: project.rootPath,
+    });
     await rm(project.rootPath, { recursive: true, force: true });
     await this.store.deleteProject(projectId);
     return project;
@@ -241,7 +257,7 @@ export class ProjectService {
         role: "agent",
         createdAt: now,
         content: `我会先把“${project.prompt}”拆成可玩的第一版目标。可以直接让制作人规划，也可以切到程序、美术或 QA 让对应 Agent 开始工作。`,
-        cliToolId: AGENT_PROFILES[0]?.defaultCli
+        cliToolId: project.agentCliToolIds?.producer ?? AGENT_PROFILES[0]?.defaultCli
       }
     ];
   }

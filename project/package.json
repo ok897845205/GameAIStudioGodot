@@ -16,6 +16,7 @@
     "preview": "electron-vite preview",
     "smoke:templates": "node scripts/smoke-godot-templates.mjs",
     "smoke:webzip": "node scripts/smoke-webzip.mjs",
+    "probe:cli": "node scripts/probe-cli.mjs",
     "test": "pnpm run assets:icon && vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --workspace-concurrency=1 typecheck",
     "verify:release": "pnpm typecheck && pnpm test && pnpm smoke:webzip && pnpm dist:win"

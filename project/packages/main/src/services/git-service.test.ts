@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import type { ProjectDetails, StudioProject } from "@gameaistudio/shared";
 import { describe, expect, it } from "vitest";
-import { buildProjectGitignore, GitService, parseGitLog, parseGitStatusPorcelain } from "./git-service";
+import { buildProjectGitignore, GitService, parseGitLog, parseGitStatusChanges, parseGitStatusPorcelain } from "./git-service";
+import { getProjectLogger } from "./logger";
 import type { ProcessRunOptions, ProcessRunResult } from "./process-runner";
 
 function processResult(exitCode: number | null, stdout = "", stderr = ""): ProcessRunResult {
@@ -47,7 +48,35 @@ describe("parseGitStatusPorcelain", () => {
     expect(parseGitStatusPorcelain(" M scripts/player.gd\n?? assets/gold.png\nR  old.gd -> new.gd\n")).toEqual([
       "scripts/player.gd",
       "assets/gold.png",
-      "old.gd -> new.gd"
+      "new.gd"
+    ]);
+  });
+});
+
+describe("parseGitStatusChanges", () => {
+  it("keeps status kind and original path for intuitive UI display", () => {
+    expect(parseGitStatusChanges(" M scripts/player.gd\n?? assets/gold.png\nD  old.gd\nR  old_name.gd -> new_name.gd\n")).toEqual([
+      {
+        path: "scripts/player.gd",
+        kind: "modified",
+        rawStatus: " M"
+      },
+      {
+        path: "assets/gold.png",
+        kind: "untracked",
+        rawStatus: "??"
+      },
+      {
+        path: "old.gd",
+        kind: "deleted",
+        rawStatus: "D "
+      },
+      {
+        path: "new_name.gd",
+        originalPath: "old_name.gd",
+        kind: "renamed",
+        rawStatus: "R "
+      }
     ]);
   });
 });
@@ -113,6 +142,10 @@ describe("GitService", () => {
       expect(status.head).toBe("abc123");
       expect(status.recentCommits[0]?.message).toBe("Initial");
       expect(status.changedFiles).toEqual(["scripts/player.gd", "assets/gold.png"]);
+      expect(status.changes).toEqual([
+        expect.objectContaining({ path: "scripts/player.gd", kind: "modified" }),
+        expect.objectContaining({ path: "assets/gold.png", kind: "untracked" })
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -165,6 +198,10 @@ describe("GitService", () => {
       expect(calls.some((args) => args[0] === "init")).toBe(true);
       expect(calls.some((args) => args.includes("commit") && args.includes("初始化"))).toBe(true);
       expect(await readFile(path.join(dir, ".gitignore"), "utf8")).toContain(".gameaistudio/attachments/");
+      await getProjectLogger(project.rootPath).flush();
+      const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
+      expect(log).toContain("[git] 开始初始化 Git 版本库");
+      expect(log).toContain("[git] Git 初始化完成");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -208,6 +245,10 @@ describe("GitService", () => {
       expect(result.ok).toBe(true);
       expect(result.message).toContain("Playable version");
       expect(calls.some((args) => args.join(" ") === "reset --hard abc123456")).toBe(true);
+      await getProjectLogger(project.rootPath).flush();
+      const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
+      expect(log).toContain("[git] 开始还原 Git 版本");
+      expect(log).toContain("[git] Git 还原完成");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

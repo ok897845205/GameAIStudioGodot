@@ -77,6 +77,7 @@ export function useAgentChatRuntime(opts: {
   messages: readonly AgentMessage[];
   isRunning: boolean;
   isSendDisabled?: boolean;
+  supportsImages?: boolean;
   onSend: (input: AgentSendInput) => Promise<void>;
 }): AssistantRuntime {
   const attachments = useMemo(() => new SimpleImageAttachmentAdapter(), []);
@@ -85,7 +86,7 @@ export function useAgentChatRuntime(opts: {
     isRunning: opts.isRunning,
     isSendDisabled: opts.isSendDisabled,
     convertMessage: agentMessageToThreadMessageLike,
-    adapters: { attachments },
+    adapters: opts.supportsImages ? { attachments } : undefined,
     onNew: async (message) => {
       await opts.onSend({
         text: appendMessageText(message),

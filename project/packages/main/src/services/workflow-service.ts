@@ -19,6 +19,7 @@ import { AutoPreviewService } from "./auto-preview-service";
 import { CliService } from "./cli-service";
 import { ExportService } from "./export-service";
 import { GodotService } from "./godot-service";
+import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { ProjectService } from "./project-service";
 import { RunService } from "./run-service";
@@ -45,6 +46,10 @@ function buildWorkflowMessage(agent: AgentProfile, userMessage: string, index: n
     "用户给团队的总目标：",
     userMessage
   ].join("\n");
+}
+
+function chooseWorkflowCli(agent: AgentProfile, tools: CliTool[], input: RunStudioWorkflowInput): CliToolId {
+  return input.agentCliToolIds?.[agent.id] ?? chooseAgentCli(agent, tools, input.preferredCliToolId);
 }
 
 function inspectionOutput(result: WebBuildInspection): string {
@@ -115,7 +120,7 @@ export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], 
     ...agents.map((agent, index) => ({
       title: `${index + 1}. ${agent.title}：${agent.specialty}`,
       agentId: agent.id,
-      cliToolId: chooseAgentCli(agent, tools, input.preferredCliToolId),
+      cliToolId: chooseWorkflowCli(agent, tools, input),
       message: buildWorkflowMessage(agent, input.message, index)
     })),
     ...(input.autoExportWeb
@@ -154,7 +159,7 @@ export function isAgentWorkflowStepFailed(input: {
   tools: CliTool[];
   message?: AgentMessage;
 }): boolean {
-  if (!input.tools.some((tool) => tool.id === input.cliToolId && tool.installed)) {
+  if (!input.tools.some((tool) => tool.id === input.cliToolId && tool.installed && tool.status === "available")) {
     return true;
   }
   if (!input.message || input.message.role === "system") {
@@ -204,6 +209,21 @@ export class WorkflowService {
     const agentIds = input.agentIds?.length ? input.agentIds : DEFAULT_WORKFLOW_AGENTS;
     const agents = agentIds.map(agentById);
     const tools = await this.cliService.discover();
+    const plog = getProjectLogger(project.rootPath);
+    const workflowStartedAt = Date.now();
+    plog.info("workflow", "团队工作流开始", {
+      project: project.name,
+      agents: agents.map((a) => a.title),
+      cliRoutes: agents.map((agent) => ({
+        agentId: agent.id,
+        agent: agent.title,
+        cliToolId: chooseWorkflowCli(agent, tools, input),
+        cli: CLI_TOOL_LABELS[chooseWorkflowCli(agent, tools, input)]
+      })),
+      autoExportWeb: input.autoExportWeb,
+      autoPackageWebZip: input.autoPackageWebZip,
+      autoStartPreview: input.autoStartPreview,
+    });
 
     const run = await this.runService.createRun({
       projectId: project.id,
@@ -228,7 +248,7 @@ export class WorkflowService {
         continue;
       }
       await this.runService.updateStep(run.id, step.id, { status: "running" });
-      const cliToolId = step.cliToolId ?? chooseAgentCli(agent, tools, input.preferredCliToolId);
+      const cliToolId = step.cliToolId ?? chooseWorkflowCli(agent, tools, input);
       const result = await this.agentService.runTurn(
         {
           projectId: project.id,
@@ -281,6 +301,11 @@ export class WorkflowService {
         "failed",
         `团队工作流结束，所有 ${failedAgentSteps} 个 Agent 步骤失败，已跳过自动交付步骤。`
       );
+      plog.error("workflow", "团队工作流失败：所有 Agent 步骤失败", {
+        project: project.name,
+        failedAgentSteps,
+        durationMs: Date.now() - workflowStartedAt,
+      });
       await this.projectService.appendMessages(project.id, [
         buildWorkflowSummaryMessage({
           projectId: project.id,
@@ -430,6 +455,14 @@ export class WorkflowService {
       failedSteps > 0 ? "failed" : "completed",
       failedSteps > 0 ? `团队工作流完成，但有 ${failedSteps} 个步骤失败。` : "团队工作流完成，项目已推进到下一版。"
     );
+    plog.log(failedSteps > 0 ? "warn" : "info", "workflow", `团队工作流结束(${latestRun.status})`, {
+      project: project.name,
+      failedSteps,
+      durationMs: Date.now() - workflowStartedAt,
+      webExport: exportResult ? (exportResult.ok ? "ok" : "failed") : "skipped",
+      webZip: zipResult?.zipPath ? "ok" : "skipped",
+      preview: previewResult?.url ?? "skipped",
+    });
     await this.projectService.appendMessages(project.id, [
       buildWorkflowSummaryMessage({
         projectId: project.id,

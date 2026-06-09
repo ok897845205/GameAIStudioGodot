@@ -16,17 +16,20 @@ export function AgentChat({
   messages,
   isRunning,
   isSendDisabled,
+  supportsImages,
   onSend,
 }: {
   messages: readonly AgentMessage[];
   isRunning: boolean;
   isSendDisabled?: boolean;
+  supportsImages?: boolean;
   onSend: (input: AgentSendInput) => Promise<void>;
 }) {
   const runtime = useAgentChatRuntime({
     messages,
     isRunning,
     isSendDisabled,
+    supportsImages,
     onSend,
   });
 

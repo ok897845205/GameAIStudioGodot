@@ -1,5 +1,7 @@
 import { ipcMain, shell } from "electron";
+import type { IpcMainInvokeEvent } from "electron";
 import type { CliToolId, CreateProjectInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput } from "@gameaistudio/shared";
+import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
@@ -39,6 +41,47 @@ interface IpcDependencies {
   processRegistry: ProcessRegistry;
 }
 
+type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
+
+function summarizeArg(arg: unknown): LogMeta {
+  if (typeof arg === "string") {
+    return { arg: arg.length > 80 ? `${arg.slice(0, 80)}…` : arg };
+  }
+  if (arg && typeof arg === "object") {
+    const source = arg as Record<string, unknown>;
+    const meta: LogMeta = {};
+    for (const key of ["projectId", "agentId", "cliToolId", "toolId", "name", "dimension", "runId", "message"]) {
+      if (key in source && source[key] !== undefined) {
+        const value = source[key];
+        meta[key] =
+          typeof value === "string" && value.length > 120 ? `${value.slice(0, 120)}…` : value;
+      }
+    }
+    if ("attachments" in source && Array.isArray(source.attachments)) {
+      meta.attachments = source.attachments.length;
+    }
+    return meta;
+  }
+  return {};
+}
+
+/** Wrap an IPC handler so every invocation, result timing, and error lands in app.log. */
+function handle(channel: string, handler: IpcHandler): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const log = getAppLogger();
+    const start = Date.now();
+    log.info("ipc", `→ ${channel}`, summarizeArg(args[0]));
+    try {
+      const result = await handler(event, ...args);
+      log.info("ipc", `✓ ${channel}`, { ms: Date.now() - start });
+      return result;
+    } catch (error) {
+      log.error("ipc", `✗ ${channel}`, { ms: Date.now() - start, error });
+      throw error;
+    }
+  });
+}
+
 async function projectDetailsWithGit(deps: IpcDependencies, projectId: string) {
   const [project, gitStatus] = await Promise.all([deps.projectService.getProject(projectId), deps.gitService.getStatus(projectId)]);
   return {
@@ -48,7 +91,7 @@ async function projectDetailsWithGit(deps: IpcDependencies, projectId: string) {
 }
 
 export function registerIpcHandlers(deps: IpcDependencies): void {
-  ipcMain.handle("studio:bootstrap", async () => ({
+  handle("studio:bootstrap", async () => ({
     dataRoot: deps.paths.dataRoot,
     templatesRoot: deps.paths.templatesRoot,
     godotExecutablePath: deps.paths.godotConsolePath,
@@ -59,16 +102,17 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     cliTools: await deps.cliService.discover()
   }));
 
-  ipcMain.handle("environment:refresh", async () => deps.environmentService.inspect());
-  ipcMain.handle("cli:refresh", async () => deps.cliService.discover());
-  ipcMain.handle("cli:install", async (_event, toolId: CliToolId) => deps.cliService.install(toolId));
+  handle("environment:refresh", async () => deps.environmentService.inspect());
+  handle("cli:refresh", async () => deps.cliService.discover());
+  handle("cli:test", async (_event, toolId: CliToolId) => deps.cliService.testTool(toolId));
+  handle("cli:install", async (_event, toolId: CliToolId) => deps.cliService.install(toolId));
 
-  ipcMain.handle("projects:create", async (_event, input: CreateProjectInput) => {
+  handle("projects:create", async (_event, input: CreateProjectInput) => {
     const project = await deps.projectService.createProject(input);
     await deps.gitService.initializeProject(project.id);
     return projectDetailsWithGit(deps, project.id);
   });
-  ipcMain.handle("projects:delete", async (_event, projectId: string) => {
+  handle("projects:delete", async (_event, projectId: string) => {
     await deps.autoPreviewService.stop(projectId).catch(() => undefined);
     await deps.previewServer.stop(projectId).catch(() => undefined);
     const deleted = await deps.projectService.deleteProject(projectId);
@@ -81,27 +125,27 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       selectedProject
     };
   });
-  ipcMain.handle("projects:list", async () => deps.projectService.listProjects());
-  ipcMain.handle("projects:get", async (_event, projectId: string) => projectDetailsWithGit(deps, projectId));
-  ipcMain.handle("projects:git-status", async (_event, projectId: string) => deps.gitService.getStatus(projectId));
-  ipcMain.handle("projects:git-commit", async (_event, input: GitCommitInput) => deps.gitService.commit(input));
-  ipcMain.handle("projects:git-restore", async (_event, input: GitRestoreInput) => deps.gitService.restore(input));
-  ipcMain.handle("projects:file-preview", async (_event, input: ProjectFilePreviewInput) => deps.filePreviewService.read(input));
-  ipcMain.handle("runs:list", async (_event, projectId: string) => deps.runService.listRuns(projectId));
-  ipcMain.handle("runs:cancel", async (_event, runId: string) => {
+  handle("projects:list", async () => deps.projectService.listProjects());
+  handle("projects:get", async (_event, projectId: string) => projectDetailsWithGit(deps, projectId));
+  handle("projects:git-status", async (_event, projectId: string) => deps.gitService.getStatus(projectId));
+  handle("projects:git-commit", async (_event, input: GitCommitInput) => deps.gitService.commit(input));
+  handle("projects:git-restore", async (_event, input: GitRestoreInput) => deps.gitService.restore(input));
+  handle("projects:file-preview", async (_event, input: ProjectFilePreviewInput) => deps.filePreviewService.read(input));
+  handle("runs:list", async (_event, projectId: string) => deps.runService.listRuns(projectId));
+  handle("runs:cancel", async (_event, runId: string) => {
     const cancelledProcesses = deps.processRegistry.cancelRun(runId);
     return deps.runService.cancelRun(
       runId,
       cancelledProcesses > 0 ? `已取消 ${cancelledProcesses} 个本地 CLI 进程。` : "取消请求已记录。"
     );
   });
-  ipcMain.handle("projects:preview", async (_event, projectId: string) => deps.previewServer.start(projectId));
-  ipcMain.handle("projects:auto-preview:start", async (_event, projectId: string) => deps.autoPreviewService.start(projectId));
-  ipcMain.handle("projects:auto-preview:stop", async (_event, projectId: string) => deps.autoPreviewService.stop(projectId));
-  ipcMain.handle("projects:godot-open-editor", async (_event, projectId: string) => deps.godotService.openEditor(projectId));
-  ipcMain.handle("projects:godot-export", async (_event, projectId: string) => deps.godotService.exportWeb(projectId));
-  ipcMain.handle("projects:validate", async (_event, projectId: string) => deps.godotService.validate(projectId));
-  ipcMain.handle("projects:export-web", async (_event, projectId: string) => {
+  handle("projects:preview", async (_event, projectId: string) => deps.previewServer.start(projectId));
+  handle("projects:auto-preview:start", async (_event, projectId: string) => deps.autoPreviewService.start(projectId));
+  handle("projects:auto-preview:stop", async (_event, projectId: string) => deps.autoPreviewService.stop(projectId));
+  handle("projects:godot-open-editor", async (_event, projectId: string) => deps.godotService.openEditor(projectId));
+  handle("projects:godot-export", async (_event, projectId: string) => deps.godotService.exportWeb(projectId));
+  handle("projects:validate", async (_event, projectId: string) => deps.godotService.validate(projectId));
+  handle("projects:export-web", async (_event, projectId: string) => {
     const result = await deps.webExportPipelineService.exportWebZip(projectId);
     return {
       ...result,
@@ -109,14 +153,14 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     };
   });
 
-  ipcMain.handle("agents:run-turn", async (_event, input: RunAgentTurnInput) => {
+  handle("agents:run-turn", async (_event, input: RunAgentTurnInput) => {
     const result = await runAgentTurnWithOptionalPreview(deps, input);
     return {
       ...result,
       project: await projectDetailsWithGit(deps, input.projectId)
     };
   });
-  ipcMain.handle("agents:run-workflow", async (_event, input: RunStudioWorkflowInput) => {
+  handle("agents:run-workflow", async (_event, input: RunStudioWorkflowInput) => {
     const result = await deps.workflowService.run(input);
     return {
       ...result,
@@ -124,7 +168,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     };
   });
 
-  ipcMain.handle("system:open-path", async (_event, targetPath: string) => {
+  handle("system:open-path", async (_event, targetPath: string) => {
     await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));
   });
 }

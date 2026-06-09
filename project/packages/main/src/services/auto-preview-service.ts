@@ -4,6 +4,7 @@ import type { PreviewEvent, PreviewResult, PreviewStatus, ProjectFileChange } fr
 import { GodotService } from "./godot-service";
 import { PreviewServer } from "./preview-server";
 import { ProjectService } from "./project-service";
+import { getProjectLogger } from "./logger";
 
 export type PreviewEventSink = (event: PreviewEvent) => void;
 
@@ -96,11 +97,24 @@ export class AutoPreviewService {
 
   async start(projectId: string, options: StartAutoPreviewOptions = {}): Promise<PreviewResult> {
     const project = await this.projectService.requireProject(projectId);
+    const log = getProjectLogger(project.rootPath);
+    log.info("preview", "请求启动实时预览", {
+      projectId: project.id,
+      project: project.name,
+      rootPath: project.rootPath,
+      webBuildPath: project.webBuildPath,
+      exportFirst: options.exportFirst !== false
+    });
     const existing = this.states.get(projectId);
     if (existing) {
       const preview = await this.previewServer.start(projectId);
       await this.markProject(projectId, "watching", preview.url);
       this.emitEvent(projectId, "watching", { url: preview.url, message: "实时预览已在监听项目变化。" });
+      log.info("preview", "实时预览已在监听，复用现有预览服务", {
+        projectId: project.id,
+        project: project.name,
+        url: preview.url
+      });
       return { ...preview, watching: true };
     }
 
@@ -110,6 +124,13 @@ export class AutoPreviewService {
       if (!exportResult.ok) {
         const message = exportResult.stderr || exportResult.stdout || "初始 Web 导出失败。";
         await this.markProject(projectId, "failed");
+        log.warn("preview", "实时预览初始导出失败", {
+          projectId: project.id,
+          project: project.name,
+          exitCode: exportResult.exitCode,
+          durationMs: exportResult.durationMs,
+          message
+        });
         this.emitEvent(projectId, "failed", {
           message
         });
@@ -133,6 +154,11 @@ export class AutoPreviewService {
     });
     await this.markProject(projectId, "watching", preview.url);
     this.emitEvent(projectId, "watching", { url: preview.url, message: "实时预览已启动。" });
+    log.info("preview", "实时预览已启动", {
+      projectId: project.id,
+      project: project.name,
+      url: preview.url
+    });
 
     return {
       ...preview,
@@ -141,6 +167,12 @@ export class AutoPreviewService {
   }
 
   async refresh(projectId: string, changedPath?: string): Promise<PreviewResult> {
+    const project = await this.projectService.requireProject(projectId);
+    getProjectLogger(project.rootPath).info("preview", "请求刷新实时预览", {
+      projectId: project.id,
+      project: project.name,
+      changedPath
+    });
     const state = this.states.get(projectId);
     if (!state) {
       return this.start(projectId, { exportFirst: true });
@@ -148,7 +180,6 @@ export class AutoPreviewService {
 
     state.lastChangedPath = changedPath;
     await this.exportAndRefresh(projectId);
-    const project = await this.projectService.requireProject(projectId);
     const preview = await this.previewServer.start(projectId);
     return {
       ...preview,
@@ -158,6 +189,8 @@ export class AutoPreviewService {
   }
 
   async stop(projectId: string): Promise<PreviewEvent> {
+    const project = await this.projectService.requireProject(projectId);
+    const log = getProjectLogger(project.rootPath);
     const state = this.states.get(projectId);
     if (state?.timer) {
       clearTimeout(state.timer);
@@ -168,6 +201,11 @@ export class AutoPreviewService {
     await this.markProject(projectId, "stopped");
     const event = this.createEvent(projectId, "stopped", { message: "实时预览已停止。" });
     this.emit(event);
+    log.info("preview", "实时预览已停止", {
+      projectId: project.id,
+      project: project.name,
+      hadWatcher: Boolean(state)
+    });
     return event;
   }
 
@@ -194,9 +232,16 @@ export class AutoPreviewService {
     if (!state) {
       return;
     }
+    const project = await this.projectService.requireProject(projectId);
+    const log = getProjectLogger(project.rootPath);
 
     if (state.exporting) {
       state.pending = true;
+      log.debug("preview", "实时预览刷新已排队", {
+        projectId: project.id,
+        project: project.name,
+        changedPath: state.lastChangedPath
+      });
       return;
     }
 
@@ -204,6 +249,11 @@ export class AutoPreviewService {
     state.pending = false;
     const changedPath = state.lastChangedPath;
     await this.markProject(projectId, "exporting");
+    log.info("preview", "开始刷新实时预览", {
+      projectId: project.id,
+      project: project.name,
+      changedPath
+    });
     this.emitEvent(projectId, "exporting", {
       changedPath,
       message: changedPath ? `检测到 ${changedPath} 变化，正在刷新 Web 预览。` : "检测到项目变化，正在刷新 Web 预览。"
@@ -213,6 +263,14 @@ export class AutoPreviewService {
       const exportResult = await this.godotService.exportWeb(projectId);
       if (!exportResult.ok) {
         await this.markProject(projectId, "failed");
+        log.warn("preview", "实时预览刷新导出失败", {
+          projectId: project.id,
+          project: project.name,
+          changedPath,
+          exitCode: exportResult.exitCode,
+          durationMs: exportResult.durationMs,
+          message: exportResult.stderr || exportResult.stdout || "Web 导出失败。"
+        });
         this.emitEvent(projectId, "failed", {
           changedPath,
           message: exportResult.stderr || exportResult.stdout || "Web 导出失败。"
@@ -223,6 +281,13 @@ export class AutoPreviewService {
       const preview = await this.previewServer.start(projectId);
       const refreshedUrl = addPreviewCacheBust(preview.url);
       await this.markProject(projectId, "ready", refreshedUrl);
+      log.info("preview", "实时预览已刷新", {
+        projectId: project.id,
+        project: project.name,
+        changedPath,
+        url: refreshedUrl,
+        durationMs: exportResult.durationMs
+      });
       this.emitEvent(projectId, "ready", {
         url: refreshedUrl,
         changedPath,
@@ -230,6 +295,12 @@ export class AutoPreviewService {
       });
     } catch (error) {
       await this.markProject(projectId, "failed");
+      log.error("preview", "实时预览刷新异常", {
+        projectId: project.id,
+        project: project.name,
+        changedPath,
+        error
+      });
       this.emitEvent(projectId, "failed", {
         changedPath,
         message: error instanceof Error ? error.message : String(error)

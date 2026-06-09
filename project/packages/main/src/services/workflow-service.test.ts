@@ -33,6 +33,19 @@ function tool(id: CliToolId, installed = true): CliTool {
     credentialEnvVars: [],
     detectedCredentialEnvVars: [],
     credentialHint: "",
+    capabilities: {
+      runModel: "local",
+      supportsImages: true,
+      imageInputMode: "prompt-path-reference",
+      supportsStream: true,
+      supportsResume: false,
+      headless: true
+    },
+    health: {
+      installed,
+      authed: installed ? true : "unknown",
+      headlessOk: installed ? true : "unknown"
+    },
     diagnostics: [],
     lastCheckedAt: "2026-06-08T00:00:00.000Z"
   };
@@ -101,6 +114,22 @@ describe("chooseAgentCli", () => {
 
     expect(chooseAgentCli(agent("designer"), tools, "kimi")).toBe("claude");
   });
+
+  it("skips installed CLI tools whose adapter health is unavailable", () => {
+    const unhealthyClaude: CliTool = {
+      ...tool("claude"),
+      status: "error",
+      health: {
+        installed: true,
+        authed: false,
+        headlessOk: false,
+        detail: "非交互模式返回未授权。"
+      }
+    };
+    const tools = [unhealthyClaude, tool("codex")];
+
+    expect(chooseAgentCli(agent("designer"), tools)).toBe("codex");
+  });
 });
 
 describe("buildWorkflowRunSteps", () => {
@@ -122,6 +151,24 @@ describe("buildWorkflowRunSteps", () => {
       "打包 Web zip",
       "刷新实时 Web 预览"
     ]);
+  });
+
+  it("uses per-Agent CLI selections for workflow steps", () => {
+    const agents = [agent("producer"), agent("designer"), agent("artist")];
+    const steps = buildWorkflowRunSteps(agents, [tool("codex"), tool("claude"), tool("kimi")], {
+      projectId: "project_1",
+      message: "创建黄金矿工",
+      agentCliToolIds: {
+        producer: "kimi",
+        designer: "codex",
+        artist: "claude"
+      },
+      autoExportWeb: false,
+      autoPackageWebZip: false,
+      autoStartPreview: false
+    });
+
+    expect(steps.map((step) => step.cliToolId)).toEqual(["kimi", "codex", "claude"]);
   });
 
   it("stops team zip packaging when the Web build inspection fails", async () => {
@@ -513,6 +560,25 @@ describe("isAgentWorkflowStepFailed", () => {
       isAgentWorkflowStepFailed({
         cliToolId: "codex",
         tools: [tool("codex", false)]
+      })
+    ).toBe(true);
+  });
+
+  it("treats an installed but unhealthy CLI as failed", () => {
+    expect(
+      isAgentWorkflowStepFailed({
+        cliToolId: "claude",
+        tools: [{ ...tool("claude"), status: "error" }],
+        message: {
+          id: "msg_1",
+          projectId: "project_1",
+          agentId: "designer",
+          role: "agent",
+          content: "done",
+          createdAt: new Date().toISOString(),
+          cliToolId: "claude",
+          exitCode: 0
+        }
       })
     ).toBe(true);
   });

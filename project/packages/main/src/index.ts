@@ -17,6 +17,12 @@ import { ProjectFilePreviewService } from "./services/project-file-preview-servi
 import { ProjectService } from "./services/project-service";
 import { resolveStudioPaths } from "./services/resource-paths";
 import { RunService } from "./services/run-service";
+import {
+  flushAllLogs,
+  getAppLogger,
+  initAppLogger,
+  installProcessErrorLogging,
+} from "./services/logger";
 import { StudioStore } from "./services/store";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
@@ -24,6 +30,7 @@ import { registerIpcHandlers } from "./ipc";
 
 let previewServer: PreviewServer | undefined;
 let autoPreviewService: AutoPreviewService | undefined;
+let quitCleanupStarted = false;
 
 async function createWindow(): Promise<void> {
   const preloadPath = path.join(__dirname, "../preload/index.mjs");
@@ -54,6 +61,21 @@ app.whenReady().then(async () => {
   await mkdir(paths.dataRoot, { recursive: true });
   await mkdir(paths.projectsRoot, { recursive: true });
 
+  const log = initAppLogger({ dataRoot: paths.dataRoot, mirrorConsole: !app.isPackaged });
+  installProcessErrorLogging();
+  log.info("app", "应用启动", {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    dataRoot: paths.dataRoot,
+    resourceRoot: paths.resourceRoot,
+    godot: paths.godotConsolePath ?? "(missing)",
+  });
+
   const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
   const cliService = new CliService();
   const environmentService = new EnvironmentService();
@@ -62,12 +84,34 @@ app.whenReady().then(async () => {
   const contextService = new AgentContextService();
   const processRegistry = new ProcessRegistry();
   const fileChangeService = new ProjectFileChangeService();
-  const runService = new RunService(store, (event) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send("runs:event", event);
+  const runService = new RunService(
+    store,
+    (event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send("runs:event", event);
+      }
+    },
+    async (projectId) => {
+      try {
+        return await projectService.requireProject(projectId);
+      } catch {
+        return undefined;
+      }
     }
-  });
-  const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+  );
+  const agentService = new AgentService(
+    projectService,
+    cliService,
+    runService,
+    processRegistry,
+    fileChangeService,
+    contextService,
+    (event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send("agent:stream", event);
+      }
+    }
+  );
   const godotService = new GodotService(paths, projectService);
   const godotRuntimeService = new GodotRuntimeService(paths);
   previewServer = new PreviewServer(projectService);
@@ -100,7 +144,9 @@ app.whenReady().then(async () => {
     processRegistry
   });
 
+  log.info("app", "服务装配完成，IPC 已注册");
   await createWindow();
+  log.info("app", "主窗口已创建");
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -109,9 +155,27 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
-  void autoPreviewService?.stopAll();
-  void previewServer?.stopAll();
+app.on("before-quit", (event) => {
+  if (quitCleanupStarted) {
+    return;
+  }
+  event.preventDefault();
+  quitCleanupStarted = true;
+
+  const log = getAppLogger();
+  log.info("app", "应用退出，清理预览服务");
+  void (async () => {
+    try {
+      await autoPreviewService?.stopAll();
+      await previewServer?.stopAll();
+      log.info("app", "退出清理完成");
+    } catch (error) {
+      log.error("app", "退出清理失败", { error });
+    } finally {
+      await flushAllLogs();
+      app.quit();
+    }
+  })();
 });
 
 app.on("window-all-closed", () => {

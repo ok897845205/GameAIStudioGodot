@@ -26,9 +26,13 @@ import {
 import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
+  chooseAgentCli,
   type AgentMessage,
+  type CliTool,
   type CliToolId,
   type GameDimension,
+  type GitFileChange,
+  type GitProjectStatus,
   type PreviewEvent,
   type ProjectDetails,
   type ProjectFilePreview,
@@ -36,6 +40,7 @@ import {
   type StudioProject,
 } from "@gameaistudio/shared";
 import { AgentChat, type AgentSendInput } from "./chat";
+import { RunActivityPanel } from "./components/run-activity";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import { Dialog } from "./components/ui/dialog";
@@ -55,12 +60,16 @@ type BusyAction =
   | "cli"
   | undefined;
 
-type RightTab = "build" | "git" | "status";
+type RightTab = "build" | "activity" | "git" | "status";
+type AgentCliToolIds = Partial<Record<string, CliToolId>>;
+
+const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
 
 const initialForm = {
   name: "黄金矿工",
   prompt: "我要创建一个黄金矿工，玩家用钩子抓金块，限时得分。",
   dimension: "2d" as GameDimension,
+  agentCliToolIds: {} as AgentCliToolIds,
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -72,6 +81,73 @@ function formatTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function gitChangeLabel(kind: GitFileChange["kind"]): string {
+  const labels: Record<GitFileChange["kind"], string> = {
+    added: "新增",
+    modified: "修改",
+    deleted: "删除",
+    renamed: "重命名",
+    copied: "复制",
+    untracked: "未跟踪",
+    conflicted: "冲突",
+    unknown: "变更",
+  };
+  return labels[kind];
+}
+
+function gitChangeTone(kind: GitFileChange["kind"]): "danger" | "info" | "muted" | "success" | "warning" {
+  if (kind === "deleted" || kind === "conflicted") return "danger";
+  if (kind === "added" || kind === "untracked") return "success";
+  if (kind === "renamed" || kind === "copied") return "info";
+  if (kind === "unknown") return "muted";
+  return "warning";
+}
+
+function gitStatusText(status?: GitProjectStatus): string {
+  if (!status) return "未检查";
+  if (!status.available) return "Git 缺失";
+  if (!status.initialized) return "未启用";
+  return status.clean ? "干净" : `${status.changedFiles.length} 变更`;
+}
+
+function gitStatusTone(status?: GitProjectStatus): "danger" | "muted" | "success" | "warning" {
+  if (!status) return "muted";
+  if (!status.available) return "danger";
+  if (!status.initialized || !status.clean) return "warning";
+  return "success";
+}
+
+function healthText(value: boolean | "unknown" | undefined): string {
+  if (value === true) return "可用";
+  if (value === false) return "异常";
+  return "未知";
+}
+
+function healthTone(value: boolean | "unknown" | undefined): "danger" | "muted" | "success" {
+  if (value === true) return "success";
+  if (value === false) return "danger";
+  return "muted";
+}
+
+function cliToolStatusLabel(tool?: CliTool): string {
+  if (!tool?.installed) return "未安装";
+  if (tool.status === "available") return "可用";
+  return "不可用";
+}
+
+function cliToolStatusTone(tool?: CliTool): "danger" | "success" | "warning" {
+  if (!tool?.installed) return "danger";
+  return tool.status === "available" ? "success" : "warning";
+}
+
+function joinFsPath(rootPath: string | undefined, relativePath: string): string | undefined {
+  if (!rootPath) return undefined;
+  const sep = rootPath.includes("\\") ? "\\" : "/";
+  const root = rootPath.replace(/[\\/]+$/, "");
+  const relative = relativePath.replace(/^[\\/]+/, "").replace(/[\\/]+/g, sep);
+  return `${root}${sep}${relative}`;
 }
 
 export function StudioApp() {
@@ -90,6 +166,7 @@ export function StudioApp() {
   const [rightTab, setRightTab] = useState<RightTab>("build");
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [gitMessage, setGitMessage] = useState("保存当前游戏版本");
+  const [gitRestoreHash, setGitRestoreHash] = useState("");
   const [filePreview, setFilePreview] = useState<ProjectFilePreview>();
 
   const tools = bootstrap?.cliTools ?? [];
@@ -97,7 +174,42 @@ export function StudioApp() {
   const activeAgent =
     agents.find((a) => a.id === activeAgentId) ?? agents[0]!;
   const hasInstalledCli = tools.some((t) => t.installed);
+  const activeTool = tools.find((t) => t.id === selectedCli);
+  const activeCliAvailable = Boolean(activeTool?.installed && activeTool.status === "available");
+  const activeCliSupportsImages = Boolean(activeTool?.capabilities.supportsImages);
+  const activeCliUnavailableReason =
+    activeTool?.installed && activeTool.status !== "available"
+      ? activeTool.health.detail ?? `${activeTool.label} 当前不可用。`
+      : undefined;
   const isBusy = Boolean(busy);
+  const workflowAgents = useMemo(
+    () =>
+      DEFAULT_WORKFLOW_AGENT_IDS.map((id) => agents.find((agent) => agent.id === id)).filter(
+        (agent): agent is (typeof agents)[number] => Boolean(agent),
+      ),
+    [agents],
+  );
+  const createAgentCliToolIds = useMemo(
+    () =>
+      Object.fromEntries(
+        workflowAgents.map((agent) => [
+          agent.id,
+          form.agentCliToolIds[agent.id] ?? chooseAgentCli(agent, tools),
+        ]),
+      ) as AgentCliToolIds,
+    [form.agentCliToolIds, tools, workflowAgents],
+  );
+  const createCliIssues = workflowAgents.filter((agent) => {
+    const toolId = createAgentCliToolIds[agent.id];
+    const tool = tools.find((candidate) => candidate.id === toolId);
+    return !tool?.installed || tool.status !== "available";
+  });
+  const createProjectDisabled = isBusy || !form.prompt.trim() || createCliIssues.length > 0;
+  const createProjectTitle = !form.prompt.trim()
+    ? "请输入一句话需求。"
+    : createCliIssues.length > 0
+      ? `请先修复这些 Agent 的 CLI：${createCliIssues.map((agent) => agent.title).join("、")}`
+      : "创建项目后立即启动团队工作流。";
 
   const activeMessages = useMemo(
     () =>
@@ -118,6 +230,18 @@ export function StudioApp() {
     ? (activeRun.steps.find((s) => s.id === activeRun.currentStepId) ??
       activeRun.steps.find((s) => s.status === "running"))
     : undefined;
+  const activeStepIndex = activeRun && activeStep
+    ? activeRun.steps.findIndex((s) => s.id === activeStep.id)
+    : -1;
+
+  // Surface live activity automatically: when a run starts, reveal the right
+  // panel and focus the 运行 tab so the user can watch every Agent's status
+  // and streamed output without hunting for it.
+  useEffect(() => {
+    if (!activeRun) return;
+    setRightCollapsed(false);
+    setRightTab("activity");
+  }, [activeRun?.id]);
 
   const previewFrameKey = selectedProject?.previewUrl
     ? `${selectedProject.id}:${selectedProject.previewUrl}:${selectedProject.previewUpdatedAt ?? "x"}`
@@ -133,12 +257,12 @@ export function StudioApp() {
         selectId ?? selectedProject?.id ?? data.projects[0]?.id;
       if (target) {
         const detail = await window.studio.getProject(target);
+        const nextAgents = data.agents ?? AGENT_PROFILES;
+        const nextAgent =
+          nextAgents.find((a) => a.id === detail.activeAgentId) ?? nextAgents[0]!;
         setSelectedProject(detail);
         setActiveAgentId(detail.activeAgentId);
-        setSelectedCli(
-          (agents.find((a) => a.id === detail.activeAgentId)?.defaultCli ??
-            "codex") as CliToolId,
-        );
+        setSelectedCli(chooseAgentCli(nextAgent, data.cliTools, detail.agentCliToolIds?.[nextAgent.id]));
       }
     } catch (e) {
       setNotice(errText(e));
@@ -181,12 +305,45 @@ export function StudioApp() {
     });
   }, []);
 
+  // Live token stream: accumulate deltas into an in-flight assistant message so
+  // the chat bubble types. `runAgentTurn`'s canonical messages replace it on
+  // settle (same id → no flicker). `done` is a no-op; the resolve handles it.
+  useEffect(() => {
+    return window.studio.onAgentStream((event) => {
+      if (event.done) return;
+      setSelectedProject((cur) => {
+        if (!cur || cur.id !== event.projectId) return cur;
+        const messages = cur.messages.slice();
+        const idx = messages.findIndex((m) => m.id === event.messageId);
+        if (idx === -1) {
+          messages.push({
+            id: event.messageId,
+            projectId: event.projectId,
+            agentId: event.agentId,
+            role: "agent",
+            content: event.delta,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          messages[idx] = {
+            ...messages[idx]!,
+            content: messages[idx]!.content + event.delta,
+          };
+        }
+        return { ...cur, messages };
+      });
+    });
+  }, []);
+
   async function selectProject(id: string) {
     setBusy("boot");
     try {
       const detail = await window.studio.getProject(id);
+      const nextAgent =
+        agents.find((a) => a.id === detail.activeAgentId) ?? agents[0]!;
       setSelectedProject(detail);
       setActiveAgentId(detail.activeAgentId);
+      setSelectedCli(chooseAgentCli(nextAgent, tools, detail.agentCliToolIds?.[nextAgent.id]));
     } catch (e) {
       setNotice(errText(e));
     } finally {
@@ -194,16 +351,51 @@ export function StudioApp() {
     }
   }
 
+  function switchActiveAgent(agentId: string) {
+    const nextAgent = agents.find((agent) => agent.id === agentId) ?? agents[0]!;
+    setActiveAgentId(agentId);
+    setSelectedCli(chooseAgentCli(nextAgent, tools, selectedProject?.agentCliToolIds?.[nextAgent.id]));
+  }
+
+  async function startStudioWorkflow(project: ProjectDetails, message: string, agentCliToolIds?: AgentCliToolIds) {
+    const result = await window.studio.runStudioWorkflow({
+      projectId: project.id,
+      message,
+      agentIds: workflowAgents.map((agent) => agent.id),
+      agentCliToolIds: agentCliToolIds ?? project.agentCliToolIds,
+      autoExportWeb: true,
+      autoPackageWebZip: true,
+      autoStartPreview: true,
+    });
+    setSelectedProject(result.project);
+    setProjects(await window.studio.listProjects());
+    setNotice(result.run.summary ?? "团队工作流结束。");
+  }
+
   async function createProject() {
+    if (createProjectDisabled) {
+      setNotice(createProjectTitle);
+      return;
+    }
     setBusy("create");
     setNotice("");
+    const agentCliToolIds = createAgentCliToolIds;
     try {
-      const project = await window.studio.createProject(form);
+      const project = await window.studio.createProject({
+        ...form,
+        agentCliToolIds,
+      });
       setSelectedProject(project);
       setProjects(await window.studio.listProjects());
       setActiveAgentId(project.activeAgentId);
+      const producer = agents.find((agent) => agent.id === project.activeAgentId) ?? agents[0]!;
+      setSelectedCli(chooseAgentCli(producer, tools, agentCliToolIds[producer.id]));
       setCreateOpen(false);
-      setNotice(`已创建项目：${project.name}`);
+      setRightCollapsed(false);
+      setRightTab("activity");
+      setNotice(`已创建项目：${project.name}，正在启动团队工作流。`);
+      setBusy("workflow");
+      await startStudioWorkflow(project, project.prompt, agentCliToolIds);
     } catch (e) {
       setNotice(errText(e));
     } finally {
@@ -213,6 +405,14 @@ export function StudioApp() {
 
   const handleAgentSend = async ({ text, attachments }: AgentSendInput) => {
     if (!selectedProject || (!text.trim() && attachments.length === 0)) return;
+    if (!activeCliAvailable) {
+      setNotice(activeCliUnavailableReason ?? "当前 CLI 不可用，请在设置中修复后刷新。");
+      return;
+    }
+    if (attachments.length > 0 && !activeCliSupportsImages) {
+      setNotice("当前 CLI 不支持图片输入，请移除图片或切换到支持图片的 CLI。");
+      return;
+    }
     const projectId = selectedProject.id;
     setBusy("send");
     setNotice("");
@@ -282,16 +482,7 @@ export function StudioApp() {
     if (!selectedProject) return;
     setBusy("workflow");
     try {
-      const result = await window.studio.runStudioWorkflow({
-        projectId: selectedProject.id,
-        message: selectedProject.prompt,
-        autoExportWeb: true,
-        autoPackageWebZip: true,
-        autoStartPreview: true,
-      });
-      setSelectedProject(result.project);
-      setProjects(await window.studio.listProjects());
-      setNotice(result.run.summary ?? "团队工作流结束。");
+      await startStudioWorkflow(selectedProject, selectedProject.prompt);
     } catch (e) {
       setNotice(errText(e));
     } finally {
@@ -366,9 +557,63 @@ export function StudioApp() {
     }
   }
 
+  async function refreshGitStatus() {
+    if (!selectedProject) return;
+    setBusy("git");
+    try {
+      const gitStatus = await window.studio.getProjectGitStatus(selectedProject.id);
+      setSelectedProject((cur) =>
+        cur && cur.id === selectedProject.id ? { ...cur, gitStatus } : cur,
+      );
+      setNotice(gitStatus.message);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function restoreGitCommit(commitHash: string, label: string) {
+    if (!selectedProject) return;
+    const target = commitHash.trim();
+    if (!target) {
+      setNotice("请输入要还原的 Git 提交 hash。");
+      return;
+    }
+    const dirtyHint =
+      selectedProject.gitStatus && !selectedProject.gitStatus.clean
+        ? `\n\n当前有 ${selectedProject.gitStatus.changedFiles.length} 个未提交变更，还原会覆盖这些本地改动。`
+        : "";
+    if (
+      !window.confirm(
+        `还原到 Git 版本 ${label}？${dirtyHint}\n\n项目目录：${selectedProject.rootPath}`,
+      )
+    ) {
+      return;
+    }
+    setBusy("git");
+    try {
+      const result = await window.studio.restoreProjectGit({
+        projectId: selectedProject.id,
+        commitHash: target,
+      });
+      setSelectedProject(result.project);
+      setGitRestoreHash("");
+      setNotice(result.message);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function deleteProject() {
     if (!selectedProject) return;
-    if (!window.confirm(`删除项目「${selectedProject.name}」？此操作不可撤销。`))
+    if (
+      !window.confirm(
+        `删除项目「${selectedProject.name}」？\n\n此操作会将本地游戏目录一起删除：\n${selectedProject.rootPath}\n\n此操作不可撤销。`,
+      )
+    )
       return;
     setBusy("delete");
     try {
@@ -387,6 +632,22 @@ export function StudioApp() {
     if (p) await window.studio.openPath(p).catch((e) => setNotice(errText(e)));
   }
 
+  async function previewProjectFile(relativePath: string) {
+    if (!selectedProject) return;
+    setBusy("git");
+    try {
+      const preview = await window.studio.readProjectFile({
+        projectId: selectedProject.id,
+        relativePath,
+      });
+      setFilePreview(preview);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function installCli(id: CliToolId) {
     setBusy("cli");
     setNotice(`正在安装 ${CLI_TOOL_LABELS[id]}…`);
@@ -402,7 +663,56 @@ export function StudioApp() {
     }
   }
 
+  // Explicit headless probe (a real model call) — surfaces login/401 issues
+  // that the fast discovery check cannot.
+  async function testCli(id: CliToolId) {
+    setBusy("cli");
+    setNotice(`正在测试 ${CLI_TOOL_LABELS[id]} 非交互连接…`);
+    try {
+      const tool = await window.studio.testCliTool(id);
+      setBootstrap((cur) =>
+        cur
+          ? {
+              ...cur,
+              cliTools: cur.cliTools.map((t) => (t.id === id ? tool : t)),
+            }
+          : cur,
+      );
+      setNotice(
+        tool.health.headlessOk === true
+          ? `${CLI_TOOL_LABELS[id]} 非交互可用。`
+          : (tool.health.detail ?? `${CLI_TOOL_LABELS[id]} 非交互检查未通过。`),
+      );
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   const git = selectedProject?.gitStatus;
+  const gitChanges: GitFileChange[] =
+    git?.changes ??
+    git?.changedFiles.map((file) => ({
+      path: file,
+      kind: "unknown" as const,
+      rawStatus: "",
+    })) ??
+    [];
+  const gitCommitDisabled =
+    isBusy ||
+    !selectedProject ||
+    !git?.available ||
+    (git.initialized && git.clean);
+  const gitCommitTitle = !git?.available
+    ? git?.message ?? "未检测到 Git。"
+    : git.initialized && git.clean
+      ? "当前 Git 工作区没有未提交变更。"
+      : git.initialized
+        ? "提交当前 Git 变更。"
+        : "为此项目启用 Git 版本管理并提交当前状态。";
+  const appMaintenanceLogPath = joinFsPath(bootstrap?.dataRoot, "logs/app.log");
+  const projectMaintenanceLogPath = joinFsPath(selectedProject?.rootPath, ".gameaistudio/logs/project.log");
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -538,7 +848,7 @@ export function StudioApp() {
             <Tabs
               size="sm"
               value={activeAgentId}
-              onValueChange={setActiveAgentId}
+              onValueChange={switchActiveAgent}
               tabs={agents.map((a) => ({
                 value: a.id,
                 accent: a.accent,
@@ -556,15 +866,43 @@ export function StudioApp() {
         {activeRun && (
           <div className="flex items-center gap-2 border-b border-border bg-primary/5 px-4 py-1.5 text-xs text-muted-foreground">
             <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
-            <span className="truncate">
+            <button
+              className="min-w-0 flex-1 truncate text-left hover:underline"
+              title="查看实时运行日志"
+              onClick={() => {
+                setRightCollapsed(false);
+                setRightTab("activity");
+              }}
+            >
+              {activeStepIndex >= 0 && (
+                <span className="mr-1 rounded bg-primary/15 px-1 font-medium text-primary">
+                  {activeStepIndex + 1}/{activeRun.steps.length}
+                </span>
+              )}
               <span className="text-foreground">{activeRun.title}</span>
               {activeStep ? ` · ${activeStep.title}` : ""}
-            </span>
+            </button>
             <button
-              className="ml-auto shrink-0 text-destructive hover:underline"
+              className="shrink-0 text-destructive hover:underline"
               onClick={cancelActiveRun}
             >
               取消
+            </button>
+          </div>
+        )}
+
+        {selectedProject && !activeRun && !activeCliAvailable && (
+          <div className="flex items-center gap-2 border-b border-border bg-danger/10 px-4 py-1.5 text-xs text-danger">
+            <span className="min-w-0 flex-1 truncate">
+              {!hasInstalledCli
+                ? "未检测到任何本地 AI CLI，发送已禁用。请在设置中安装。"
+                : `当前 CLI「${activeTool?.label ?? selectedCli}」不可用：${activeCliUnavailableReason ?? "请在设置中测试连接。"}`}
+            </span>
+            <button
+              className="shrink-0 font-medium hover:underline"
+              onClick={() => setSettingsOpen(true)}
+            >
+              打开设置
             </button>
           </div>
         )}
@@ -575,7 +913,8 @@ export function StudioApp() {
               key={`${selectedProject.id}:${activeAgentId}`}
               messages={activeMessages}
               isRunning={busy === "send" || busy === "workflow"}
-              isSendDisabled={!hasInstalledCli}
+              isSendDisabled={!hasInstalledCli || !activeCliAvailable}
+              supportsImages={activeCliSupportsImages}
               onSend={handleAgentSend}
             />
           ) : (
@@ -656,6 +995,7 @@ export function StudioApp() {
               onValueChange={(v) => setRightTab(v as RightTab)}
               tabs={[
                 { value: "build", label: "构建" },
+                { value: "activity", label: "运行" },
                 { value: "git", label: "Git" },
                 { value: "status", label: "状态" },
               ]}
@@ -721,28 +1061,60 @@ export function StudioApp() {
               </>
             )}
 
+            {rightTab === "activity" && (
+              <RunActivityPanel runs={selectedProject.runs ?? []} />
+            )}
+
             {rightTab === "git" && (
               <>
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1.5 text-sm font-medium">
                     <GitBranch className="size-4" /> Git 版本
                   </span>
-                  <Badge tone={git?.clean ? "success" : "warning"}>
-                    {!git?.available
-                      ? "Git 缺失"
-                      : !git.initialized
-                        ? "未启用"
-                        : git.clean
-                          ? "干净"
-                          : `${git.changedFiles.length} 变更`}
-                  </Badge>
+                  <Badge tone={gitStatusTone(git)}>{gitStatusText(git)}</Badge>
                 </div>
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                   <dt className="text-muted-foreground">分支</dt>
                   <dd className="truncate">{git?.branch ?? "未初始化"}</dd>
                   <dt className="text-muted-foreground">提交</dt>
                   <dd className="truncate">{git?.head ?? "无"}</dd>
+                  <dt className="text-muted-foreground">状态</dt>
+                  <dd className="truncate" title={git?.error ?? git?.message}>
+                    {git?.message ?? "未检查"}
+                  </dd>
                 </dl>
+
+                {gitChanges.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-medium text-muted-foreground">
+                      未提交变更
+                    </div>
+                    {gitChanges.slice(0, 8).map((change) => (
+                      <button
+                        key={`${change.rawStatus}:${change.path}:${change.originalPath ?? ""}`}
+                        className="flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs hover:bg-accent"
+                        onClick={() => change.kind !== "deleted" && previewProjectFile(change.path)}
+                        disabled={isBusy || change.kind === "deleted"}
+                        title={
+                          change.originalPath
+                            ? `${change.originalPath} -> ${change.path}`
+                            : change.path
+                        }
+                      >
+                        <Badge tone={gitChangeTone(change.kind)} className="shrink-0">
+                          {gitChangeLabel(change.kind)}
+                        </Badge>
+                        <span className="min-w-0 flex-1 truncate">{change.path}</span>
+                      </button>
+                    ))}
+                    {gitChanges.length > 8 && (
+                      <div className="text-xs text-muted-foreground">
+                        还有 {gitChanges.length - 8} 个变更
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {git?.recentCommits?.slice(0, 5).map((c) => (
                   <div
                     key={c.hash}
@@ -759,19 +1131,8 @@ export function StudioApp() {
                     <button
                       title="还原到此版本"
                       className="text-primary hover:underline"
-                      onClick={() =>
-                        window.confirm(`还原到 ${c.shortHash}？`) &&
-                        window.studio
-                          .restoreProjectGit({
-                            projectId: selectedProject.id,
-                            commitHash: c.hash,
-                          })
-                          .then((r) => {
-                            setSelectedProject(r.project);
-                            setNotice(r.message);
-                          })
-                          .catch((e) => setNotice(errText(e)))
-                      }
+                      onClick={() => restoreGitCommit(c.hash, `${c.shortHash} ${c.message}`)}
+                      disabled={isBusy || !git?.initialized}
                     >
                       <RefreshCw className="size-3.5" />
                     </button>
@@ -779,12 +1140,40 @@ export function StudioApp() {
                 ))}
                 <div className="flex gap-2">
                   <input
+                    value={gitRestoreHash}
+                    onChange={(e) => setGitRestoreHash(e.target.value)}
+                    className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs"
+                    placeholder="输入任意提交 hash"
+                    disabled={isBusy || !git?.initialized}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      restoreGitCommit(
+                        gitRestoreHash,
+                        gitRestoreHash.trim() || "指定提交",
+                      )
+                    }
+                    disabled={isBusy || !git?.initialized || !gitRestoreHash.trim()}
+                    title="还原到指定 Git 提交"
+                  >
+                    <RefreshCw /> 还原
+                  </Button>
+                </div>
+                <div className="flex gap-2">
+                  <input
                     value={gitMessage}
                     onChange={(e) => setGitMessage(e.target.value)}
                     className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs"
                     placeholder="提交信息"
                   />
-                  <Button size="sm" onClick={commitGit} disabled={isBusy}>
+                  <Button
+                    size="sm"
+                    onClick={commitGit}
+                    disabled={gitCommitDisabled}
+                    title={gitCommitTitle}
+                  >
                     {busy === "git" ? (
                       <Loader2 className="animate-spin" />
                     ) : (
@@ -793,26 +1182,60 @@ export function StudioApp() {
                     {git?.initialized ? "提交" : "启用"}
                   </Button>
                 </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={refreshGitStatus}
+                  disabled={isBusy || !selectedProject}
+                >
+                  <RefreshCw /> 刷新 Git 状态
+                </Button>
               </>
             )}
 
             {rightTab === "status" && (
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                <dt className="text-muted-foreground">类型</dt>
-                <dd>{selectedProject.dimension.toUpperCase()}</dd>
-                <dt className="text-muted-foreground">目录</dt>
-                <dd className="truncate" title={selectedProject.rootPath}>
-                  {selectedProject.rootPath}
-                </dd>
-                <dt className="text-muted-foreground">Web</dt>
-                <dd className="truncate" title={selectedProject.webBuildPath}>
-                  {selectedProject.webBuildPath}
-                </dd>
-                <dt className="text-muted-foreground">Zip</dt>
-                <dd className="truncate">
-                  {selectedProject.exportZipPath ?? "未导出"}
-                </dd>
-              </dl>
+              <>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                  <dt className="text-muted-foreground">类型</dt>
+                  <dd>{selectedProject.dimension.toUpperCase()}</dd>
+                  <dt className="text-muted-foreground">目录</dt>
+                  <dd className="truncate" title={selectedProject.rootPath}>
+                    {selectedProject.rootPath}
+                  </dd>
+                  <dt className="text-muted-foreground">Web</dt>
+                  <dd className="truncate" title={selectedProject.webBuildPath}>
+                    {selectedProject.webBuildPath}
+                  </dd>
+                  <dt className="text-muted-foreground">Zip</dt>
+                  <dd className="truncate">
+                    {selectedProject.exportZipPath ?? "未导出"}
+                  </dd>
+                  <dt className="text-muted-foreground">日志</dt>
+                  <dd className="truncate" title={projectMaintenanceLogPath}>
+                    {projectMaintenanceLogPath ?? "未创建"}
+                  </dd>
+                </dl>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => openPath(projectMaintenanceLogPath)}
+                    disabled={!projectMaintenanceLogPath}
+                  >
+                    <Terminal /> 项目日志
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => openPath(appMaintenanceLogPath)}
+                    disabled={!appMaintenanceLogPath}
+                  >
+                    <FolderOpen /> app.log
+                  </Button>
+                </div>
+              </>
             )}
           </div>
 
@@ -840,7 +1263,7 @@ export function StudioApp() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         title="新建游戏"
-        description="用一句话描述你的游戏想法，AI 团队会帮你从零搭起。"
+        description="用一句话描述你的游戏想法，AI 团队会立即开始工作。"
       >
         <div className="space-y-3">
           <label className="block">
@@ -876,13 +1299,70 @@ export function StudioApp() {
               </button>
             ))}
           </div>
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Agent CLI</span>
+              {createCliIssues.length > 0 ? (
+                <Badge tone="danger">需要修复 {createCliIssues.length} 个</Badge>
+              ) : (
+                <Badge tone="success">可启动</Badge>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {workflowAgents.map((agent) => {
+                const toolId = createAgentCliToolIds[agent.id] ?? agent.defaultCli;
+                const tool = tools.find((candidate) => candidate.id === toolId);
+                return (
+                  <div
+                    key={agent.id}
+                    className="grid grid-cols-[minmax(0,1fr)_10rem_auto] items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{agent.title}</div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {agent.specialty}
+                      </div>
+                    </div>
+                    <select
+                      value={toolId}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          agentCliToolIds: {
+                            ...form.agentCliToolIds,
+                            [agent.id]: e.target.value as CliToolId,
+                          },
+                        })
+                      }
+                      className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                      disabled={isBusy}
+                      title={`${agent.title} 使用的本地 AI CLI`}
+                    >
+                      {Object.entries(CLI_TOOL_LABELS).map(([id, label]) => {
+                        const optionTool = tools.find((candidate) => candidate.id === id);
+                        return (
+                          <option key={id} value={id}>
+                            {label} · {cliToolStatusLabel(optionTool)}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Badge tone={cliToolStatusTone(tool)} className="shrink-0">
+                      {cliToolStatusLabel(tool)}
+                    </Badge>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
           <Button
             className="w-full"
             onClick={createProject}
-            disabled={isBusy || !form.prompt.trim()}
+            disabled={createProjectDisabled}
+            title={createProjectTitle}
           >
             {busy === "create" ? <Loader2 className="animate-spin" /> : <Plus />}
-            创建项目
+            创建并启动团队工作流
           </Button>
         </div>
       </Dialog>
@@ -902,7 +1382,7 @@ export function StudioApp() {
               {tools.map((t) => (
                 <div
                   key={t.id}
-                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
+                  className="flex items-start justify-between gap-2 rounded-md border border-border px-3 py-2"
                 >
                   <div className="min-w-0">
                     <div className="font-medium">{t.label}</div>
@@ -914,9 +1394,43 @@ export function StudioApp() {
                         ? t.version || t.executablePath
                         : `命令：${t.command}`}
                     </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <Badge tone={t.installed ? "success" : "danger"}>
+                        {t.installed ? "已安装" : "未安装"}
+                      </Badge>
+                      <Badge tone={healthTone(t.health.authed)}>
+                        Auth {healthText(t.health.authed)}
+                      </Badge>
+                      <Badge tone={healthTone(t.health.headlessOk)}>
+                        Headless {healthText(t.health.headlessOk)}
+                      </Badge>
+                      <Badge tone={t.capabilities.supportsImages ? "success" : "muted"}>
+                        图片 {t.capabilities.supportsImages ? "可用" : "不支持"}
+                      </Badge>
+                    </div>
                   </div>
                   {t.installed ? (
-                    <Badge tone="success">可用</Badge>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {t.status === "available" ? (
+                        <Badge tone="success">可用</Badge>
+                      ) : (
+                        <Badge tone="danger" title={t.health.detail}>
+                          不可用
+                        </Badge>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={isBusy}
+                        onClick={() => testCli(t.id)}
+                        title="运行一次非交互探测（真实调用），检测登录/401"
+                      >
+                        {busy === "cli" ? (
+                          <Loader2 className="animate-spin" />
+                        ) : null}
+                        测试
+                      </Button>
+                    </div>
                   ) : (
                     <Button
                       size="sm"
@@ -966,6 +1480,42 @@ export function StudioApp() {
                       .length
                   }
                   /{bootstrap.godotRuntime.templates.length} 可用
+                </dd>
+              </dl>
+            </section>
+          )}
+
+          {bootstrap && (
+            <section>
+              <div className="mb-2 flex items-center gap-2 font-medium">
+                <Terminal className="size-4" /> 维护日志
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button
+                  variant="outline"
+                  onClick={() => openPath(appMaintenanceLogPath)}
+                  disabled={!appMaintenanceLogPath}
+                  title={appMaintenanceLogPath}
+                >
+                  <FolderOpen /> 打开 app.log
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => openPath(projectMaintenanceLogPath)}
+                  disabled={!projectMaintenanceLogPath}
+                  title={projectMaintenanceLogPath}
+                >
+                  <Terminal /> 打开项目日志
+                </Button>
+              </div>
+              <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt className="text-muted-foreground">App</dt>
+                <dd className="truncate" title={appMaintenanceLogPath}>
+                  {appMaintenanceLogPath}
+                </dd>
+                <dt className="text-muted-foreground">项目</dt>
+                <dd className="truncate" title={projectMaintenanceLogPath}>
+                  {projectMaintenanceLogPath ?? "未选择项目"}
                 </dd>
               </dl>
             </section>

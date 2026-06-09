@@ -5,7 +5,14 @@ import { useState } from "../hooks/useState";
 import { useEffect } from "../hooks/useEffect";
 import { useMemo } from "../hooks/useMemo";
 
-const nextTick = () => new Promise<void>((r) => setTimeout(r, 0));
+// The scheduler flushes updates on a MessageChannel macrotask, which a single
+// setTimeout(0) doesn't reliably await under concurrent test load. Poll instead
+// so the test resolves as soon as the state settles (and never flakes).
+const flushUntil = async (predicate: () => boolean, tries = 100) => {
+  for (let i = 0; i < tries && !predicate(); i++) {
+    await new Promise<void>((r) => setTimeout(r, 1));
+  }
+};
 
 describe("tap fiber runtime smoke", () => {
   it("renders initial state and exposes output", () => {
@@ -39,7 +46,7 @@ describe("tap fiber runtime smoke", () => {
     });
 
     sub.getValue().inc();
-    await nextTick();
+    await flushUntil(() => sub.getValue().count === 1);
 
     expect(sub.getValue().count).toBe(1);
     expect(sub.getValue().doubled).toBe(2);
@@ -71,7 +78,7 @@ describe("tap fiber runtime smoke", () => {
     expect(active(0)).toBe(1);
 
     sub.getValue().bump();
-    await nextTick();
+    await flushUntil(() => sub.getValue().n === 1);
     expect(sub.getValue().n).toBe(1);
     expect(active(0)).toBe(0); // previous effect cleaned up on dep change
     expect(active(1)).toBe(1); // new effect active

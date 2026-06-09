@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import type { ProjectDetails, StudioProject } from "@gameaistudio/shared";
 import { RunService } from "./run-service";
 import { StudioStore } from "./store";
 import { WebExportPipelineService } from "./web-export-pipeline-service";
+import { getProjectLogger } from "./logger";
 
 function createProject(rootPath: string): StudioProject {
   return {
@@ -272,6 +273,11 @@ describe("WebExportPipelineService", () => {
       expect(result.inspectionResult).toEqual(inspection);
       expect(result.run.status).toBe("completed");
       expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "completed", "completed", "completed"]);
+      await getProjectLogger(project.rootPath).flush();
+      const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
+      expect(log).toContain("[export] 开始 Web zip 导出流水线");
+      expect(log).toContain("[export] Web zip 导出流水线完成");
+      expect(log).toContain(result.run.id);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

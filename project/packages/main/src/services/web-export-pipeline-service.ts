@@ -1,4 +1,4 @@
-import type { GodotRunResult, WebExportResult } from "@gameaistudio/shared";
+import type { GodotRunResult, WebBuildInspection, WebExportResult } from "@gameaistudio/shared";
 import { ExportService } from "./export-service";
 import { GodotService } from "./godot-service";
 import { ProjectService } from "./project-service";
@@ -13,6 +13,18 @@ function summarizeRunResult(result: GodotRunResult, successMessage: string): str
 
 function resultOutput(result: GodotRunResult): string {
   return [result.stdout.trim(), result.stderr.trim() ? `\n--- stderr ---\n${result.stderr.trim()}` : ""].join("").trim();
+}
+
+function inspectionOutput(result: WebBuildInspection): string {
+  return [
+    result.message,
+    `Path: ${result.webBuildPath}`,
+    `Required: ${result.requiredFiles.join(", ")}`,
+    result.missingRequiredFiles.length ? `Missing: ${result.missingRequiredFiles.join(", ")}` : undefined,
+    result.files.length ? `Files:\n${result.files.map((file) => `- ${file}`).join("\n")}` : "Files: none"
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 export class WebExportPipelineService {
@@ -32,11 +44,12 @@ export class WebExportPipelineService {
       steps: [
         { title: "Godot 项目校验", message: "导出前检查 Godot 项目结构和脚本。" },
         { title: "Godot Web 导出", message: "使用内置 Godot 导出 Web 构建。" },
+        { title: "Web 构建产物检查", message: "确认 build/web 包含 index.html、wasm 和 pck。" },
         { title: "打包 Web zip", message: "压缩 build/web 为可分享的 zip 文件。" }
       ]
     });
 
-    const [validateStep, exportStep, zipStep] = run.steps;
+    const [validateStep, exportStep, inspectStep, zipStep] = run.steps;
     await this.runService.startRun(run.id, validateStep?.id);
 
     await this.runService.updateStep(run.id, validateStep!.id, { status: "running" });
@@ -82,6 +95,47 @@ export class WebExportPipelineService {
       };
     }
 
+    await this.runService.updateStep(run.id, inspectStep!.id, { status: "running" });
+    let inspectionResult: WebBuildInspection;
+    try {
+      inspectionResult = await this.exportService.inspectWebBuild(projectId);
+      await this.runService.updateStep(run.id, inspectStep!.id, {
+        status: inspectionResult.ok ? "completed" : "failed",
+        output: inspectionOutput(inspectionResult),
+        message: inspectionResult.message
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.runService.updateStep(run.id, inspectStep!.id, {
+        status: "failed",
+        message
+      });
+      const failedRun = await this.runService.finishRun(run.id, "failed", "Web 构建产物检查失败，已停止 zip 打包。");
+      return {
+        ok: false,
+        project: await this.projectService.getProject(projectId),
+        run: failedRun,
+        webBuildPath: project.webBuildPath,
+        validationResult,
+        exportResult,
+        error: message
+      };
+    }
+
+    if (!inspectionResult.ok) {
+      const failedRun = await this.runService.finishRun(run.id, "failed", "Web 构建产物不完整，已停止 zip 打包。");
+      return {
+        ok: false,
+        project: await this.projectService.getProject(projectId),
+        run: failedRun,
+        webBuildPath: project.webBuildPath,
+        validationResult,
+        exportResult,
+        inspectionResult,
+        error: inspectionResult.message
+      };
+    }
+
     await this.runService.updateStep(run.id, zipStep!.id, { status: "running" });
     try {
       const zipResult = await this.exportService.zipWebBuild(projectId);
@@ -96,6 +150,8 @@ export class WebExportPipelineService {
         run: completedRun,
         webBuildPath: zipResult.webBuildPath,
         zipPath: zipResult.zipPath,
+        manifestPath: zipResult.manifestPath,
+        inspectionResult: zipResult.inspection ?? inspectionResult,
         validationResult,
         exportResult
       };
@@ -111,6 +167,7 @@ export class WebExportPipelineService {
         project: await this.projectService.getProject(projectId),
         run: failedRun,
         webBuildPath: project.webBuildPath,
+        inspectionResult,
         validationResult,
         exportResult,
         error: message

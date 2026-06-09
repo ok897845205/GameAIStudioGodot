@@ -1,19 +1,25 @@
 import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
+  chooseAgentCli,
+  type AgentMessage,
   type AgentProfile,
   type CliTool,
+  type ExportResult,
   type CliToolId,
   type GodotRunResult,
   type PreviewResult,
   type RunStudioWorkflowInput,
   type RunStudioWorkflowResult,
-  type StudioRun
+  type StudioRun,
+  type WebBuildInspection
 } from "@gameaistudio/shared";
 import { AgentService } from "./agent-service";
 import { AutoPreviewService } from "./auto-preview-service";
 import { CliService } from "./cli-service";
+import { ExportService } from "./export-service";
 import { GodotService } from "./godot-service";
+import { createMessageId } from "./naming";
 import { ProjectService } from "./project-service";
 import { RunService } from "./run-service";
 
@@ -21,13 +27,6 @@ const DEFAULT_WORKFLOW_AGENTS = ["producer", "designer", "programmer", "artist",
 
 function agentById(agentId: string): AgentProfile {
   return AGENT_PROFILES.find((agent) => agent.id === agentId) ?? AGENT_PROFILES[0];
-}
-
-function chooseCli(agent: AgentProfile, tools: CliTool[], preferredCliToolId?: CliToolId): CliToolId {
-  const preferred = preferredCliToolId ? tools.find((tool) => tool.id === preferredCliToolId && tool.installed) : undefined;
-  const defaultTool = tools.find((tool) => tool.id === agent.defaultCli && tool.installed);
-  const fallback = tools.find((tool) => tool.installed);
-  return preferred?.id ?? defaultTool?.id ?? fallback?.id ?? preferredCliToolId ?? agent.defaultCli;
 }
 
 function buildWorkflowMessage(agent: AgentProfile, userMessage: string, index: number): string {
@@ -48,12 +47,154 @@ function buildWorkflowMessage(agent: AgentProfile, userMessage: string, index: n
   ].join("\n");
 }
 
+function inspectionOutput(result: WebBuildInspection): string {
+  return [
+    result.message,
+    `Path: ${result.webBuildPath}`,
+    `Required: ${result.requiredFiles.join(", ")}`,
+    result.missingRequiredFiles.length ? `Missing: ${result.missingRequiredFiles.join(", ")}` : undefined,
+    result.files.length ? `Files:\n${result.files.map((file) => `- ${file}`).join("\n")}` : "Files: none"
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function workflowResultLine(label: string, value: string | undefined): string {
+  return `- ${label}: ${value ?? "未执行"}`;
+}
+
+function buildWorkflowSummaryMessage(input: {
+  projectId: string;
+  run: StudioRun;
+  exportResult?: GodotRunResult;
+  inspectionResult?: WebBuildInspection;
+  zipResult?: ExportResult;
+  previewResult?: PreviewResult;
+}): AgentMessage {
+  const { projectId, run, exportResult, inspectionResult, zipResult, previewResult } = input;
+  const failedSteps = run.steps.filter((step) => step.status === "failed").length;
+  const inspectionSummary = inspectionResult
+    ? inspectionResult.ok
+      ? `完整，${inspectionResult.files.length} 个文件，${inspectionResult.totalBytes} bytes`
+      : `不完整，缺失 ${inspectionResult.missingRequiredFiles.join(", ")}`
+    : undefined;
+  const content = [
+    `团队工作流已${run.status === "completed" ? "完成" : "结束"}。`,
+    `状态：${run.status}${failedSteps > 0 ? `，失败步骤 ${failedSteps} 个` : ""}`,
+    "",
+    "交付结果：",
+    workflowResultLine("Godot Web 导出", exportResult ? (exportResult.ok ? "成功" : `失败，exitCode=${exportResult.exitCode ?? "unknown"}`) : undefined),
+    workflowResultLine("Web 构建产物检查", inspectionSummary),
+    workflowResultLine("Web zip", zipResult?.zipPath),
+    workflowResultLine("导出清单", zipResult?.manifestPath),
+    workflowResultLine("实时预览", previewResult?.url),
+    "",
+    run.summary ? `运行摘要：${run.summary}` : undefined,
+    "下一步可以直接描述要修改的玩法、美术、难度或 bug，我会把上下文继续交给对应 Agent。"
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+
+  return {
+    id: createMessageId(),
+    projectId,
+    agentId: "producer",
+    role: "system",
+    content,
+    createdAt: new Date().toISOString()
+  };
+}
+
+export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], input: RunStudioWorkflowInput): Array<{
+  title: string;
+  agentId?: string;
+  cliToolId?: CliToolId;
+  message?: string;
+}> {
+  return [
+    ...agents.map((agent, index) => ({
+      title: `${index + 1}. ${agent.title}：${agent.specialty}`,
+      agentId: agent.id,
+      cliToolId: chooseAgentCli(agent, tools, input.preferredCliToolId),
+      message: buildWorkflowMessage(agent, input.message, index)
+    })),
+    ...(input.autoExportWeb
+      ? [
+          {
+            title: "Godot Web 自动导出",
+            message: "团队工作流结束后刷新 Web 构建。"
+          }
+        ]
+      : []),
+    ...(input.autoPackageWebZip
+      ? [
+          {
+            title: "Web 构建产物检查",
+            message: "确认 build/web 包含 index.html、wasm 和 pck。"
+          },
+          {
+            title: "打包 Web zip",
+            message: "把 build/web 压缩为可分享的 Web zip。"
+          }
+        ]
+      : []),
+    ...(input.autoStartPreview
+      ? [
+          {
+            title: "刷新实时 Web 预览",
+            message: "启动或复用本地预览服务器。"
+          }
+        ]
+      : [])
+  ];
+}
+
+export function isAgentWorkflowStepFailed(input: {
+  cliToolId: CliToolId;
+  tools: CliTool[];
+  message?: AgentMessage;
+}): boolean {
+  if (!input.tools.some((tool) => tool.id === input.cliToolId && tool.installed)) {
+    return true;
+  }
+  if (!input.message || input.message.role === "system") {
+    return true;
+  }
+  return input.message.exitCode !== 0;
+}
+
+async function failQueuedDeliverySteps(input: {
+  runService: RunService;
+  runId: string;
+  run: StudioRun;
+  startIndex: number;
+  message: string;
+}): Promise<{ run: StudioRun; failedSteps: number }> {
+  let latestRun = input.run;
+  let failedSteps = 0;
+  const deliverySteps = input.run.steps.slice(input.startIndex);
+
+  for (const step of deliverySteps) {
+    if (step.status !== "queued") {
+      continue;
+    }
+    failedSteps += 1;
+    latestRun = await input.runService.updateStep(input.runId, step.id, {
+      status: "failed",
+      message: input.message
+    });
+  }
+
+  return { run: latestRun, failedSteps };
+}
+
 export class WorkflowService {
   constructor(
     private readonly projectService: ProjectService,
     private readonly cliService: CliService,
     private readonly agentService: AgentService,
     private readonly godotService: GodotService,
+    private readonly exportService: ExportService,
     private readonly autoPreviewService: AutoPreviewService,
     private readonly runService: RunService
   ) {}
@@ -68,38 +209,18 @@ export class WorkflowService {
       projectId: project.id,
       kind: "studio-workflow",
       title: "AI 游戏工作室团队工作流",
-      steps: [
-        ...agents.map((agent, index) => ({
-          title: `${index + 1}. ${agent.title}：${agent.specialty}`,
-          agentId: agent.id,
-          cliToolId: chooseCli(agent, tools, input.preferredCliToolId),
-          message: buildWorkflowMessage(agent, input.message, index)
-        })),
-        ...(input.autoExportWeb
-          ? [
-              {
-                title: "Godot Web 自动导出",
-                message: "团队工作流结束后刷新 Web 构建。"
-              }
-            ]
-          : []),
-        ...(input.autoStartPreview
-          ? [
-              {
-                title: "刷新实时 Web 预览",
-                message: "启动或复用本地预览服务器。"
-              }
-            ]
-          : [])
-      ]
+      steps: buildWorkflowRunSteps(agents, tools, input)
     });
 
     await this.runService.startRun(run.id, run.steps[0]?.id);
 
     let latestRun: StudioRun = run;
     let exportResult: GodotRunResult | undefined;
+    let inspectionResult: WebBuildInspection | undefined;
+    let zipResult: ExportResult | undefined;
     let previewResult: PreviewResult | undefined;
     let failedSteps = 0;
+    let failedAgentSteps = 0;
 
     for (const [index, agent] of agents.entries()) {
       const step = latestRun.steps[index];
@@ -107,13 +228,14 @@ export class WorkflowService {
         continue;
       }
       await this.runService.updateStep(run.id, step.id, { status: "running" });
-      const cliToolId = step.cliToolId ?? chooseCli(agent, tools, input.preferredCliToolId);
+      const cliToolId = step.cliToolId ?? chooseAgentCli(agent, tools, input.preferredCliToolId);
       const result = await this.agentService.runTurn(
         {
           projectId: project.id,
           agentId: agent.id,
           cliToolId,
-          message: step.message ?? buildWorkflowMessage(agent, input.message, index)
+          message: step.message ?? buildWorkflowMessage(agent, input.message, index),
+          autoStartPreview: false
         },
         { recordRun: false, parentRunId: run.id, parentStepId: step.id }
       );
@@ -126,9 +248,14 @@ export class WorkflowService {
       const lastAgentMessage = [...result.messages]
         .reverse()
         .find((message) => message.agentId === agent.id && (message.role === "agent" || message.role === "system"));
-      const stepFailed = !tools.some((tool) => tool.id === cliToolId && tool.installed) || (lastAgentMessage?.exitCode ?? 0) !== 0;
+      const stepFailed = isAgentWorkflowStepFailed({
+        cliToolId,
+        tools,
+        message: lastAgentMessage
+      });
       if (stepFailed) {
         failedSteps += 1;
+        failedAgentSteps += 1;
       }
       latestRun = await this.runService.updateStep(run.id, step.id, {
         status: stepFailed ? "failed" : "completed",
@@ -139,6 +266,42 @@ export class WorkflowService {
     }
 
     let stepCursor = agents.length;
+    if (agents.length > 0 && failedAgentSteps === agents.length) {
+      const skipped = await failQueuedDeliverySteps({
+        runService: this.runService,
+        runId: run.id,
+        run: latestRun,
+        startIndex: stepCursor,
+        message: "所有 Agent 步骤都失败，已跳过后续 Web 导出、打包和预览，避免生成只包含旧模板的交付物。"
+      });
+      latestRun = skipped.run;
+      failedSteps += skipped.failedSteps;
+      latestRun = await this.runService.finishRun(
+        run.id,
+        "failed",
+        `团队工作流结束，所有 ${failedAgentSteps} 个 Agent 步骤失败，已跳过自动交付步骤。`
+      );
+      await this.projectService.appendMessages(project.id, [
+        buildWorkflowSummaryMessage({
+          projectId: project.id,
+          run: latestRun,
+          exportResult,
+          inspectionResult,
+          zipResult,
+          previewResult
+        })
+      ]);
+
+      return {
+        project: await this.projectService.getProject(project.id),
+        run: latestRun,
+        exportResult,
+        inspectionResult,
+        zipResult,
+        previewResult
+      };
+    }
+
     if (input.autoExportWeb) {
       if (await this.runService.isCancelled(run.id)) {
         return {
@@ -161,14 +324,88 @@ export class WorkflowService {
       }
     }
 
+    if (input.autoPackageWebZip) {
+      if (await this.runService.isCancelled(run.id)) {
+        return {
+          project: await this.projectService.getProject(project.id),
+          run: (await this.runService.getRun(run.id)) ?? latestRun,
+          exportResult,
+          inspectionResult,
+          zipResult
+        };
+      }
+      const inspectStep = latestRun.steps[stepCursor++];
+      const zipStep = latestRun.steps[stepCursor++];
+      let zipBlocked = false;
+      if (inspectStep) {
+        if (exportResult && !exportResult.ok) {
+          zipBlocked = true;
+          failedSteps += 1;
+          latestRun = await this.runService.updateStep(run.id, inspectStep.id, {
+            status: "failed",
+            message: "Godot Web 导出失败，已跳过产物检查。"
+          });
+        } else {
+          await this.runService.updateStep(run.id, inspectStep.id, { status: "running" });
+          try {
+            inspectionResult = await this.exportService.inspectWebBuild(project.id);
+            if (!inspectionResult.ok) {
+              zipBlocked = true;
+              failedSteps += 1;
+            }
+            latestRun = await this.runService.updateStep(run.id, inspectStep.id, {
+              status: inspectionResult.ok ? "completed" : "failed",
+              output: inspectionOutput(inspectionResult),
+              message: inspectionResult.message
+            });
+          } catch (error) {
+            failedSteps += 1;
+            zipBlocked = true;
+            latestRun = await this.runService.updateStep(run.id, inspectStep.id, {
+              status: "failed",
+              message: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
+      if (zipStep) {
+        if (zipBlocked) {
+          failedSteps += 1;
+          latestRun = await this.runService.updateStep(run.id, zipStep.id, {
+            status: "failed",
+            message: exportResult && !exportResult.ok ? "Godot Web 导出失败，已跳过 zip 打包。" : "Web 构建产物检查失败，已跳过 zip 打包。"
+          });
+        } else {
+          await this.runService.updateStep(run.id, zipStep.id, { status: "running" });
+          try {
+            zipResult = await this.exportService.zipWebBuild(project.id);
+            inspectionResult = zipResult.inspection ?? inspectionResult;
+            latestRun = await this.runService.updateStep(run.id, zipStep.id, {
+              status: "completed",
+              message: `Web zip 已生成：${zipResult.zipPath}`
+            });
+          } catch (error) {
+            failedSteps += 1;
+            latestRun = await this.runService.updateStep(run.id, zipStep.id, {
+              status: "failed",
+              message: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
+    }
+
     if (input.autoStartPreview) {
       if (await this.runService.isCancelled(run.id)) {
         return {
           project: await this.projectService.getProject(project.id),
           run: (await this.runService.getRun(run.id)) ?? latestRun,
-          exportResult
+          exportResult,
+          inspectionResult,
+          zipResult
         };
       }
+
       const previewStep = latestRun.steps[stepCursor];
       if (previewStep) {
         await this.runService.updateStep(run.id, previewStep.id, { status: "running" });
@@ -193,11 +430,23 @@ export class WorkflowService {
       failedSteps > 0 ? "failed" : "completed",
       failedSteps > 0 ? `团队工作流完成，但有 ${failedSteps} 个步骤失败。` : "团队工作流完成，项目已推进到下一版。"
     );
+    await this.projectService.appendMessages(project.id, [
+      buildWorkflowSummaryMessage({
+        projectId: project.id,
+        run: latestRun,
+        exportResult,
+        inspectionResult,
+        zipResult,
+        previewResult
+      })
+    ]);
 
     return {
       project: await this.projectService.getProject(project.id),
       run: latestRun,
       exportResult,
+      inspectionResult,
+      zipResult,
       previewResult
     };
   }

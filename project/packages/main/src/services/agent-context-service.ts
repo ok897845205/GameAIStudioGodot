@@ -1,6 +1,7 @@
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type ProjectDetails } from "@gameaistudio/shared";
+import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type PreviewStatus, type ProjectDetails } from "@gameaistudio/shared";
+import { readAgentJournalTail } from "./agent-journal-service";
 
 export interface AgentContextFile {
   path: string;
@@ -13,6 +14,7 @@ export interface AgentContextBundle {
   markdown: string;
   files: AgentContextFile[];
   recentMessages: string[];
+  agentJournal: string;
 }
 
 export interface AgentContextServiceOptions {
@@ -26,6 +28,7 @@ interface BuildMarkdownInput {
   userMessage: string;
   files: AgentContextFile[];
   recentMessages: string[];
+  agentJournal: string;
   now: string;
 }
 
@@ -154,9 +157,42 @@ function formatFileList(files: AgentContextFile[]): string[] {
   return files.map((file) => `- ${file.path} (${formatBytes(file.size)}, ${file.kind})`);
 }
 
+function previewStatusLabel(status?: PreviewStatus): string {
+  if (!status) {
+    return "not started";
+  }
+  const labels: Record<PreviewStatus, string> = {
+    watching: "watching",
+    exporting: "exporting",
+    ready: "ready",
+    failed: "failed",
+    stopped: "stopped"
+  };
+  return labels[status];
+}
+
+function formatDeliveryStatus(project: ProjectDetails): string[] {
+  const inspection = project.latestWebBuildInspection;
+  const inspectionLine = inspection
+    ? inspection.ok
+      ? `- Web artifact inspection: OK (${inspection.files.length} files, ${formatBytes(inspection.totalBytes)})`
+      : `- Web artifact inspection: FAILED, missing ${inspection.missingRequiredFiles.join(", ")}`
+    : "- Web artifact inspection: not run yet";
+
+  return [
+    `- Web build path: ${project.webBuildPath}`,
+    `- Preview: ${previewStatusLabel(project.previewStatus)}${project.previewUrl ? ` (${project.previewUrl})` : ""}`,
+    `- Web zip: ${project.exportZipPath ?? "not exported yet"}`,
+    `- Export manifest: ${project.latestExportManifestPath ?? "not exported yet"}`,
+    inspectionLine,
+    inspection ? `- Required Web artifacts: ${inspection.requiredFiles.join(", ")}` : "- Required Web artifacts: index.html, *.wasm, *.pck"
+  ];
+}
+
 export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
   const agent = AGENT_PROFILES.find((profile) => profile.id === input.agentId) ?? AGENT_PROFILES[0];
   const recentMessages = input.recentMessages.length > 0 ? input.recentMessages : ["- 暂无历史对话。"];
+  const agentJournal = input.agentJournal.trim() || "- No Agent journal entries yet.";
 
   return [
     "# GameAIStudio Agent Context",
@@ -176,6 +212,10 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     "- When changing project files, mention the main files touched and the intended gameplay effect.",
     "- If you cannot complete a change, leave concrete next steps that another Agent can continue.",
     "",
+    "## Delivery Status",
+    "",
+    ...formatDeliveryStatus(input.project),
+    "",
     "## Current User Message",
     "",
     input.userMessage.trim() || "(empty)",
@@ -183,6 +223,10 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     "## Recent Conversation",
     "",
     ...recentMessages,
+    "",
+    "## Recent Agent Journal",
+    "",
+    agentJournal,
     "",
     "## Project File Map",
     "",
@@ -202,6 +246,7 @@ export class AgentContextService {
   async prepare(input: { project: ProjectDetails; agentId: string; userMessage: string }): Promise<AgentContextBundle> {
     const files = await listAgentContextFiles(input.project.rootPath, this.options.maxFiles ?? DEFAULT_MAX_FILES);
     const recentMessages = summarizeRecentMessages(input.project.messages, this.options.maxMessages ?? DEFAULT_MAX_MESSAGES);
+    const agentJournal = await readAgentJournalTail(input.project.rootPath);
     const contextPath = path.join(input.project.rootPath, ".gameaistudio", "agent-context.md");
     const markdown = buildAgentContextMarkdown({
       project: input.project,
@@ -209,6 +254,7 @@ export class AgentContextService {
       userMessage: input.userMessage,
       files,
       recentMessages,
+      agentJournal,
       now: new Date().toISOString()
     });
 
@@ -219,7 +265,8 @@ export class AgentContextService {
       contextPath,
       markdown,
       files,
-      recentMessages
+      recentMessages,
+      agentJournal
     };
   }
 }

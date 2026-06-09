@@ -21,6 +21,19 @@ function createProject(rootPath: string): StudioProject {
   };
 }
 
+function createInspection(project: StudioProject, ok = true) {
+  return {
+    projectId: project.id,
+    webBuildPath: project.webBuildPath,
+    ok,
+    files: ok ? ["game.pck", "game.wasm", "index.html"] : ["index.html"],
+    totalBytes: ok ? 1024 : 12,
+    requiredFiles: ["index.html", "*.wasm", "*.pck"],
+    missingRequiredFiles: ok ? [] : ["*.wasm", "*.pck"],
+    message: ok ? "Web build contains 3 files (1024 bytes)." : "Web build is missing required files: *.wasm, *.pck."
+  };
+}
+
 describe("WebExportPipelineService", () => {
   it("stops before export and zip when validation fails", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-export-"));
@@ -61,6 +74,7 @@ describe("WebExportPipelineService", () => {
       }
     };
     const exportService = {
+      inspectWebBuild: async () => createInspection(project),
       zipWebBuild: async () => {
         zipCalled = true;
         return {
@@ -80,7 +94,188 @@ describe("WebExportPipelineService", () => {
       expect(exportCalled).toBe(false);
       expect(zipCalled).toBe(false);
       expect(result.run.status).toBe("failed");
-      expect(result.run.steps.map((step) => step.status)).toEqual(["failed", "queued", "queued"]);
+      expect(result.run.steps.map((step) => step.status)).toEqual(["failed", "queued", "queued", "queued"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops before zip when the exported Web build is incomplete", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-export-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+
+    let zipCalled = false;
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({
+        ...project,
+        messages: [],
+        runs: await runService.listRuns(project.id),
+        snapshots: []
+      })
+    };
+    const godotService = {
+      validate: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      }),
+      exportWeb: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      })
+    };
+    const exportService = {
+      inspectWebBuild: async () => createInspection(project, false),
+      zipWebBuild: async () => {
+        zipCalled = true;
+        return {
+          projectId: project.id,
+          zipPath: path.join(project.rootPath, "dist", "demo.zip"),
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+
+    try {
+      const pipeline = new WebExportPipelineService(projectService as never, godotService as never, exportService as never, runService);
+      const result = await pipeline.exportWebZip(project.id);
+
+      expect(result.ok).toBe(false);
+      expect(result.inspectionResult?.missingRequiredFiles).toEqual(["*.wasm", "*.pck"]);
+      expect(zipCalled).toBe(false);
+      expect(result.run.status).toBe("failed");
+      expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "completed", "failed", "queued"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes the run when Web build inspection throws", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-export-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+
+    let zipCalled = false;
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({
+        ...project,
+        messages: [],
+        runs: await runService.listRuns(project.id),
+        snapshots: []
+      })
+    };
+    const godotService = {
+      validate: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      }),
+      exportWeb: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      })
+    };
+    const exportService = {
+      inspectWebBuild: async () => {
+        throw new Error("cannot inspect build output");
+      },
+      zipWebBuild: async () => {
+        zipCalled = true;
+        return {
+          projectId: project.id,
+          zipPath: path.join(project.rootPath, "dist", "demo.zip"),
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+
+    try {
+      const pipeline = new WebExportPipelineService(projectService as never, godotService as never, exportService as never, runService);
+      const result = await pipeline.exportWebZip(project.id);
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("cannot inspect build output");
+      expect(zipCalled).toBe(false);
+      expect(result.run.status).toBe("failed");
+      expect(result.run.summary).toBe("Web 构建产物检查失败，已停止 zip 打包。");
+      expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "completed", "failed", "queued"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the Web build inspection when export and zip complete", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-export-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+    const inspection = createInspection(project);
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({
+        ...project,
+        messages: [],
+        runs: await runService.listRuns(project.id),
+        snapshots: []
+      })
+    };
+    const godotService = {
+      validate: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      }),
+      exportWeb: async () => ({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        durationMs: 1
+      })
+    };
+    const exportService = {
+      inspectWebBuild: async () => inspection,
+      zipWebBuild: async () => ({
+        projectId: project.id,
+        zipPath: path.join(project.rootPath, "dist", "demo.zip"),
+        manifestPath: path.join(project.webBuildPath, "gameaistudio-export.json"),
+        webBuildPath: project.webBuildPath,
+        inspection
+      })
+    };
+
+    try {
+      const pipeline = new WebExportPipelineService(projectService as never, godotService as never, exportService as never, runService);
+      const result = await pipeline.exportWebZip(project.id);
+
+      expect(result.ok).toBe(true);
+      expect(result.manifestPath).toBe(path.join(project.webBuildPath, "gameaistudio-export.json"));
+      expect(result.inspectionResult).toEqual(inspection);
+      expect(result.run.status).toBe("completed");
+      expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "completed", "completed", "completed"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

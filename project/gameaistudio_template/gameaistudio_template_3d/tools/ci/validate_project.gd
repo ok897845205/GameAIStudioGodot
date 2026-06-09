@@ -36,7 +36,7 @@ func _init() -> void:
 		var main := main_scene.instantiate()
 		if not main is Node3D:
 			errors.append("Main scene root must be Node3D.")
-		for node_path in ["Player", "Player/Camera3D", "Ground", "Sun", "BasicObjects/Cube", "BasicObjects/Sphere", "BasicObjects/Cylinder", "Enemy"]:
+		for node_path in ["Player", "Player/CameraPivot/SpringArm3D/Camera3D", "Ground", "Sun", "BasicObjects/Cube", "BasicObjects/Sphere", "BasicObjects/Cylinder", "Enemy"]:
 			if main.get_node_or_null(NodePath(node_path)) == null:
 				errors.append("Main scene missing node: " + node_path)
 		main.free()

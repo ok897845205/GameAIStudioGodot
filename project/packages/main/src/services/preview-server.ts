@@ -21,15 +21,41 @@ interface RunningPreview {
   url: string;
 }
 
-function safeJoin(root: string, requestPath: string): string {
-  const decoded = decodeURIComponent(requestPath.split("?")[0] ?? "/");
+export function isPathInsideDirectory(candidate: string, directory: string): boolean {
+  const relativePath = path.relative(path.resolve(directory), path.resolve(candidate));
+  return relativePath === "" || (Boolean(relativePath) && !relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function safeDecodeRequestPath(requestPath: string): string {
+  try {
+    return decodeURIComponent(requestPath.split("?")[0] ?? "/");
+  } catch {
+    return "/";
+  }
+}
+
+export function safeJoin(root: string, requestPath: string): string {
+  const decoded = safeDecodeRequestPath(requestPath);
   const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
   const target = path.resolve(root, relative);
   const resolvedRoot = path.resolve(root);
-  if (!target.startsWith(resolvedRoot)) {
+  if (!isPathInsideDirectory(target, resolvedRoot)) {
     return path.join(resolvedRoot, "index.html");
   }
   return target;
+}
+
+async function assertPreviewBuildReady(webBuildPath: string): Promise<void> {
+  try {
+    await readdir(webBuildPath);
+  } catch {
+    throw new Error(`Web 预览目录不存在：${webBuildPath}。请先导出 Web 构建。`);
+  }
+
+  const indexPath = path.join(webBuildPath, "index.html");
+  if (!existsSync(indexPath) || !statSync(indexPath).isFile()) {
+    throw new Error(`Web 预览缺少 index.html：${indexPath}。请重新导出 Web 构建。`);
+  }
 }
 
 export class PreviewServer {
@@ -48,12 +74,23 @@ export class PreviewServer {
       };
     }
 
-    await readdir(project.webBuildPath);
+    await assertPreviewBuildReady(project.webBuildPath);
     const server = http.createServer((request, response) => {
       const target = safeJoin(project.webBuildPath, request.url ?? "/");
       const finalTarget = existsSync(target) && statSync(target).isFile() ? target : path.join(project.webBuildPath, "index.html");
+      if (!existsSync(finalTarget) || !statSync(finalTarget).isFile()) {
+        response.writeHead(404, {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/plain; charset=utf-8"
+        });
+        response.end("Preview file not found.");
+        return;
+      }
       response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
       response.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+      response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      response.setHeader("Pragma", "no-cache");
+      response.setHeader("Expires", "0");
       response.setHeader("Content-Type", MIME_TYPES[path.extname(finalTarget).toLowerCase()] ?? "application/octet-stream");
       createReadStream(finalTarget).pipe(response);
     });
@@ -89,4 +126,3 @@ export class PreviewServer {
     this.previews.clear();
   }
 }
-

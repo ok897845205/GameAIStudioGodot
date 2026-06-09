@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Download,
   ExternalLink,
+  FileJson,
   FolderOpen,
   Gamepad2,
   Hammer,
@@ -22,6 +23,7 @@ import {
 import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
+  chooseAgentCli,
   type AgentMessage,
   type AgentProfile,
   type CliTool,
@@ -36,8 +38,13 @@ import {
   type StudioProject,
   type StudioRun
 } from "@gameaistudio/shared";
+import { getSendTurnButtonState } from "./agent-action-state";
+import { getCreateProjectButtonState } from "./create-project-state";
+import { agentTurnPreviewNotice } from "./preview-notice";
 
-type BusyAction = "boot" | "create" | "send" | "workflow" | "snapshot" | "preview" | "export" | "godot" | "validate" | "cli" | undefined;
+type BusyAction = "boot" | "create" | "send" | "workflow" | "snapshot" | "preview" | "export" | "godot" | "editor" | "validate" | "cli" | undefined;
+type TeamCliRouteStatus = "default" | "fallback" | "missing";
+type PreflightStatus = "ready" | "warning" | "blocked";
 
 interface CreateForm {
   name: string;
@@ -76,6 +83,23 @@ function dirnameFromPath(value: string): string {
   const normalized = value.replace(/\\/g, "/");
   const index = normalized.lastIndexOf("/");
   return index > 0 ? value.slice(0, index) : value;
+}
+
+function projectFilePath(rootPath: string, relativePath: string): string {
+  const separator = rootPath.includes("\\") ? "\\" : "/";
+  return `${rootPath.replace(/[\\/]+$/, "")}${separator}${relativePath.replace(/\//g, separator)}`;
+}
+
+function projectAgentContextPath(rootPath: string): string {
+  return projectFilePath(rootPath, ".gameaistudio/agent-context.md");
+}
+
+function projectAgentJournalPath(rootPath: string): string {
+  return projectFilePath(rootPath, ".gameaistudio/agent-journal.md");
+}
+
+function projectGuidePath(rootPath: string): string {
+  return projectFilePath(rootPath, "GAMEAISTUDIO.md");
 }
 
 function agentById(agentId: string): AgentProfile {
@@ -178,6 +202,25 @@ function runtimeSeverityLabel(severity: StudioBootstrap["godotRuntime"]["diagnos
   return labels[severity];
 }
 
+function teamRouteStatusLabel(status: TeamCliRouteStatus, defaultCli: CliToolId): string {
+  if (status === "default") {
+    return "默认";
+  }
+  if (status === "fallback") {
+    return `回退自 ${CLI_TOOL_LABELS[defaultCli]}`;
+  }
+  return "缺失";
+}
+
+function preflightStatusLabel(status: PreflightStatus): string {
+  const labels: Record<PreflightStatus, string> = {
+    ready: "就绪",
+    warning: "注意",
+    blocked: "阻塞"
+  };
+  return labels[status];
+}
+
 function snapshotReasonLabel(snapshot: ProjectSnapshot): string {
   if (snapshot.reason === "project-created") {
     return "初始模板";
@@ -225,6 +268,7 @@ export function App() {
   const [selectedCli, setSelectedCli] = useState<CliToolId>("codex");
   const [form, setForm] = useState<CreateForm>(initialForm);
   const [draft, setDraft] = useState("先帮我规划第一版可玩的核心循环。");
+  const [autoPreviewAfterSend, setAutoPreviewAfterSend] = useState(true);
   const [busy, setBusy] = useState<BusyAction>("boot");
   const [notice, setNotice] = useState<string>("");
   const [previewNotice, setPreviewNotice] = useState<string>("");
@@ -232,15 +276,71 @@ export function App() {
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
   const activeAgent = agentById(activeAgentId);
+  const hasInstalledCli = tools.some((tool) => tool.installed);
   const activeMessages = useMemo(
     () => (selectedProject?.messages ?? []).filter((message) => message.agentId === activeAgentId || message.role === "system"),
     [selectedProject, activeAgentId]
   );
   const activeTool = tools.find((tool) => tool.id === selectedCli);
+  const activeCliInstalled = Boolean(activeTool?.installed);
+  const selectedTemplate = bootstrap?.godotRuntime.templates.find((template) => template.dimension === form.dimension);
+  const createPreflight = useMemo(
+    () => [
+      {
+        id: "cli",
+        status: hasInstalledCli ? ("ready" as const) : ("warning" as const),
+        title: "本地 AI CLI",
+        detail: hasInstalledCli ? "已检测到可用于 Agent 的本地 CLI。" : "未检测到本地 AI CLI；会先创建 Godot 项目，安装 CLI 后再运行团队工作流。"
+      },
+      {
+        id: "template",
+        status: selectedTemplate?.available ? ("ready" as const) : ("blocked" as const),
+        title: `${form.dimension.toUpperCase()} Godot 模板`,
+        detail: selectedTemplate?.available ? selectedTemplate.path : "当前维度的内置 Godot 模板缺失，无法创建项目。"
+      },
+      {
+        id: "preview",
+        status: bootstrap?.godotRuntime.consolePath ? ("ready" as const) : ("warning" as const),
+        title: "Web 预览 / 导出 / zip",
+        detail: bootstrap?.godotRuntime.consolePath ? "Godot Console 可用于导出、打包和刷新预览。" : "未检测到 Godot Console，Agent 可工作但 Web 预览/导出/zip 会失败。"
+      }
+    ],
+    [bootstrap?.godotRuntime.consolePath, form.dimension, hasInstalledCli, selectedTemplate?.available, selectedTemplate?.path]
+  );
+  const templateBlocked = Boolean(bootstrap && !selectedTemplate?.available);
+  const teamCliRoutes = useMemo(
+    () =>
+      agents.map((agent) => {
+        const cliToolId = chooseAgentCli(agent, tools);
+        const tool = tools.find((candidate) => candidate.id === cliToolId);
+        const status: TeamCliRouteStatus = tool?.installed ? (cliToolId === agent.defaultCli ? "default" : "fallback") : "missing";
+        return {
+          agent,
+          cliToolId,
+          tool,
+          status
+        };
+      }),
+    [agents, tools]
+  );
   const activeRun = useMemo(
     () => (selectedProject?.runs ?? []).find((run) => run.status === "running" || run.status === "queued"),
     [selectedProject?.runs]
   );
+  const previewFrameKey = selectedProject?.previewUrl
+    ? `${selectedProject.id}:${selectedProject.previewUrl}:${selectedProject.previewUpdatedAt ?? "initial"}`
+    : "no-preview";
+
+  async function openPath(targetPath?: string) {
+    if (!targetPath) {
+      return;
+    }
+    try {
+      await window.studio.openPath(targetPath);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   async function loadBootstrap(selectProjectId?: string) {
     setBusy("boot");
@@ -321,15 +421,14 @@ export function App() {
         return;
       }
 
-      const preferredTool = refreshedTools.find((tool) => tool.id === defaultCli && tool.installed);
-      if (!preferredTool) {
+      if (!refreshedTools.some((tool) => tool.installed)) {
         setNotice(`已创建项目：${project.name}。请先安装至少一个本地 AI CLI，再运行团队工作流。`);
         return;
       }
 
       setBusy("workflow");
       setNotice(`已创建项目：${project.name}，正在启动团队工作流。`);
-      await startStudioWorkflow(project, project.prompt, preferredTool.id);
+      await startStudioWorkflow(project, project.prompt);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -388,10 +487,15 @@ export function App() {
         projectId: selectedProject.id,
         agentId: activeAgentId,
         cliToolId: selectedCli,
-        message: draft.trim()
+        message: draft.trim(),
+        autoStartPreview: autoPreviewAfterSend
       });
       setSelectedProject({ ...result.project, messages: result.messages, runs: result.runs });
       setProjects(await window.studio.listProjects());
+      const nextPreviewNotice = agentTurnPreviewNotice(result);
+      if (nextPreviewNotice) {
+        setPreviewNotice(nextPreviewNotice);
+      }
       setDraft("");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -450,11 +554,18 @@ export function App() {
       message,
       preferredCliToolId,
       autoExportWeb: true,
+      autoPackageWebZip: true,
       autoStartPreview: true
     });
     setSelectedProject(result.project);
     setProjects(await window.studio.listProjects());
-    setNotice(result.run.status === "completed" ? "团队工作流完成，预览已刷新。" : result.run.summary ?? "团队工作流结束。");
+    setNotice(
+      result.run.status === "completed"
+        ? result.zipResult
+          ? `团队工作流完成，Web zip 已导出：${result.zipResult.zipPath}`
+          : "团队工作流完成，预览已刷新。"
+        : result.run.summary ?? "团队工作流结束。"
+    );
   }
 
   async function runWorkflow() {
@@ -464,7 +575,7 @@ export function App() {
     setBusy("workflow");
     setNotice("");
     try {
-      await startStudioWorkflow(selectedProject, draft.trim() || selectedProject.prompt, activeTool?.installed ? selectedCli : undefined);
+      await startStudioWorkflow(selectedProject, draft.trim() || selectedProject.prompt);
       if (draft.trim()) {
         setDraft("");
       }
@@ -554,6 +665,21 @@ export function App() {
     }
   }
 
+  async function openGodotEditor() {
+    if (!selectedProject) {
+      return;
+    }
+    setBusy("editor");
+    try {
+      const result = await window.studio.openGodotEditor(selectedProject.id);
+      setNotice(result.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function validateProject() {
     if (!selectedProject) {
       return;
@@ -587,6 +713,20 @@ export function App() {
   }
 
   const isBusy = Boolean(busy);
+  const createProjectButton = getCreateProjectButtonState({
+    isBusy,
+    prompt: form.prompt,
+    templateBlocked,
+    autoRunWorkflow: form.autoRunWorkflow,
+    hasInstalledCli
+  });
+  const sendTurnButton = getSendTurnButtonState({
+    hasSelectedProject: Boolean(selectedProject),
+    draft,
+    isBusy,
+    selectedCliInstalled: activeCliInstalled,
+    selectedCliLabel: CLI_TOOL_LABELS[selectedCli]
+  });
 
   return (
     <main className="app-shell">
@@ -630,13 +770,38 @@ export function App() {
             />
             <span>创建后自动启动团队工作流</span>
           </label>
+          {form.autoRunWorkflow && bootstrap ? (
+            <div className="team-cli-routes compact">
+              {teamCliRoutes.map((route) => (
+                <div className={`team-cli-route ${route.status}`} key={`create:${route.agent.id}`}>
+                  <span>{route.agent.title}</span>
+                  <strong>{CLI_TOOL_LABELS[route.cliToolId]}</strong>
+                  <small>{teamRouteStatusLabel(route.status, route.agent.defaultCli)}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {form.autoRunWorkflow && bootstrap ? (
+            <div className="create-preflight">
+              {createPreflight.map((item) => (
+                <div className={`create-preflight-item ${item.status}`} key={item.id}>
+                  <span>{preflightStatusLabel(item.status)}</span>
+                  <p title={item.detail}>
+                    <strong>{item.title}</strong>
+                    {` · ${item.detail}`}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <Button
             variant="primary"
             icon={busy === "create" || (busy === "workflow" && form.autoRunWorkflow) ? <Loader2 className="spin" size={16} /> : <Package size={16} />}
             onClick={createProject}
-            disabled={isBusy || !form.prompt.trim()}
+            disabled={createProjectButton.disabled}
+            title={createProjectButton.title}
           >
-            {form.autoRunWorkflow ? "创建并生成游戏" : "创建 Godot 项目"}
+            {createProjectButton.label}
           </Button>
         </section>
 
@@ -729,8 +894,16 @@ export function App() {
           </div>
           {selectedProject ? (
             <div className="header-actions">
-              <Button icon={<FolderOpen size={16} />} onClick={() => window.studio.openPath(selectedProject.rootPath)}>
+              <Button icon={<FolderOpen size={16} />} onClick={() => openPath(selectedProject.rootPath)}>
                 打开目录
+              </Button>
+              <Button
+                icon={busy === "editor" ? <Loader2 className="spin" size={16} /> : <Gamepad2 size={16} />}
+                onClick={openGodotEditor}
+                disabled={isBusy}
+                title={bootstrap?.godotRuntime.guiPath ?? "需要内置 Godot GUI 可执行文件"}
+              >
+                Godot
               </Button>
               <Button icon={<ExternalLink size={16} />} onClick={() => selectedProject.previewUrl && window.open(selectedProject.previewUrl)}>
                 浏览器
@@ -766,8 +939,25 @@ export function App() {
                   <strong>{message.role === "user" ? "用户" : message.role === "system" ? "系统" : activeAgent.title}</strong>
                   <span>{formatTime(message.createdAt)}</span>
                   {message.cliToolId ? <span>{CLI_TOOL_LABELS[message.cliToolId]}</span> : null}
+                  {message.fileChanges && message.fileChanges.length > 0 ? <span>{message.fileChanges.length} 个文件变更</span> : null}
                 </div>
                 <pre>{message.content}</pre>
+                {message.fileChanges && message.fileChanges.length > 0 ? (
+                  <div className="message-file-changes">
+                    {message.fileChanges.slice(0, 10).map((change) => (
+                      <button
+                        className={`message-file-change ${change.kind}`}
+                        key={`${message.id}:${change.kind}:${change.path}`}
+                        onClick={() => openPath(projectFilePath(selectedProject.rootPath, change.path))}
+                        title={projectFilePath(selectedProject.rootPath, change.path)}
+                      >
+                        <span>{fileChangeKindLabel(change.kind)}</span>
+                        <p>{change.path}</p>
+                      </button>
+                    ))}
+                    {message.fileChanges.length > 10 ? <small>还有 {message.fileChanges.length - 10} 个文件变更</small> : null}
+                  </div>
+                ) : null}
               </article>
             ))
           )}
@@ -793,12 +983,17 @@ export function App() {
               variant="primary"
               icon={busy === "send" ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
               onClick={sendTurn}
-              disabled={!selectedProject || !draft.trim() || isBusy}
+              disabled={sendTurnButton.disabled}
+              title={sendTurnButton.title}
             >
               发送
             </Button>
           </div>
-          {activeTool && !activeTool.installed ? <p className="warning">{activeTool.installHint}</p> : null}
+          <label className="composer-option">
+            <input type="checkbox" checked={autoPreviewAfterSend} onChange={(event) => setAutoPreviewAfterSend(event.target.checked)} />
+            <span>Agent 修改 Godot 文件后自动刷新 Web 预览</span>
+          </label>
+          {selectedProject && !activeCliInstalled ? <p className="warning">{activeTool?.installHint ?? sendTurnButton.title}</p> : null}
         </footer>
       </section>
 
@@ -826,7 +1021,7 @@ export function App() {
             <p>{previewNotice || (selectedProject?.previewWatching ? "正在监听 Godot 项目文件变化。" : "启动后会自动导出并刷新预览。")}</p>
           </div>
           <div className="preview-frame">
-            {selectedProject?.previewUrl ? <iframe src={selectedProject.previewUrl} title="Godot Web Preview" /> : <Play size={40} />}
+            {selectedProject?.previewUrl ? <iframe key={previewFrameKey} src={selectedProject.previewUrl} title="Godot Web Preview" /> : <Play size={40} />}
           </div>
         </section>
 
@@ -835,9 +1030,24 @@ export function App() {
             <Hammer size={17} />
             <span>构建</span>
           </div>
-          <Button icon={busy === "workflow" ? <Loader2 className="spin" size={16} /> : <Bot size={16} />} onClick={runWorkflow} disabled={!selectedProject || isBusy}>
+          <Button
+            icon={busy === "workflow" ? <Loader2 className="spin" size={16} /> : <Bot size={16} />}
+            onClick={runWorkflow}
+            disabled={!selectedProject || isBusy || !hasInstalledCli}
+            title="团队工作流会按角色自动选择默认 CLI，当前 CLI 下拉框只影响单个 Agent 对话。"
+          >
             团队工作流
           </Button>
+          <div className="team-cli-routes">
+            {teamCliRoutes.map((route) => (
+              <div className={`team-cli-route ${route.status}`} key={route.agent.id}>
+                <span>{route.agent.title}</span>
+                <strong>{CLI_TOOL_LABELS[route.cliToolId]}</strong>
+                <small>{teamRouteStatusLabel(route.status, route.agent.defaultCli)}</small>
+              </div>
+            ))}
+            {!hasInstalledCli ? <p>安装至少一个本地 AI CLI 后才能运行团队工作流。</p> : null}
+          </div>
           {activeRun ? (
             <Button variant="danger" icon={<StopCircle size={16} />} onClick={cancelActiveRun}>
               取消当前任务
@@ -852,6 +1062,36 @@ export function App() {
           <Button icon={busy === "export" ? <Loader2 className="spin" size={16} /> : <Download size={16} />} onClick={exportWeb} disabled={!selectedProject || isBusy}>
             导出 zip
           </Button>
+          {selectedProject?.exportZipPath ? (
+            <div className="zip-delivery">
+              <div>
+                <strong>最新 Web zip</strong>
+                <span title={selectedProject.exportZipPath}>{selectedProject.exportZipPath}</span>
+              </div>
+              <button title="打开 zip" onClick={() => openPath(selectedProject.exportZipPath)} disabled={isBusy}>
+                <ExternalLink size={15} />
+              </button>
+              <button title="导出目录" onClick={() => openPath(dirnameFromPath(selectedProject.exportZipPath!))} disabled={isBusy}>
+                <FolderOpen size={15} />
+              </button>
+              {selectedProject.latestExportManifestPath ? (
+                <button title="打开导出清单" onClick={() => openPath(selectedProject.latestExportManifestPath)} disabled={isBusy}>
+                  <FileJson size={15} />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {selectedProject?.latestWebBuildInspection ? (
+            <div className={`web-build-health ${selectedProject.latestWebBuildInspection.ok ? "ok" : "failed"}`}>
+              <span>{selectedProject.latestWebBuildInspection.ok ? "完整" : "缺失"}</span>
+              <p title={selectedProject.latestWebBuildInspection.message}>
+                <strong>Web 构建检查</strong>
+                {selectedProject.latestWebBuildInspection.ok
+                  ? ` · ${selectedProject.latestWebBuildInspection.files.length} 文件 · ${formatBytes(selectedProject.latestWebBuildInspection.totalBytes)}`
+                  : ` · 缺少 ${selectedProject.latestWebBuildInspection.missingRequiredFiles.join(", ")}`}
+              </p>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel runs-panel">
@@ -954,12 +1194,23 @@ export function App() {
                 <dt>Zip</dt>
                 <dd>{selectedProject.exportZipPath ?? "未导出"}</dd>
               </dl>
+              <div className="details-actions">
+                <Button icon={<FileJson size={16} />} onClick={() => openPath(projectGuidePath(selectedProject.rootPath))}>
+                  项目说明
+                </Button>
+                <Button icon={<FileJson size={16} />} onClick={() => openPath(projectAgentContextPath(selectedProject.rootPath))}>
+                  Agent 上下文
+                </Button>
+                <Button icon={<Terminal size={16} />} onClick={() => openPath(projectAgentJournalPath(selectedProject.rootPath))}>
+                  Agent 日志
+                </Button>
+              </div>
               {selectedProject.exportZipPath ? (
                 <div className="details-actions">
-                  <Button icon={<ExternalLink size={16} />} onClick={() => window.studio.openPath(selectedProject.exportZipPath!)}>
+                  <Button icon={<ExternalLink size={16} />} onClick={() => openPath(selectedProject.exportZipPath)}>
                     打开 zip
                   </Button>
-                  <Button icon={<FolderOpen size={16} />} onClick={() => window.studio.openPath(dirnameFromPath(selectedProject.exportZipPath!))}>
+                  <Button icon={<FolderOpen size={16} />} onClick={() => openPath(dirnameFromPath(selectedProject.exportZipPath!))}>
                     导出目录
                   </Button>
                 </div>
@@ -993,6 +1244,8 @@ export function App() {
               <dd>{bootstrap.godotRuntime.version ?? "未探测"}</dd>
               <dt>Console</dt>
               <dd title={bootstrap.godotRuntime.consolePath}>{bootstrap.godotRuntime.consolePath ?? "未找到"}</dd>
+              <dt>GUI</dt>
+              <dd title={bootstrap.godotRuntime.guiPath}>{bootstrap.godotRuntime.guiPath ?? "未找到"}</dd>
               <dt>模板</dt>
               <dd>{bootstrap.godotRuntime.templates.filter((template) => template.available).length}/{bootstrap.godotRuntime.templates.length} 可用</dd>
             </dl>

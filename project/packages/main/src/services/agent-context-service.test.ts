@@ -28,6 +28,22 @@ function createProject(rootPath: string, messages: AgentMessage[]): ProjectDetai
     createdAt: "2026-06-08T00:00:00.000Z",
     updatedAt: "2026-06-08T00:00:00.000Z",
     activeAgentId: "programmer",
+    previewUrl: "http://127.0.0.1:3000/index.html?v=42",
+    previewWatching: true,
+    previewStatus: "ready",
+    previewUpdatedAt: "2026-06-08T00:30:00.000Z",
+    exportZipPath: path.join(rootPath, "dist", "gold-miner-web.zip"),
+    latestExportManifestPath: path.join(rootPath, "build", "web", "gameaistudio-export.json"),
+    latestWebBuildInspection: {
+      projectId: "project_1",
+      webBuildPath: path.join(rootPath, "build", "web"),
+      ok: false,
+      files: ["index.html"],
+      totalBytes: 128,
+      requiredFiles: ["index.html", "*.wasm", "*.pck"],
+      missingRequiredFiles: ["*.wasm", "*.pck"],
+      message: "Web build is missing required files: *.wasm, *.pck."
+    },
     messages,
     runs: [],
     snapshots: []
@@ -49,6 +65,7 @@ describe("AgentContextService", () => {
       await writeFile(path.join(dir, "assets", "gold.png"), "not really a png", "utf8");
       await writeFile(path.join(dir, "build", "web", "index.html"), "generated", "utf8");
       await writeFile(path.join(dir, ".gameaistudio", "project.json"), "internal", "utf8");
+      await writeFile(path.join(dir, ".gameaistudio", "agent-journal.md"), "## previous run\n\n- changed scripts/player.gd\n", "utf8");
       await writeFile(path.join(dir, "scripts", "player.gd.uid"), "uid", "utf8");
 
       const project = createProject(dir, [
@@ -65,6 +82,14 @@ describe("AgentContextService", () => {
       const markdown = await readFile(bundle.contextPath, "utf8");
       expect(bundle.contextPath).toBe(path.join(dir, ".gameaistudio", "agent-context.md"));
       expect(markdown).toContain("Active agent: 程序");
+      expect(markdown).toContain("## Delivery Status");
+      expect(markdown).toContain("Preview: ready (http://127.0.0.1:3000/index.html?v=42)");
+      expect(markdown).toContain("Web zip:");
+      expect(markdown).toContain("gold-miner-web.zip");
+      expect(markdown).toContain("Export manifest:");
+      expect(markdown).toContain("gameaistudio-export.json");
+      expect(markdown).toContain("Web artifact inspection: FAILED, missing *.wasm, *.pck");
+      expect(markdown).toContain("Required Web artifacts: index.html, *.wasm, *.pck");
       expect(markdown).toContain("请实现第一版钩子和得分。");
       expect(markdown).toContain("scripts/player.gd");
       expect(markdown).toContain("assets/gold.png");
@@ -75,6 +100,8 @@ describe("AgentContextService", () => {
       expect(markdown).toContain("先做核心循环。");
       expect(markdown).toContain("加入金块、石头和时间限制。");
       expect(markdown).not.toContain("第一条旧消息");
+      expect(markdown).toContain("## Recent Agent Journal");
+      expect(markdown).toContain("changed scripts/player.gd");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

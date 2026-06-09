@@ -17,6 +17,12 @@ function uniqueExisting(paths: string[]): string[] {
   return [...new Set(paths.filter(Boolean).map((candidate) => path.resolve(candidate)))];
 }
 
+export function findResourceRoot(candidates: string[]): string | undefined {
+  return uniqueExisting(candidates).find((candidate) =>
+    existsSync(path.join(candidate, "gameaistudio_template")) && existsSync(path.join(candidate, "engine"))
+  );
+}
+
 export function resolveResourceRoot(): string {
   const appPath = app.getAppPath();
   const candidates = uniqueExisting([
@@ -29,9 +35,7 @@ export function resolveResourceRoot(): string {
     path.resolve(process.cwd(), "project")
   ]);
 
-  const resourceRoot = candidates.find((candidate) =>
-    existsSync(path.join(candidate, "gameaistudio_template")) && existsSync(path.join(candidate, "engine"))
-  );
+  const resourceRoot = findResourceRoot(candidates);
 
   return resourceRoot ?? process.cwd();
 }
@@ -58,4 +62,3 @@ export function resolveStudioPaths(): StudioPaths {
 export function getTemplatePath(paths: StudioPaths, dimension: GameDimension): string {
   return path.join(paths.templatesRoot, `gameaistudio_template_${dimension}`);
 }
-

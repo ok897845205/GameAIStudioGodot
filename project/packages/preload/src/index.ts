@@ -40,6 +40,7 @@ const api: StudioApi = {
   exportWeb: (projectId: string) => ipcRenderer.invoke("projects:export-web", projectId),
   runGodotExport: (projectId: string) => ipcRenderer.invoke("projects:godot-export", projectId),
   validateProject: (projectId: string) => ipcRenderer.invoke("projects:validate", projectId),
+  openGodotEditor: (projectId: string) => ipcRenderer.invoke("projects:godot-open-editor", projectId),
   openPath: (targetPath: string) => ipcRenderer.invoke("system:open-path", targetPath)
 };
 

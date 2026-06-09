@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { GameDimension, GodotRuntime, GodotRuntimeStatus, RuntimeDiagnostic } from "@gameaistudio/shared";
 import { runProcess } from "./process-runner";
@@ -24,6 +24,18 @@ function hasPath(value?: string): boolean {
   return Boolean(value && existsSync(value));
 }
 
+function hasWebExportPreset(exportPresetsPath: string): boolean {
+  if (!existsSync(exportPresetsPath)) {
+    return false;
+  }
+
+  try {
+    return /platform\s*=\s*"Web"/.test(readFileSync(exportPresetsPath, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 function runtimeStatus(diagnostics: RuntimeDiagnostic[]): GodotRuntimeStatus {
   if (diagnostics.some((diagnostic) => diagnostic.id === "engine-root-missing" || diagnostic.id === "console-missing")) {
     return "missing";
@@ -40,10 +52,16 @@ function runtimeStatus(diagnostics: RuntimeDiagnostic[]): GodotRuntimeStatus {
 export function buildGodotRuntime(paths: StudioPaths, versionProbe?: VersionProbe): GodotRuntime {
   const templates = TEMPLATE_DIMENSIONS.map((dimension) => {
     const templatePath = getTemplatePath(paths, dimension);
+    const exportPresetsPath = path.join(templatePath, "export_presets.cfg");
+    const projectFileAvailable = existsSync(path.join(templatePath, "project.godot"));
+    const webExportPresetAvailable = hasWebExportPreset(exportPresetsPath);
     return {
       dimension,
       path: templatePath,
-      available: existsSync(path.join(templatePath, "project.godot"))
+      projectFileAvailable,
+      exportPresetsPath,
+      webExportPresetAvailable,
+      available: projectFileAvailable && webExportPresetAvailable
     };
   });
   const diagnostics: RuntimeDiagnostic[] = [];
@@ -96,10 +114,21 @@ export function buildGodotRuntime(paths: StudioPaths, versionProbe?: VersionProb
   for (const template of templates) {
     diagnostics.push({
       id: `template-${template.dimension}`,
-      severity: template.available ? "ok" : "error",
-      title: template.available ? `${template.dimension.toUpperCase()} 模板可用` : `${template.dimension.toUpperCase()} 模板缺失`,
+      severity: template.projectFileAvailable ? "ok" : "error",
+      title: template.projectFileAvailable ? `${template.dimension.toUpperCase()} 模板工程可用` : `${template.dimension.toUpperCase()} 模板工程缺失`,
       detail: template.path,
-      action: template.available ? undefined : "请确认 gameaistudio_template 目录包含对应 Godot 模板工程。"
+      action: template.projectFileAvailable ? undefined : "请确认 gameaistudio_template 目录包含对应 Godot 模板工程。"
+    });
+    diagnostics.push({
+      id: `template-${template.dimension}-web-export`,
+      severity: template.webExportPresetAvailable ? "ok" : "error",
+      title: template.webExportPresetAvailable
+        ? `${template.dimension.toUpperCase()} 模板 Web 导出预设可用`
+        : `${template.dimension.toUpperCase()} 模板 Web 导出预设缺失`,
+      detail: template.exportPresetsPath,
+      action: template.webExportPresetAvailable
+        ? undefined
+        : "请在 export_presets.cfg 中添加 platform=\"Web\" 的导出预设，预览和 Web zip 导出依赖它。"
     });
   }
 

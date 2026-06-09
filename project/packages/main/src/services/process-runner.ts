@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
+interface ProcessLaunch {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
+}
+
 export interface ProcessRunOptions {
   cwd?: string;
   timeoutMs?: number;
@@ -18,6 +24,33 @@ export interface ProcessRunResult {
   durationMs: number;
   cancelled: boolean;
   timedOut: boolean;
+}
+
+export function isWindowsCommandShim(command: string, platform = process.platform): boolean {
+  return platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+}
+
+function quoteWindowsCmdArgument(value: string): string {
+  return `"${value.replace(/\r\n?|\n/g, " ").replace(/"/g, '""')}"`;
+}
+
+export function buildProcessLaunch(
+  command: string,
+  args: string[],
+  platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): ProcessLaunch {
+  if (!isWindowsCommandShim(command, platform)) {
+    return { command, args };
+  }
+
+  const comspec = env.ComSpec ?? env.COMSPEC ?? "cmd.exe";
+  const commandLine = `"${[command, ...args].map(quoteWindowsCmdArgument).join(" ")}"`;
+  return {
+    command: comspec,
+    args: ["/d", "/v:off", "/c", commandLine],
+    windowsVerbatimArguments: true
+  };
 }
 
 export class ProcessRegistry {
@@ -63,17 +96,33 @@ export function runProcess(command: string, args: string[], options: ProcessRunO
   const startedAt = Date.now();
 
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: { ...process.env, ...options.env },
-      shell: false,
-      windowsHide: true
-    });
-
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    const launch = buildProcessLaunch(command, args, process.platform, { ...process.env, ...options.env });
+    let child: ChildProcessWithoutNullStreams;
+
+    try {
+      child = spawn(launch.command, launch.args, {
+        cwd: options.cwd,
+        env: { ...process.env, ...options.env },
+        shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: launch.windowsVerbatimArguments
+      });
+    } catch (error) {
+      resolve({
+        exitCode: null,
+        stdout,
+        stderr: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+        cancelled: false,
+        timedOut
+      });
+      return;
+    }
+
     if (options.processKey && options.registry) {
       options.registry.register(options.processKey, child);
     }

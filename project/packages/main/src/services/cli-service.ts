@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { CliCredentialStatus, CliDiagnostic, CliTool, CliToolId, GodotRunResult } from "@gameaistudio/shared";
 import { CLI_TOOL_LABELS } from "@gameaistudio/shared";
 import { runProcess } from "./process-runner";
@@ -77,6 +79,22 @@ async function findExecutable(command: string): Promise<string | undefined> {
   return result.exitCode === 0 ? firstLine : undefined;
 }
 
+export function cliExecutableCandidates(command: string, directory: string, platform = process.platform): string[] {
+  const pathModule = platform === "win32" ? path.win32 : path.posix;
+  const basePath = pathModule.join(directory, command);
+  if (platform !== "win32" || path.extname(command)) {
+    return [basePath];
+  }
+  return [basePath, `${basePath}.cmd`, `${basePath}.exe`, `${basePath}.bat`];
+}
+
+export function findExecutableInDirectory(command: string, directory?: string, platform = process.platform): string | undefined {
+  if (!directory) {
+    return undefined;
+  }
+  return cliExecutableCandidates(command, directory, platform).find((candidate) => existsSync(candidate));
+}
+
 export function evaluateCredentialStatus(
   credentialEnvVars: string[],
   env: NodeJS.ProcessEnv = process.env
@@ -98,17 +116,61 @@ function installManagerCommand(spec: CliSpec): string {
   return spec.installCommand[0] ?? "npm";
 }
 
-async function getInstallManagerInfo(spec: CliSpec): Promise<{ available: boolean; version?: string }> {
+export function buildInstallCommand(
+  installCommand: string[],
+  installManagerExecutable?: string
+): { command: string; args: string[] } {
+  const [command = "npm", ...args] = installCommand;
+  return {
+    command: installManagerExecutable ?? command,
+    args
+  };
+}
+
+export function buildInstallManagerUnavailableResult(installManager: string, startedAt: number): GodotRunResult {
+  return {
+    ok: false,
+    exitCode: null,
+    stdout: "",
+    stderr: `未检测到 ${installManager}，无法在应用内安装 CLI。请先安装 ${installManager} 后刷新，或手动安装对应 AI CLI。`,
+    durationMs: Date.now() - startedAt
+  };
+}
+
+export function npmGlobalBinPath(prefix: string, platform = process.platform): string | undefined {
+  const normalized = prefix.trim();
+  if (!normalized || normalized === "undefined" || normalized === "null") {
+    return undefined;
+  }
+  return platform === "win32" ? normalized : `${normalized.replace(/\/+$/, "")}/bin`;
+}
+
+async function getNpmGlobalBinPath(npmExecutable: string): Promise<string | undefined> {
+  const prefix = await runProcess(npmExecutable, ["config", "get", "prefix"], { timeoutMs: 4000 });
+  if (prefix.exitCode !== 0) {
+    return undefined;
+  }
+  return npmGlobalBinPath((prefix.stdout || prefix.stderr).trim().split(/\r?\n/)[0] ?? "");
+}
+
+async function getInstallManagerInfo(
+  spec: CliSpec
+): Promise<{ available: boolean; version?: string; globalBinPath?: string; executablePath?: string }> {
   const manager = installManagerCommand(spec);
   const executable = await findExecutable(manager);
   if (!executable) {
     return { available: false };
   }
-  const version = await runProcess(executable, ["--version"], { timeoutMs: 4000 });
+  const [version, globalBinPath] = await Promise.all([
+    runProcess(executable, ["--version"], { timeoutMs: 4000 }),
+    manager === "npm" ? getNpmGlobalBinPath(executable) : Promise.resolve(undefined)
+  ]);
   const versionText = (version.stdout || version.stderr).trim().split(/\r?\n/)[0];
   return {
     available: version.exitCode === 0,
-    version: versionText || undefined
+    executablePath: executable,
+    version: versionText || undefined,
+    globalBinPath
   };
 }
 
@@ -118,8 +180,10 @@ export function buildCliDiagnostics(input: {
   executablePath?: string;
   version?: string;
   installManager: string;
+  installManagerPath?: string;
   installManagerAvailable: boolean;
   installManagerVersion?: string;
+  installGlobalBinPath?: string;
   credentialStatus: CliCredentialStatus;
   credentialEnvVars: string[];
   detectedCredentialEnvVars: string[];
@@ -160,10 +224,20 @@ export function buildCliDiagnostics(input: {
     severity: input.installManagerAvailable ? "ok" : "warning",
     title: input.installManagerAvailable ? `${input.installManager} 可用` : `${input.installManager} 不可用`,
     detail: input.installManagerAvailable
-      ? `${input.installManagerVersion ?? input.installManager} 可用于一键安装 CLI。`
+      ? `${input.installManagerVersion ?? input.installManager} 可用于一键安装 CLI。${input.installManagerPath ? `路径：${input.installManagerPath}` : ""}`
       : `未检测到 ${input.installManager}，无法从应用内执行安装命令。`,
     action: input.installManagerAvailable ? undefined : `安装 ${input.installManager} 后点击刷新。`
   });
+
+  if (!input.installed && input.installManagerAvailable && input.installGlobalBinPath) {
+    diagnostics.push({
+      id: "install-global-bin",
+      severity: "info",
+      title: "全局安装目录",
+      detail: input.installGlobalBinPath,
+      action: `如果安装后仍检测不到 CLI，请把该目录加入系统 PATH，然后重启 GameAIStudio。`
+    });
+  }
 
   if (input.credentialStatus === "configured") {
     diagnostics.push({
@@ -191,7 +265,9 @@ export class CliService {
     return Promise.all(
       CLI_SPECS.map(async (spec) => {
         const installManager = installManagerCommand(spec);
-        const [executablePath, installManagerInfo] = await Promise.all([findExecutable(spec.command), getInstallManagerInfo(spec)]);
+        const installManagerInfo = await getInstallManagerInfo(spec);
+        const executablePath =
+          (await findExecutable(spec.command)) ?? findExecutableInDirectory(spec.command, installManagerInfo.globalBinPath);
         const credential = evaluateCredentialStatus(spec.credentialEnvVars);
         if (!executablePath) {
           const baseTool = {
@@ -203,8 +279,10 @@ export class CliService {
             installCommand: spec.installCommand,
             installHint: spec.installHint,
             installManager,
+            installManagerPath: installManagerInfo.executablePath,
             installManagerAvailable: installManagerInfo.available,
             installManagerVersion: installManagerInfo.version,
+            installGlobalBinPath: installManagerInfo.globalBinPath,
             defaultArgs: spec.defaultArgs,
             credentialStatus: credential.status,
             credentialEnvVars: spec.credentialEnvVars,
@@ -231,8 +309,10 @@ export class CliService {
           installCommand: spec.installCommand,
           installHint: spec.installHint,
           installManager,
+          installManagerPath: installManagerInfo.executablePath,
           installManagerAvailable: installManagerInfo.available,
           installManagerVersion: installManagerInfo.version,
+          installGlobalBinPath: installManagerInfo.globalBinPath,
           defaultArgs: spec.defaultArgs,
           credentialStatus: credential.status,
           credentialEnvVars: spec.credentialEnvVars,
@@ -251,7 +331,11 @@ export class CliService {
   async install(toolId: CliToolId): Promise<GodotRunResult> {
     const spec = getSpec(toolId);
     const startedAt = Date.now();
-    const [command, ...args] = spec.installCommand;
+    const installManagerInfo = await getInstallManagerInfo(spec);
+    if (!installManagerInfo.available) {
+      return buildInstallManagerUnavailableResult(installManagerCommand(spec), startedAt);
+    }
+    const { command, args } = buildInstallCommand(spec.installCommand, installManagerInfo.executablePath);
     const result = await runProcess(command, args, { timeoutMs: 20 * 60 * 1000 });
     return {
       ok: result.exitCode === 0,
@@ -262,10 +346,10 @@ export class CliService {
     };
   }
 
-  buildAgentCommand(toolId: CliToolId, prompt: string): { command: string; args: string[] } {
+  buildAgentCommand(toolId: CliToolId, prompt: string, executablePath?: string): { command: string; args: string[] } {
     const spec = getSpec(toolId);
     return {
-      command: spec.command,
+      command: executablePath ?? spec.command,
       args: [...spec.defaultArgs, prompt]
     };
   }

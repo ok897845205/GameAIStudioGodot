@@ -1,14 +1,23 @@
-import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type CliToolId, type RunAgentTurnInput, type RunAgentTurnResult } from "@gameaistudio/shared";
+import {
+  AGENT_PROFILES,
+  CLI_TOOL_LABELS,
+  type AgentMessage,
+  type CliToolId,
+  type ProjectSnapshot,
+  type RunAgentTurnInput,
+  type RunAgentTurnResult
+} from "@gameaistudio/shared";
 import { AgentContextService, type AgentContextBundle } from "./agent-context-service";
+import { appendAgentJournal, buildAgentJournalEntry } from "./agent-journal-service";
 import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
 import { ProjectFileChangeService } from "./project-file-change-service";
 import { ProjectService } from "./project-service";
 import { ProjectSnapshotService } from "./project-snapshot-service";
-import { ProcessRegistry, runProcess } from "./process-runner";
+import { ProcessRegistry, type ProcessRunResult, runProcess } from "./process-runner";
 import { RunService } from "./run-service";
 
-function buildPrompt(input: {
+export function buildAgentPrompt(input: {
   agentId: string;
   projectName: string;
   projectPrompt: string;
@@ -34,12 +43,68 @@ function buildPrompt(input: {
     "- 如需运行命令，说明命令和目的；如果当前 CLI 不能执行命令，也要给出可继续的具体文件级改动方案。",
     "- 回答末尾给出完成内容、涉及文件、未完成风险、下一步建议。",
     "",
-    "当前 Agent 上下文快照：",
-    context.markdown,
-    "",
+    "上下文读取：",
+    `- 请先阅读 ${context.contextPath}，里面包含项目文件地图、最近对话、交付状态和响应契约。`,
+    "- 不要依赖命令行参数里展开的完整上下文；完整上下文以该文件为准。",
     "本轮用户消息：",
     userMessage
   ].join("\n");
+}
+
+function processOutput(result: ProcessRunResult): string {
+  return [
+    result.stdout.trim(),
+    result.stderr.trim() ? `\n--- stderr ---\n${result.stderr.trim()}` : ""
+  ]
+    .join("")
+    .trim();
+}
+
+export function buildAgentProcessMessage(input: {
+  toolLabel: string;
+  result: ProcessRunResult;
+  fileChangeCount: number;
+}): string {
+  const output = processOutput(input.result);
+  if (input.result.cancelled) {
+    return "本轮 Agent 运行已取消。";
+  }
+
+  if (input.result.exitCode === 0) {
+    if (output) {
+      return output;
+    }
+    if (input.fileChangeCount > 0) {
+      return `${input.toolLabel} CLI 已完成本轮运行，未输出文本，但检测到 ${input.fileChangeCount} 个项目文件变更。`;
+    }
+    return `${input.toolLabel} CLI 已结束但没有输出，也未检测到项目文件变更。请确认该 CLI 已登录，并支持非交互运行。`;
+  }
+
+  const reason = input.result.timedOut
+    ? `${input.toolLabel} CLI 运行超时。`
+    : `${input.toolLabel} CLI 执行失败（exitCode=${input.result.exitCode ?? "unknown"}）。`;
+  if (output) {
+    return `${reason}\n\n${output}`;
+  }
+  return `${reason}\n\n没有返回可读输出。请在终端运行该 CLI，确认它已登录并支持非交互模式。`;
+}
+
+export function buildAgentStepMessage(input: {
+  agentTitle: string;
+  result: ProcessRunResult;
+  agentMessageContent: string;
+}): string {
+  if (input.result.cancelled) {
+    return "用户已取消本轮 Agent 运行。";
+  }
+  if (input.result.exitCode === 0) {
+    return `${input.agentTitle} 已完成本轮输出。`;
+  }
+  const firstLine = input.agentMessageContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  return firstLine ?? `${input.agentTitle} 执行失败。`;
 }
 
 export class AgentService {
@@ -107,6 +172,18 @@ export class AgentService {
         cliToolId: input.cliToolId
       };
       const messages = await this.projectService.appendMessages(project.id, [userMessage, missingMessage]);
+      await appendAgentJournal(
+        project.rootPath,
+        buildAgentJournalEntry({
+          project,
+          agentId: input.agentId,
+          cliToolId: input.cliToolId,
+          userMessage: input.message,
+          agentMessage: missingMessage,
+          status: "failed",
+          fileChanges: []
+        })
+      ).catch(() => undefined);
       if (run && stepId) {
         await this.runService.updateStep(run.id, stepId, {
           status: "failed",
@@ -127,7 +204,7 @@ export class AgentService {
       agentId: input.agentId,
       userMessage: input.message
     });
-    const prompt = buildPrompt({
+    const prompt = buildAgentPrompt({
       agentId: input.agentId,
       projectName: project.name,
       projectPrompt: project.prompt,
@@ -135,8 +212,8 @@ export class AgentService {
       userMessage: input.message,
       context
     });
-    const command = this.cliService.buildAgentCommand(input.cliToolId, prompt);
-    await this.snapshotService.create({
+    const command = this.cliService.buildAgentCommand(input.cliToolId, prompt, selectedTool.executablePath);
+    const beforeSnapshot = await this.snapshotService.create({
       projectId: project.id,
       label: `${agent.title} 运行前`,
       reason: `before-agent:${agent.id}`
@@ -181,23 +258,21 @@ export class AgentService {
     const afterFiles = await this.fileChangeService.createSnapshot(project.rootPath);
     const fileChanges = this.fileChangeService.compareSnapshots(beforeFiles, afterFiles);
 
-    const content = [
-      result.stdout.trim(),
-      result.stderr.trim() ? `\n--- stderr ---\n${result.stderr.trim()}` : ""
-    ]
-      .join("")
-      .trim();
-
     const agentMessage: AgentMessage = {
       id: createMessageId(),
       projectId: project.id,
       agentId: input.agentId,
       role: "agent",
-      content: result.cancelled ? "本轮 Agent 运行已取消。" : content || `${CLI_TOOL_LABELS[input.cliToolId]} 本轮没有输出。`,
+      content: buildAgentProcessMessage({
+        toolLabel: CLI_TOOL_LABELS[input.cliToolId],
+        result,
+        fileChangeCount: fileChanges.length
+      }),
       createdAt: new Date().toISOString(),
       cliToolId: input.cliToolId,
       exitCode: result.exitCode ?? undefined,
-      durationMs: result.durationMs
+      durationMs: result.durationMs,
+      fileChanges
     };
 
     const updatedProject = await this.projectService.updateProject({
@@ -206,23 +281,39 @@ export class AgentService {
     });
     const messages = await this.projectService.appendMessages(project.id, [userMessage, agentMessage]);
     const succeeded = result.exitCode === 0;
+    let afterSnapshot: ProjectSnapshot | undefined;
     if (succeeded && fileChanges.length > 0) {
-      await this.snapshotService.create({
+      afterSnapshot = await this.snapshotService.create({
         projectId: project.id,
         label: `${agent.title} 完成后`,
         reason: `after-agent:${agent.id}`
       });
     }
+    await appendAgentJournal(
+      project.rootPath,
+      buildAgentJournalEntry({
+        project: updatedProject,
+        agentId: input.agentId,
+        cliToolId: input.cliToolId,
+        userMessage: input.message,
+        agentMessage,
+        status: result.cancelled ? "cancelled" : succeeded ? "completed" : "failed",
+        fileChanges,
+        contextPath: context.contextPath,
+        beforeSnapshot,
+        afterSnapshot
+      })
+    ).catch(() => undefined);
     if (run && stepId) {
       await this.runService.updateStep(run.id, stepId, {
         status: result.cancelled ? "cancelled" : succeeded ? "completed" : "failed",
         exitCode: result.exitCode ?? undefined,
         fileChanges,
-        message: result.cancelled
-          ? "用户已取消本轮 Agent 运行。"
-          : succeeded
-            ? `${agent.title} 已完成本轮输出。`
-            : result.stderr || result.stdout || `${agent.title} 执行失败。`
+        message: buildAgentStepMessage({
+          agentTitle: agent.title,
+          result,
+          agentMessageContent: agentMessage.content
+        })
       });
       await this.runService.finishRun(run.id, result.cancelled ? "cancelled" : succeeded ? "completed" : "failed", agentMessage.content.slice(0, 240));
     } else if (outputRunId && outputStepId) {

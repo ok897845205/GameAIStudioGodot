@@ -75,7 +75,7 @@ app.whenReady().then(async () => {
   });
   const exportService = new ExportService(projectService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
-  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, autoPreviewService, runService);
+  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService);
 
   registerIpcHandlers({
     paths,

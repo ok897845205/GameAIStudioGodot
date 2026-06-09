@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from "node:fs";
 import path from "node:path";
-import type { PreviewEvent, PreviewResult, PreviewStatus } from "@gameaistudio/shared";
+import type { PreviewEvent, PreviewResult, PreviewStatus, ProjectFileChange } from "@gameaistudio/shared";
 import { GodotService } from "./godot-service";
 import { PreviewServer } from "./preview-server";
 import { ProjectService } from "./project-service";
@@ -75,6 +75,14 @@ export function shouldTriggerAutoPreview(projectRoot: string, webBuildPath: stri
   return WATCH_EXTENSIONS.has(path.extname(changedPath).toLowerCase());
 }
 
+export function shouldRefreshPreviewAfterFileChanges(
+  projectRoot: string,
+  webBuildPath: string,
+  fileChanges: ProjectFileChange[] = []
+): boolean {
+  return fileChanges.some((change) => shouldTriggerAutoPreview(projectRoot, webBuildPath, change.path));
+}
+
 export class AutoPreviewService {
   private readonly states = new Map<string, AutoPreviewState>();
 
@@ -100,10 +108,12 @@ export class AutoPreviewService {
       this.emitEvent(projectId, "exporting", { message: "正在生成初始 Web 预览。" });
       const exportResult = await this.godotService.exportWeb(projectId);
       if (!exportResult.ok) {
+        const message = exportResult.stderr || exportResult.stdout || "初始 Web 导出失败。";
         await this.markProject(projectId, "failed");
         this.emitEvent(projectId, "failed", {
-          message: exportResult.stderr || exportResult.stdout || "初始 Web 导出失败。"
+          message
         });
+        throw new Error(message);
       }
     }
 
@@ -126,6 +136,23 @@ export class AutoPreviewService {
 
     return {
       ...preview,
+      watching: true
+    };
+  }
+
+  async refresh(projectId: string, changedPath?: string): Promise<PreviewResult> {
+    const state = this.states.get(projectId);
+    if (!state) {
+      return this.start(projectId, { exportFirst: true });
+    }
+
+    state.lastChangedPath = changedPath;
+    await this.exportAndRefresh(projectId);
+    const project = await this.projectService.requireProject(projectId);
+    const preview = await this.previewServer.start(projectId);
+    return {
+      ...preview,
+      url: project.previewUrl ?? preview.url,
       watching: true
     };
   }

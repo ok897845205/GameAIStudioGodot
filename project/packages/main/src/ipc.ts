@@ -15,6 +15,8 @@ import { RunService } from "./services/run-service";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
 import type { StudioPaths } from "./services/resource-paths";
+import { runAgentTurnWithOptionalPreview } from "./services/agent-turn-orchestrator";
+import { openSystemPath } from "./services/system-open-service";
 
 interface IpcDependencies {
   paths: StudioPaths;
@@ -72,14 +74,15 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle("projects:preview", async (_event, projectId: string) => deps.previewServer.start(projectId));
   ipcMain.handle("projects:auto-preview:start", async (_event, projectId: string) => deps.autoPreviewService.start(projectId));
   ipcMain.handle("projects:auto-preview:stop", async (_event, projectId: string) => deps.autoPreviewService.stop(projectId));
+  ipcMain.handle("projects:godot-open-editor", async (_event, projectId: string) => deps.godotService.openEditor(projectId));
   ipcMain.handle("projects:godot-export", async (_event, projectId: string) => deps.godotService.exportWeb(projectId));
   ipcMain.handle("projects:validate", async (_event, projectId: string) => deps.godotService.validate(projectId));
   ipcMain.handle("projects:export-web", async (_event, projectId: string) => deps.webExportPipelineService.exportWebZip(projectId));
 
-  ipcMain.handle("agents:run-turn", async (_event, input: RunAgentTurnInput) => deps.agentService.runTurn(input));
+  ipcMain.handle("agents:run-turn", async (_event, input: RunAgentTurnInput) => runAgentTurnWithOptionalPreview(deps, input));
   ipcMain.handle("agents:run-workflow", async (_event, input: RunStudioWorkflowInput) => deps.workflowService.run(input));
 
   ipcMain.handle("system:open-path", async (_event, targetPath: string) => {
-    await shell.openPath(targetPath);
+    await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));
   });
 }

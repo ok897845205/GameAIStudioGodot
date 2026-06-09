@@ -1,0 +1,155 @@
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import type { AgentMessage, ProjectDetails, RunAgentTurnInput, RunAgentTurnResult } from "@gameaistudio/shared";
+import { runAgentTurnWithOptionalPreview } from "./agent-turn-orchestrator";
+
+function project(): ProjectDetails {
+  const rootPath = path.join("C:", "GameAIStudio", "GoldMiner");
+  return {
+    id: "project_1",
+    name: "Gold Miner",
+    dimension: "2d",
+    prompt: "我要创建一个黄金矿工",
+    rootPath,
+    webBuildPath: path.join(rootPath, "build", "web"),
+    createdAt: "2026-06-08T00:00:00.000Z",
+    updatedAt: "2026-06-08T00:00:00.000Z",
+    activeAgentId: "programmer",
+    messages: [],
+    runs: [],
+    snapshots: []
+  };
+}
+
+function agentMessage(projectId: string, pathName: string): AgentMessage {
+  return {
+    id: "msg_agent",
+    projectId,
+    agentId: "programmer",
+    role: "agent",
+    content: "changed files",
+    createdAt: "2026-06-08T00:00:00.000Z",
+    cliToolId: "codex",
+    exitCode: 0,
+    fileChanges: [
+      {
+        path: pathName,
+        kind: "added",
+        afterSize: 64,
+        afterHash: "abc",
+        isText: true
+      }
+    ]
+  };
+}
+
+function input(autoStartPreview = true): RunAgentTurnInput {
+  return {
+    projectId: "project_1",
+    agentId: "programmer",
+    cliToolId: "codex",
+    message: "继续实现玩法。",
+    autoStartPreview
+  };
+}
+
+describe("runAgentTurnWithOptionalPreview", () => {
+  it("returns a preview result when an Agent changes preview-relevant files", async () => {
+    const baseProject = project();
+    const message = agentMessage(baseProject.id, "scripts/hook.gd");
+    const runResult: RunAgentTurnResult = {
+      project: baseProject,
+      messages: [message],
+      runs: [],
+      snapshots: []
+    };
+    let changedPath: string | undefined;
+
+    const result = await runAgentTurnWithOptionalPreview(
+      {
+        agentService: { runTurn: async () => runResult },
+        autoPreviewService: {
+          refresh: async (_projectId, nextChangedPath) => {
+            changedPath = nextChangedPath;
+            return {
+              projectId: baseProject.id,
+              url: "http://127.0.0.1:3123?v=1",
+              webBuildPath: baseProject.webBuildPath,
+              watching: true
+            };
+          }
+        },
+        projectService: {
+          getProject: async () => ({
+            ...baseProject,
+            previewUrl: "http://127.0.0.1:3123?v=1",
+            previewStatus: "ready"
+          })
+        }
+      },
+      input()
+    );
+
+    expect(changedPath).toBe("scripts/hook.gd");
+    expect(result.previewResult?.url).toBe("http://127.0.0.1:3123?v=1");
+    expect(result.project.previewStatus).toBe("ready");
+  });
+
+  it("keeps the Agent result when preview refresh fails", async () => {
+    const baseProject = project();
+    const message = agentMessage(baseProject.id, "scenes/main.tscn");
+    const runResult: RunAgentTurnResult = {
+      project: baseProject,
+      messages: [message],
+      runs: [],
+      snapshots: []
+    };
+
+    const result = await runAgentTurnWithOptionalPreview(
+      {
+        agentService: { runTurn: async () => runResult },
+        autoPreviewService: {
+          refresh: async () => {
+            throw new Error("Godot Web export failed");
+          }
+        },
+        projectService: { getProject: async () => baseProject }
+      },
+      input()
+    );
+
+    expect(result.messages).toEqual([message]);
+    expect(result.previewResult).toBeUndefined();
+    expect(result.previewError).toBe("Godot Web export failed");
+  });
+
+  it("does not refresh preview for non-preview project changes", async () => {
+    const baseProject = project();
+    const message = agentMessage(baseProject.id, "notes/design.txt");
+    const runResult: RunAgentTurnResult = {
+      project: baseProject,
+      messages: [message],
+      runs: [],
+      snapshots: []
+    };
+    let refreshCalled = false;
+
+    const result = await runAgentTurnWithOptionalPreview(
+      {
+        agentService: { runTurn: async () => runResult },
+        autoPreviewService: {
+          refresh: async () => {
+            refreshCalled = true;
+            throw new Error("unexpected");
+          }
+        },
+        projectService: { getProject: async () => baseProject }
+      },
+      input()
+    );
+
+    expect(refreshCalled).toBe(false);
+    expect(result.previewResult).toBeUndefined();
+    expect(result.previewError).toBeUndefined();
+  });
+});

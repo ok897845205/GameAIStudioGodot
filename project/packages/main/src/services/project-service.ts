@@ -1,9 +1,56 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { AGENT_PROFILES, type AgentMessage, type CreateProjectInput, type ProjectDetails, type StudioProject } from "@gameaistudio/shared";
+import {
+  AGENT_PROFILES,
+  type AgentMessage,
+  type CreateProjectInput,
+  type GameDimension,
+  type ProjectDetails,
+  type StudioProject
+} from "@gameaistudio/shared";
 import { createMessageId, createProjectId, sanitizeProjectName } from "./naming";
 import { getTemplatePath, type StudioPaths } from "./resource-paths";
 import { StudioStore } from "./store";
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function templateHasWebExportPreset(exportPresetsPath: string): Promise<boolean> {
+  try {
+    return /platform\s*=\s*"Web"/.test(await readFile(exportPresetsPath, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+export function shouldCopyTemplateEntry(templatePath: string, sourcePath: string): boolean {
+  const relativePath = path.relative(templatePath, sourcePath);
+  if (!relativePath) {
+    return true;
+  }
+  const firstSegment = relativePath.split(path.sep)[0];
+  return ![".godot", "build", "dist"].includes(firstSegment);
+}
+
+export async function assertTemplateReady(templatePath: string, dimension: GameDimension): Promise<void> {
+  const label = dimension.toUpperCase();
+  const projectFile = path.join(templatePath, "project.godot");
+  const exportPresetsPath = path.join(templatePath, "export_presets.cfg");
+
+  if (!(await pathExists(projectFile))) {
+    throw new Error(`${label} Godot 模板工程缺失：未找到 ${projectFile}`);
+  }
+
+  if (!(await templateHasWebExportPreset(exportPresetsPath))) {
+    throw new Error(`${label} Godot 模板缺少 Web 导出预设：请在 ${exportPresetsPath} 中添加 platform="Web"。`);
+  }
+}
 
 export class ProjectService {
   constructor(
@@ -18,8 +65,13 @@ export class ProjectService {
     const rootPath = path.join(this.paths.projectsRoot, `${safeName}-${id.slice(-6)}`);
     const templatePath = getTemplatePath(this.paths, input.dimension);
 
+    await assertTemplateReady(templatePath, input.dimension);
     await mkdir(this.paths.projectsRoot, { recursive: true });
-    await cp(templatePath, rootPath, { recursive: true, force: false });
+    await cp(templatePath, rootPath, {
+      recursive: true,
+      force: false,
+      filter: (sourcePath) => shouldCopyTemplateEntry(templatePath, sourcePath)
+    });
 
     const project: StudioProject = {
       id,
@@ -34,7 +86,9 @@ export class ProjectService {
     };
 
     await this.patchGodotProjectName(project);
-    await this.writeProjectManifest(project);
+    await this.writeProjectMetadata(project);
+    await this.writeProjectGuide(project);
+    await this.writeInitialAgentFiles(project);
     await this.store.upsertProject(project);
 
     const introMessages = this.createIntroMessages(project);
@@ -75,6 +129,7 @@ export class ProjectService {
       ...project,
       updatedAt: new Date().toISOString()
     };
+    await this.writeProjectMetadata(updated);
     await this.store.upsertProject(updated);
     return updated;
   }
@@ -99,10 +154,13 @@ export class ProjectService {
     }
   }
 
-  private async writeProjectManifest(project: StudioProject): Promise<void> {
+  private async writeProjectMetadata(project: StudioProject): Promise<void> {
     const studioDir = path.join(project.rootPath, ".gameaistudio");
     await mkdir(studioDir, { recursive: true });
     await writeFile(path.join(studioDir, "project.json"), JSON.stringify(project, null, 2), "utf8");
+  }
+
+  private async writeProjectGuide(project: StudioProject): Promise<void> {
     await writeFile(
       path.join(project.rootPath, "GAMEAISTUDIO.md"),
       [
@@ -117,6 +175,44 @@ export class ProjectService {
         "- Maintain Web export compatibility.",
         "- Read `.gameaistudio/agent-context.md` when GameAIStudio prepares an Agent turn.",
         "- Record major design decisions in this file when useful."
+      ].join("\n"),
+      "utf8"
+    );
+  }
+
+  private async writeInitialAgentFiles(project: StudioProject): Promise<void> {
+    const studioDir = path.join(project.rootPath, ".gameaistudio");
+    await mkdir(studioDir, { recursive: true });
+    await writeFile(
+      path.join(studioDir, "agent-context.md"),
+      [
+        "# GameAIStudio Agent Context",
+        "",
+        `Project: ${project.name}`,
+        `Dimension: ${project.dimension.toUpperCase()}`,
+        `Original user goal: ${project.prompt}`,
+        `Project root: ${project.rootPath}`,
+        "",
+        "No Agent turn has been prepared yet. Run an Agent or the team workflow to refresh this file with the live file map, recent conversation, delivery status, and Agent journal tail.",
+        "",
+        "Useful project-local files:",
+        "- GAMEAISTUDIO.md",
+        "- .gameaistudio/project.json",
+        "- .gameaistudio/agent-journal.md"
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(studioDir, "agent-journal.md"),
+      [
+        "# GameAIStudio Agent Journal",
+        "",
+        `## ${project.createdAt} - Project created`,
+        "",
+        `- Project: ${project.name} (${project.dimension.toUpperCase()})`,
+        `- Original user goal: ${project.prompt}`,
+        "- Status: waiting for the first Agent turn.",
+        ""
       ].join("\n"),
       "utf8"
     );

@@ -27,8 +27,10 @@ export interface CliTool {
   installCommand: string[];
   installHint: string;
   installManager: string;
+  installManagerPath?: string;
   installManagerAvailable: boolean;
   installManagerVersion?: string;
+  installGlobalBinPath?: string;
   defaultArgs: string[];
   credentialStatus: CliCredentialStatus;
   credentialEnvVars: string[];
@@ -57,6 +59,7 @@ export interface AgentMessage {
   cliToolId?: CliToolId;
   exitCode?: number;
   durationMs?: number;
+  fileChanges?: ProjectFileChange[];
 }
 
 export type StudioRunKind = "agent-turn" | "studio-workflow" | "godot-export" | "preview";
@@ -160,6 +163,8 @@ export interface StudioProject {
   previewStatus?: PreviewStatus;
   previewUpdatedAt?: string;
   exportZipPath?: string;
+  latestExportManifestPath?: string;
+  latestWebBuildInspection?: WebBuildInspection;
 }
 
 export interface ProjectDetails extends StudioProject {
@@ -179,6 +184,7 @@ export interface RunAgentTurnInput {
   agentId: string;
   cliToolId: CliToolId;
   message: string;
+  autoStartPreview: boolean;
 }
 
 export interface RunAgentTurnResult {
@@ -186,6 +192,8 @@ export interface RunAgentTurnResult {
   project: ProjectDetails;
   runs: StudioRun[];
   snapshots: ProjectSnapshot[];
+  previewResult?: PreviewResult;
+  previewError?: string;
 }
 
 export interface RunStudioWorkflowInput {
@@ -194,6 +202,7 @@ export interface RunStudioWorkflowInput {
   agentIds?: string[];
   preferredCliToolId?: CliToolId;
   autoExportWeb: boolean;
+  autoPackageWebZip: boolean;
   autoStartPreview: boolean;
 }
 
@@ -201,6 +210,8 @@ export interface RunStudioWorkflowResult {
   project: ProjectDetails;
   run: StudioRun;
   exportResult?: GodotRunResult;
+  inspectionResult?: WebBuildInspection;
+  zipResult?: ExportResult;
   previewResult?: PreviewResult;
 }
 
@@ -215,6 +226,19 @@ export interface ExportResult {
   projectId: string;
   zipPath: string;
   webBuildPath: string;
+  manifestPath: string;
+  inspection?: WebBuildInspection;
+}
+
+export interface WebBuildInspection {
+  projectId: string;
+  webBuildPath: string;
+  ok: boolean;
+  files: string[];
+  totalBytes: number;
+  requiredFiles: string[];
+  missingRequiredFiles: string[];
+  message: string;
 }
 
 export interface WebExportResult {
@@ -223,6 +247,8 @@ export interface WebExportResult {
   run: StudioRun;
   webBuildPath: string;
   zipPath?: string;
+  manifestPath?: string;
+  inspectionResult?: WebBuildInspection;
   validationResult: GodotRunResult;
   exportResult?: GodotRunResult;
   error?: string;
@@ -234,6 +260,13 @@ export interface GodotRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+}
+
+export interface GodotOpenResult {
+  ok: boolean;
+  executablePath?: string;
+  projectRoot?: string;
+  message: string;
 }
 
 export type RuntimeDiagnosticSeverity = "ok" | "info" | "warning" | "error";
@@ -251,6 +284,9 @@ export type GodotRuntimeStatus = "ready" | "partial" | "missing" | "error";
 export interface GodotTemplateRuntime {
   dimension: GameDimension;
   path: string;
+  projectFileAvailable: boolean;
+  exportPresetsPath: string;
+  webExportPresetAvailable: boolean;
   available: boolean;
 }
 
@@ -299,6 +335,7 @@ export interface StudioApi {
   exportWeb(projectId: string): Promise<WebExportResult>;
   runGodotExport(projectId: string): Promise<GodotRunResult>;
   validateProject(projectId: string): Promise<GodotRunResult>;
+  openGodotEditor(projectId: string): Promise<GodotOpenResult>;
   openPath(path: string): Promise<void>;
 }
 
@@ -356,3 +393,10 @@ export const CLI_TOOL_LABELS: Record<CliToolId, string> = {
   kscc: "KSCC",
   kimi: "Kimi"
 };
+
+export function chooseAgentCli(agent: AgentProfile, tools: CliTool[], preferredCliToolId?: CliToolId): CliToolId {
+  const preferred = preferredCliToolId ? tools.find((tool) => tool.id === preferredCliToolId && tool.installed) : undefined;
+  const defaultTool = tools.find((tool) => tool.id === agent.defaultCli && tool.installed);
+  const fallback = tools.find((tool) => tool.installed);
+  return preferred?.id ?? defaultTool?.id ?? fallback?.id ?? preferredCliToolId ?? agent.defaultCli;
+}

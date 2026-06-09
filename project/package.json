@@ -1,16 +1,24 @@
 {
   "name": "gameaistudio-godot",
   "version": "0.1.0",
+  "description": "GameAIStudio desktop app for creating Godot games with local AI CLI agents.",
+  "author": "GameAIStudio",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "assets:icon": "node scripts/generate-app-icon.mjs",
+    "build": "pnpm run assets:icon && electron-vite build",
+    "dist": "pnpm build && electron-builder",
+    "dist:win": "pnpm build && electron-builder --win",
     "preview": "electron-vite preview",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --workspace-concurrency=1 typecheck"
+    "smoke:templates": "node scripts/smoke-godot-templates.mjs",
+    "smoke:webzip": "node scripts/smoke-webzip.mjs",
+    "test": "pnpm run assets:icon && vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --workspace-concurrency=1 typecheck",
+    "verify:release": "pnpm typecheck && pnpm test && pnpm smoke:webzip && pnpm dist:win"
   },
   "dependencies": {},
   "devDependencies": {
@@ -29,6 +37,37 @@
     "vitest": "^3.1.4"
   },
   "build": {
+    "appId": "com.gameaistudio.desktop",
+    "productName": "GameAIStudio",
+    "icon": "build/icon.ico",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "GameAIStudio",
+      "deleteAppDataOnUninstall": false
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asar": true,
     "extraResources": [
       {
         "from": "engine",
@@ -41,7 +80,13 @@
         "from": "gameaistudio_template",
         "to": "gameaistudio_template",
         "filter": [
-          "**/*"
+          "**/*",
+          "!**/.godot",
+          "!**/.godot/**",
+          "!**/build",
+          "!**/build/**",
+          "!**/dist",
+          "!**/dist/**"
         ]
       }
     ]

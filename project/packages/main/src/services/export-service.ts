@@ -1,21 +1,199 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ExportResult } from "@gameaistudio/shared";
+import type { ExportResult, StudioProject, WebBuildInspection } from "@gameaistudio/shared";
+import { sanitizeProjectName } from "./naming";
 import { ProjectService } from "./project-service";
 import { runProcess } from "./process-runner";
+
+const REQUIRED_WEB_BUILD_FILES = ["index.html", "*.wasm", "*.pck"];
+const EXPORT_MANIFEST_FILENAME = "gameaistudio-export.json";
+const REQUIRED_WEB_ZIP_FILES = ["index.html", EXPORT_MANIFEST_FILENAME, "*.wasm", "*.pck"];
+
+export interface WebZipInspection {
+  ok: boolean;
+  zipPath?: string;
+  entries: string[];
+  requiredFiles: string[];
+  missingRequiredFiles: string[];
+  message: string;
+}
 
 function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+async function collectFiles(rootPath: string, currentPath = rootPath): Promise<Array<{ relativePath: string; size: number }>> {
+  const entries = await readdir(currentPath, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const absolutePath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        return collectFiles(rootPath, absolutePath);
+      }
+      if (!entry.isFile()) {
+        return [];
+      }
+      const fileStat = await stat(absolutePath);
+      return [
+        {
+          relativePath: path.relative(rootPath, absolutePath).replace(/\\/g, "/"),
+          size: fileStat.size
+        }
+      ];
+    })
+  );
+  return files.flat();
+}
+
+export async function inspectWebBuildPath(projectId: string, webBuildPath: string): Promise<WebBuildInspection> {
+  let artifacts: Array<{ relativePath: string; size: number }> = [];
+  try {
+    artifacts = await collectFiles(webBuildPath);
+  } catch {
+    artifacts = [];
+  }
+
+  const files = artifacts.map((artifact) => artifact.relativePath).sort((left, right) => left.localeCompare(right));
+  const lowerFiles = files.map((file) => file.toLowerCase());
+  const missingRequiredFiles = [
+    lowerFiles.includes("index.html") ? undefined : "index.html",
+    lowerFiles.some((file) => file.endsWith(".wasm")) ? undefined : "*.wasm",
+    lowerFiles.some((file) => file.endsWith(".pck")) ? undefined : "*.pck"
+  ].filter((file): file is string => Boolean(file));
+  const totalBytes = artifacts.reduce((sum, artifact) => sum + artifact.size, 0);
+  const ok = missingRequiredFiles.length === 0;
+
+  return {
+    projectId,
+    webBuildPath,
+    ok,
+    files,
+    totalBytes,
+    requiredFiles: REQUIRED_WEB_BUILD_FILES,
+    missingRequiredFiles,
+    message: ok
+      ? `Web build contains ${files.length} files (${totalBytes} bytes).`
+      : `Web build is missing required files: ${missingRequiredFiles.join(", ")}.`
+  };
+}
+
+export function buildExportManifest(project: StudioProject, inspection: WebBuildInspection, exportedAt = new Date().toISOString()): string {
+  return JSON.stringify(
+    {
+      formatVersion: 1,
+      generator: "GameAIStudio",
+      exportedAt,
+      project: {
+        id: project.id,
+        name: project.name,
+        dimension: project.dimension,
+        prompt: project.prompt
+      },
+      webBuild: {
+        ok: inspection.ok,
+        totalBytes: inspection.totalBytes,
+        files: inspection.files,
+        requiredFiles: inspection.requiredFiles,
+        missingRequiredFiles: inspection.missingRequiredFiles
+      }
+    },
+    null,
+    2
+  );
+}
+
+async function writeExportManifest(project: StudioProject, inspection: WebBuildInspection): Promise<string> {
+  const manifestPath = path.join(project.webBuildPath, EXPORT_MANIFEST_FILENAME);
+  await writeFile(manifestPath, `${buildExportManifest(project, inspection)}\n`, "utf8");
+  return manifestPath;
+}
+
+export function buildWebZipPath(project: StudioProject): string {
+  return path.join(project.rootPath, "dist", `${sanitizeProjectName(project.name)}-web.zip`);
+}
+
+export function inspectWebZipEntries(entries: string[], zipPath?: string): WebZipInspection {
+  const normalizedEntries = entries
+    .map((entry) => entry.replace(/\\/g, "/").replace(/^\.\/+/, "").toLowerCase())
+    .sort((left, right) => left.localeCompare(right));
+  const missingRequiredFiles = [
+    normalizedEntries.includes("index.html") ? undefined : "index.html",
+    normalizedEntries.includes(EXPORT_MANIFEST_FILENAME) ? undefined : EXPORT_MANIFEST_FILENAME,
+    normalizedEntries.some((entry) => entry.endsWith(".wasm")) ? undefined : "*.wasm",
+    normalizedEntries.some((entry) => entry.endsWith(".pck")) ? undefined : "*.pck"
+  ].filter((file): file is string => Boolean(file));
+  const ok = missingRequiredFiles.length === 0;
+
+  return {
+    ok,
+    zipPath,
+    entries: normalizedEntries,
+    requiredFiles: REQUIRED_WEB_ZIP_FILES,
+    missingRequiredFiles,
+    message: ok
+      ? `Web zip contains ${normalizedEntries.length} entries.`
+      : `Web zip is missing required files: ${missingRequiredFiles.join(", ")}.`
+  };
+}
+
+async function listZipEntries(zipPath: string): Promise<string[]> {
+  if (process.platform === "win32") {
+    const command = [
+      "Add-Type -AssemblyName System.IO.Compression.FileSystem;",
+      `$zip = [System.IO.Compression.ZipFile]::OpenRead(${psQuote(zipPath)});`,
+      "try { $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }"
+    ].join(" ");
+    const result = await runProcess("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      timeoutMs: 2 * 60 * 1000
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || result.stdout || "Could not inspect Web zip.");
+    }
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  const result = await runProcess("unzip", ["-Z1", zipPath], { timeoutMs: 2 * 60 * 1000 });
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || "Could not inspect Web zip.");
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export async function inspectWebZipPath(zipPath: string): Promise<WebZipInspection> {
+  return inspectWebZipEntries(await listZipEntries(zipPath), zipPath);
+}
+
 export class ExportService {
   constructor(private readonly projectService: ProjectService) {}
 
+  async inspectWebBuild(projectId: string): Promise<WebBuildInspection> {
+    const project = await this.projectService.requireProject(projectId);
+    const inspection = await inspectWebBuildPath(project.id, project.webBuildPath);
+    await this.projectService.updateProject({
+      ...project,
+      latestWebBuildInspection: inspection
+    });
+    return inspection;
+  }
+
   async zipWebBuild(projectId: string): Promise<ExportResult> {
     const project = await this.projectService.requireProject(projectId);
+    const inspection = await inspectWebBuildPath(project.id, project.webBuildPath);
+    if (!inspection.ok) {
+      await this.projectService.updateProject({ ...project, latestWebBuildInspection: inspection });
+      throw new Error(inspection.message);
+    }
+    const manifestPath = await writeExportManifest(project, inspection);
+
     const exportDir = path.join(project.rootPath, "dist");
     await mkdir(exportDir, { recursive: true });
-    const zipPath = path.join(exportDir, `${project.name.replace(/\s+/g, "-")}-web.zip`);
+    const zipPath = buildWebZipPath(project);
 
     if (process.platform === "win32") {
       const sourceGlob = `${project.webBuildPath}${path.sep}*`;
@@ -36,12 +214,23 @@ export class ExportService {
       }
     }
 
-    const updated = await this.projectService.updateProject({ ...project, exportZipPath: zipPath });
+    const zipInspection = await inspectWebZipPath(zipPath);
+    if (!zipInspection.ok) {
+      throw new Error(zipInspection.message);
+    }
+
+    const updated = await this.projectService.updateProject({
+      ...project,
+      exportZipPath: zipPath,
+      latestExportManifestPath: manifestPath,
+      latestWebBuildInspection: inspection
+    });
     return {
       projectId: updated.id,
       zipPath,
-      webBuildPath: updated.webBuildPath
+      webBuildPath: updated.webBuildPath,
+      manifestPath,
+      inspection
     };
   }
 }
-

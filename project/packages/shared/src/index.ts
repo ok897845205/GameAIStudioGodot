@@ -49,6 +49,24 @@ export interface AgentProfile {
   systemPrompt: string;
 }
 
+export type AgentAttachmentKind = "image";
+
+export interface AgentAttachment {
+  id: string;
+  kind: AgentAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  projectRelativePath: string;
+}
+
+export interface AgentAttachmentInput {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataUrl: string;
+}
+
 export interface AgentMessage {
   id: string;
   projectId: string;
@@ -60,6 +78,7 @@ export interface AgentMessage {
   exitCode?: number;
   durationMs?: number;
   fileChanges?: ProjectFileChange[];
+  attachments?: AgentAttachment[];
 }
 
 export type StudioRunKind = "agent-turn" | "studio-workflow" | "godot-export" | "preview";
@@ -124,30 +143,6 @@ export interface PreviewEvent {
   message?: string;
 }
 
-export interface ProjectSnapshot {
-  id: string;
-  projectId: string;
-  label: string;
-  reason: string;
-  createdAt: string;
-  fileCount: number;
-  totalBytes: number;
-  storagePath: string;
-}
-
-export interface CreateSnapshotInput {
-  projectId: string;
-  label: string;
-  reason: string;
-}
-
-export interface RestoreSnapshotResult {
-  project: ProjectDetails;
-  snapshot: ProjectSnapshot;
-  safetySnapshot: ProjectSnapshot;
-  restoredAt: string;
-}
-
 export interface StudioProject {
   id: string;
   name: string;
@@ -170,7 +165,6 @@ export interface StudioProject {
 export interface ProjectDetails extends StudioProject {
   messages: AgentMessage[];
   runs: StudioRun[];
-  snapshots: ProjectSnapshot[];
   gitStatus?: GitProjectStatus;
 }
 
@@ -186,13 +180,13 @@ export interface RunAgentTurnInput {
   cliToolId: CliToolId;
   message: string;
   autoStartPreview: boolean;
+  attachments?: AgentAttachmentInput[];
 }
 
 export interface RunAgentTurnResult {
   messages: AgentMessage[];
   project: ProjectDetails;
   runs: StudioRun[];
-  snapshots: ProjectSnapshot[];
   previewResult?: PreviewResult;
   previewError?: string;
 }
@@ -335,10 +329,19 @@ export interface GitProjectStatus {
   clean: boolean;
   branch?: string;
   head?: string;
+  recentCommits: GitCommit[];
   changedFiles: string[];
   message: string;
   error?: string;
   lastCheckedAt: string;
+}
+
+export interface GitCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  message: string;
 }
 
 export interface GitCommitInput {
@@ -354,6 +357,48 @@ export interface GitCommitResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+}
+
+export interface GitRestoreInput {
+  projectId: string;
+  commitHash: string;
+}
+
+export interface GitRestoreResult {
+  ok: boolean;
+  project: ProjectDetails;
+  status: GitProjectStatus;
+  message: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
+export type ProjectFilePreviewKind = "text" | "image" | "binary";
+
+export interface ProjectFilePreview {
+  projectId: string;
+  relativePath: string;
+  absolutePath: string;
+  name: string;
+  size: number;
+  kind: ProjectFilePreviewKind;
+  mimeType: string;
+  content?: string;
+  dataUrl?: string;
+  truncated?: boolean;
+}
+
+export interface ProjectFilePreviewInput {
+  projectId: string;
+  relativePath: string;
+}
+
+export interface DeleteProjectResult {
+  deletedProjectId: string;
+  deletedRootPath: string;
+  projects: StudioProject[];
+  selectedProject?: ProjectDetails;
 }
 
 export interface StudioBootstrap {
@@ -373,6 +418,7 @@ export interface StudioApi {
   refreshCliTools(): Promise<CliTool[]>;
   installCliTool(toolId: CliToolId): Promise<GodotRunResult>;
   createProject(input: CreateProjectInput): Promise<ProjectDetails>;
+  deleteProject(projectId: string): Promise<DeleteProjectResult>;
   listProjects(): Promise<StudioProject[]>;
   getProject(projectId: string): Promise<ProjectDetails>;
   runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTurnResult>;
@@ -380,11 +426,10 @@ export interface StudioApi {
   listRuns(projectId: string): Promise<StudioRun[]>;
   cancelRun(runId: string): Promise<StudioRun>;
   onRunEvent(callback: (event: StudioRunEvent) => void): () => void;
-  listSnapshots(projectId: string): Promise<ProjectSnapshot[]>;
-  createSnapshot(input: CreateSnapshotInput): Promise<ProjectSnapshot>;
-  restoreSnapshot(projectId: string, snapshotId: string): Promise<RestoreSnapshotResult>;
   getProjectGitStatus(projectId: string): Promise<GitProjectStatus>;
   commitProjectGit(input: GitCommitInput): Promise<GitCommitResult>;
+  restoreProjectGit(input: GitRestoreInput): Promise<GitRestoreResult>;
+  readProjectFile(input: ProjectFilePreviewInput): Promise<ProjectFilePreview>;
   startPreview(projectId: string): Promise<PreviewResult>;
   startAutoPreview(projectId: string): Promise<PreviewResult>;
   stopAutoPreview(projectId: string): Promise<PreviewEvent>;

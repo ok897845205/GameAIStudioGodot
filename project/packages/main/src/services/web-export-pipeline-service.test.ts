@@ -50,8 +50,7 @@ describe("WebExportPipelineService", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages: [],
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       })
     };
     const godotService = {
@@ -114,8 +113,7 @@ describe("WebExportPipelineService", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages: [],
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       })
     };
     const godotService = {
@@ -174,8 +172,7 @@ describe("WebExportPipelineService", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages: [],
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       })
     };
     const godotService = {
@@ -236,8 +233,7 @@ describe("WebExportPipelineService", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages: [],
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       })
     };
     const godotService = {

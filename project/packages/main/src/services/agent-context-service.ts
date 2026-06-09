@@ -109,7 +109,10 @@ function roleLabel(message: AgentMessage): string {
 
 function formatMessage(message: AgentMessage): string {
   const cliLabel = message.cliToolId ? ` / ${CLI_TOOL_LABELS[message.cliToolId]}` : "";
-  return `- ${roleLabel(message)}${cliLabel}: ${trimForContext(message.content)}`;
+  const attachmentLabel = message.attachments?.length
+    ? ` [attachments: ${message.attachments.map((attachment) => attachment.projectRelativePath).join(", ")}]`
+    : "";
+  return `- ${roleLabel(message)}${cliLabel}${attachmentLabel}: ${trimForContext(message.content)}`;
 }
 
 export function summarizeRecentMessages(messages: AgentMessage[], maxMessages = DEFAULT_MAX_MESSAGES): string[] {

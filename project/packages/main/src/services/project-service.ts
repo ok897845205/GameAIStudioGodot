@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   AGENT_PROFILES,
@@ -97,8 +97,7 @@ export class ProjectService {
     return {
       ...project,
       messages: introMessages,
-      runs: [],
-      snapshots: []
+      runs: []
     };
   }
 
@@ -111,8 +110,7 @@ export class ProjectService {
     return {
       ...project,
       messages: await this.store.listMessages(projectId),
-      runs: await this.store.listRuns(projectId),
-      snapshots: await this.store.listSnapshots(projectId)
+      runs: await this.store.listRuns(projectId)
     };
   }
 
@@ -132,6 +130,13 @@ export class ProjectService {
     await this.writeProjectMetadata(updated);
     await this.store.upsertProject(updated);
     return updated;
+  }
+
+  async deleteProject(projectId: string): Promise<StudioProject> {
+    const project = await this.requireProject(projectId);
+    await rm(project.rootPath, { recursive: true, force: true });
+    await this.store.deleteProject(projectId);
+    return project;
   }
 
   async appendMessages(projectId: string, messages: AgentMessage[]): Promise<AgentMessage[]> {

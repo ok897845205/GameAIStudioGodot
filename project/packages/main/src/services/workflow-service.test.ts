@@ -138,8 +138,7 @@ describe("buildWorkflowRunSteps", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages,
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       }),
       appendMessages: async (_projectId: string, nextMessages: AgentMessage[]) => {
         messages.push(...nextMessages);
@@ -163,9 +162,8 @@ describe("buildWorkflowRunSteps", () => {
         };
         return {
           messages: [message],
-          project: { ...project, messages: [message], runs: [], snapshots: [] },
-          runs: [],
-          snapshots: []
+          project: { ...project, messages: [message], runs: [] },
+          runs: []
         };
       }
     };
@@ -247,8 +245,7 @@ describe("buildWorkflowRunSteps", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages,
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       }),
       appendMessages: async (_projectId: string, nextMessages: AgentMessage[]) => {
         messages.push(...nextMessages);
@@ -272,9 +269,8 @@ describe("buildWorkflowRunSteps", () => {
         };
         return {
           messages: [message],
-          project: { ...project, messages: [message], runs: [], snapshots: [] },
-          runs: [],
-          snapshots: []
+          project: { ...project, messages: [message], runs: [] },
+          runs: []
         };
       }
     };
@@ -370,8 +366,7 @@ describe("buildWorkflowRunSteps", () => {
       getProject: async (): Promise<ProjectDetails> => ({
         ...project,
         messages,
-        runs: await runService.listRuns(project.id),
-        snapshots: []
+        runs: await runService.listRuns(project.id)
       }),
       appendMessages: async (_projectId: string, nextMessages: AgentMessage[]) => {
         messages.push(...nextMessages);
@@ -395,9 +390,8 @@ describe("buildWorkflowRunSteps", () => {
         };
         return {
           messages: [message],
-          project: { ...project, messages: [message], runs: [], snapshots: [] },
-          runs: [],
-          snapshots: []
+          project: { ...project, messages: [message], runs: [] },
+          runs: []
         };
       }
     };

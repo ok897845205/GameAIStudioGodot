@@ -16,8 +16,7 @@ function project(): ProjectDetails {
     updatedAt: "2026-06-08T00:00:00.000Z",
     activeAgentId: "programmer",
     messages: [],
-    runs: [],
-    snapshots: []
+    runs: []
   };
 }
 
@@ -60,8 +59,7 @@ describe("runAgentTurnWithOptionalPreview", () => {
     const runResult: RunAgentTurnResult = {
       project: baseProject,
       messages: [message],
-      runs: [],
-      snapshots: []
+      runs: []
     };
     let changedPath: string | undefined;
 
@@ -101,8 +99,7 @@ describe("runAgentTurnWithOptionalPreview", () => {
     const runResult: RunAgentTurnResult = {
       project: baseProject,
       messages: [message],
-      runs: [],
-      snapshots: []
+      runs: []
     };
 
     const result = await runAgentTurnWithOptionalPreview(
@@ -129,8 +126,7 @@ describe("runAgentTurnWithOptionalPreview", () => {
     const runResult: RunAgentTurnResult = {
       project: baseProject,
       messages: [message],
-      runs: [],
-      snapshots: []
+      runs: []
     };
     let refreshCalled = false;
 

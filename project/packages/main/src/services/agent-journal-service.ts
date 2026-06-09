@@ -6,7 +6,6 @@ import {
   type AgentMessage,
   type CliToolId,
   type ProjectFileChange,
-  type ProjectSnapshot,
   type StudioProject
 } from "@gameaistudio/shared";
 
@@ -66,8 +65,6 @@ export function buildAgentJournalEntry(input: {
   status: "completed" | "failed" | "cancelled";
   fileChanges: ProjectFileChange[];
   contextPath?: string;
-  beforeSnapshot?: ProjectSnapshot;
-  afterSnapshot?: ProjectSnapshot;
 }): string {
   const agent = AGENT_PROFILES.find((profile) => profile.id === input.agentId);
   const agentTitle = agent?.title ?? input.agentId;
@@ -87,8 +84,6 @@ export function buildAgentJournalEntry(input: {
     `- Duration: ${input.agentMessage.durationMs ?? 0} ms`,
     `- User request: ${oneLine(input.userMessage)}`,
     input.contextPath ? `- Context: ${input.contextPath}` : undefined,
-    input.beforeSnapshot ? `- Before snapshot: ${input.beforeSnapshot.id}` : undefined,
-    input.afterSnapshot ? `- After snapshot: ${input.afterSnapshot.id}` : undefined,
     "",
     "### Changed Files",
     "",

@@ -19,8 +19,10 @@ pnpm dev
 - Bundled Godot runtime diagnostics, project opening, Web export, preview, and zip packaging.
 - Git and Node.js environment diagnostics surfaced in the desktop UI.
 - Local CLI discovery and install diagnostics for Codex, Claude, KSCC, and Kimi.
-- Producer, designer, programmer, artist, and QA agent workflow with streaming output, cancellation, file change summaries, project snapshots, and restore.
-- Project Git version management: new projects try to initialize a repository automatically, existing projects can enable Git and commit versions from the UI.
+- Producer, designer, programmer, artist, and QA agent workflow with Codex-style chat, image attachments, streaming output, cancellation, and file change summaries.
+- Project Git version management: new projects try to initialize a repository automatically, the UI shows up to five recent commits, and users can commit or restore any valid commit hash.
+- In-app file preview for project notes, Agent context, Agent logs, changed files, and image attachments.
+- Project deletion with confirmation that also removes the local generated Godot directory.
 - Project-local AI context files: `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md`.
 - Web export inspection, `gameaistudio-export.json` manifest generation, and Windows-safe Web zip names.
 

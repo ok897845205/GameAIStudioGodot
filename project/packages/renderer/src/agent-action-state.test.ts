@@ -30,4 +30,17 @@ describe("send turn button state", () => {
       title: undefined
     });
   });
+
+  it("allows sending an image-only turn when a CLI is installed", () => {
+    const state = getSendTurnButtonState({
+      hasSelectedProject: true,
+      draft: "",
+      attachmentCount: 1,
+      isBusy: false,
+      selectedCliInstalled: true,
+      selectedCliLabel: "Codex"
+    });
+
+    expect(state.disabled).toBe(false);
+  });
 });

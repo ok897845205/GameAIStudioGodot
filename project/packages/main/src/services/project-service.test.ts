@@ -169,4 +169,29 @@ describe("ProjectService", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("deletes a project record and its local Godot directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-project-service-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "state.json"));
+    const service = new ProjectService(paths, store);
+
+    try {
+      await writeTemplate(paths, "2d");
+      const project = await service.createProject({
+        name: "Delete Demo",
+        dimension: "2d",
+        prompt: "demo"
+      });
+
+      const deleted = await service.deleteProject(project.id);
+
+      expect(deleted.rootPath).toBe(project.rootPath);
+      await expect(access(project.rootPath)).rejects.toThrow();
+      expect(await store.listProjects()).toEqual([]);
+      await expect(service.requireProject(project.id)).rejects.toThrow("Project not found");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

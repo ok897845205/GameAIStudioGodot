@@ -1,6 +1,7 @@
 export interface SendTurnButtonStateInput {
   hasSelectedProject: boolean;
   draft: string;
+  attachmentCount?: number;
   isBusy: boolean;
   selectedCliInstalled: boolean;
   selectedCliLabel: string;
@@ -19,7 +20,7 @@ export function getSendTurnButtonState(input: SendTurnButtonStateInput): SendTur
     };
   }
 
-  if (!input.draft.trim()) {
+  if (!input.draft.trim() && !input.attachmentCount) {
     return {
       disabled: true,
       title: "先输入要交给 Agent 的需求。"

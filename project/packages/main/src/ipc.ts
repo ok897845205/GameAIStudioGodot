@@ -1,5 +1,5 @@
 import { ipcMain, shell } from "electron";
-import type { CliToolId, CreateProjectInput, CreateSnapshotInput, RunAgentTurnInput, RunStudioWorkflowInput } from "@gameaistudio/shared";
+import type { CliToolId, CreateProjectInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput } from "@gameaistudio/shared";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
@@ -11,8 +11,8 @@ import { GodotRuntimeService } from "./services/godot-runtime-service";
 import { GodotService } from "./services/godot-service";
 import { PreviewServer } from "./services/preview-server";
 import { ProcessRegistry } from "./services/process-runner";
+import { ProjectFilePreviewService } from "./services/project-file-preview-service";
 import { ProjectService } from "./services/project-service";
-import { ProjectSnapshotService } from "./services/project-snapshot-service";
 import { RunService } from "./services/run-service";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
@@ -25,8 +25,8 @@ interface IpcDependencies {
   cliService: CliService;
   environmentService: EnvironmentService;
   gitService: GitService;
+  filePreviewService: ProjectFilePreviewService;
   projectService: ProjectService;
-  snapshotService: ProjectSnapshotService;
   agentService: AgentService;
   workflowService: WorkflowService;
   godotRuntimeService: GodotRuntimeService;
@@ -65,27 +65,28 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
 
   ipcMain.handle("projects:create", async (_event, input: CreateProjectInput) => {
     const project = await deps.projectService.createProject(input);
-    await deps.snapshotService.create({
-      projectId: project.id,
-      label: "初始模板",
-      reason: "project-created"
-    });
     await deps.gitService.initializeProject(project.id);
     return projectDetailsWithGit(deps, project.id);
   });
-  ipcMain.handle("projects:list", async () => deps.projectService.listProjects());
-  ipcMain.handle("projects:get", async (_event, projectId: string) => projectDetailsWithGit(deps, projectId));
-  ipcMain.handle("snapshots:list", async (_event, projectId: string) => deps.snapshotService.list(projectId));
-  ipcMain.handle("snapshots:create", async (_event, input: CreateSnapshotInput) => deps.snapshotService.create(input));
-  ipcMain.handle("snapshots:restore", async (_event, projectId: string, snapshotId: string) => {
-    const result = await deps.snapshotService.restore(projectId, snapshotId);
+  ipcMain.handle("projects:delete", async (_event, projectId: string) => {
+    await deps.autoPreviewService.stop(projectId).catch(() => undefined);
+    await deps.previewServer.stop(projectId).catch(() => undefined);
+    const deleted = await deps.projectService.deleteProject(projectId);
+    const projects = await deps.projectService.listProjects();
+    const selectedProject = projects[0] ? await projectDetailsWithGit(deps, projects[0].id) : undefined;
     return {
-      ...result,
-      project: await projectDetailsWithGit(deps, projectId)
+      deletedProjectId: deleted.id,
+      deletedRootPath: deleted.rootPath,
+      projects,
+      selectedProject
     };
   });
+  ipcMain.handle("projects:list", async () => deps.projectService.listProjects());
+  ipcMain.handle("projects:get", async (_event, projectId: string) => projectDetailsWithGit(deps, projectId));
   ipcMain.handle("projects:git-status", async (_event, projectId: string) => deps.gitService.getStatus(projectId));
-  ipcMain.handle("projects:git-commit", async (_event, input: { projectId: string; message: string }) => deps.gitService.commit(input));
+  ipcMain.handle("projects:git-commit", async (_event, input: GitCommitInput) => deps.gitService.commit(input));
+  ipcMain.handle("projects:git-restore", async (_event, input: GitRestoreInput) => deps.gitService.restore(input));
+  ipcMain.handle("projects:file-preview", async (_event, input: ProjectFilePreviewInput) => deps.filePreviewService.read(input));
   ipcMain.handle("runs:list", async (_event, projectId: string) => deps.runService.listRuns(projectId));
   ipcMain.handle("runs:cancel", async (_event, runId: string) => {
     const cancelledProcesses = deps.processRegistry.cancelRun(runId);

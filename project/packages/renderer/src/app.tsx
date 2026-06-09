@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import CodeEditor from "@uiw/react-textarea-code-editor";
 import {
   Bot,
   CheckCircle2,
@@ -9,22 +10,27 @@ import {
   Gamepad2,
   GitBranch,
   Hammer,
+  Image as ImageIcon,
   Loader2,
   Package,
+  Paperclip,
   Play,
-  RotateCcw,
   RefreshCw,
   Save,
   Send,
   StopCircle,
   Terminal,
+  Trash2,
   WandSparkles,
+  X,
   XCircle
 } from "lucide-react";
 import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
   chooseAgentCli,
+  type AgentAttachment,
+  type AgentAttachmentInput,
   type AgentMessage,
   type AgentProfile,
   type CliTool,
@@ -33,7 +39,7 @@ import {
   type GameDimension,
   type GitProjectStatus,
   type ProjectFileChange,
-  type ProjectSnapshot,
+  type ProjectFilePreview,
   type PreviewEvent,
   type PreviewStatus,
   type ProjectDetails,
@@ -51,7 +57,6 @@ type BusyAction =
   | "create"
   | "send"
   | "workflow"
-  | "snapshot"
   | "preview"
   | "export"
   | "godot"
@@ -60,6 +65,8 @@ type BusyAction =
   | "cli"
   | "environment"
   | "git"
+  | "delete"
+  | "file"
   | undefined;
 type TeamCliRouteStatus = "default" | "fallback" | "missing";
 type PreflightStatus = "ready" | "warning" | "blocked";
@@ -69,6 +76,10 @@ interface CreateForm {
   prompt: string;
   dimension: GameDimension;
   autoRunWorkflow: boolean;
+}
+
+interface PendingAttachment extends AgentAttachmentInput {
+  id: string;
 }
 
 const initialForm: CreateForm = {
@@ -118,6 +129,39 @@ function projectAgentJournalPath(rootPath: string): string {
 
 function projectGuidePath(rootPath: string): string {
   return projectFilePath(rootPath, "GAMEAISTUDIO.md");
+}
+
+function codeLanguageForPath(value: string): string {
+  const lower = value.toLowerCase();
+  if (lower.endsWith(".json")) {
+    return "json";
+  }
+  if (lower.endsWith(".md")) {
+    return "markdown";
+  }
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) {
+    return "ts";
+  }
+  if (lower.endsWith(".gd")) {
+    return "gdscript";
+  }
+  return "text";
+}
+
+function attachmentSummary(attachments?: AgentAttachment[]): string | undefined {
+  if (!attachments?.length) {
+    return undefined;
+  }
+  return `${attachments.length} 张图片`;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("图片读取失败。"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function agentById(agentId: string): AgentProfile {
@@ -286,22 +330,6 @@ function preflightStatusLabel(status: PreflightStatus): string {
   return labels[status];
 }
 
-function snapshotReasonLabel(snapshot: ProjectSnapshot): string {
-  if (snapshot.reason === "project-created") {
-    return "初始模板";
-  }
-  if (snapshot.reason.startsWith("before-agent:")) {
-    return "Agent 运行前";
-  }
-  if (snapshot.reason.startsWith("after-agent:")) {
-    return "Agent 完成后";
-  }
-  if (snapshot.reason.startsWith("before-restore:")) {
-    return "恢复前";
-  }
-  return snapshot.reason;
-}
-
 function Button(props: {
   children: React.ReactNode;
   icon?: React.ReactNode;
@@ -338,6 +366,9 @@ export function App() {
   const [notice, setNotice] = useState<string>("");
   const [previewNotice, setPreviewNotice] = useState<string>("");
   const [gitCommitMessage, setGitCommitMessage] = useState<string>("保存当前游戏版本");
+  const [gitRestoreHash, setGitRestoreHash] = useState<string>("");
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [filePreview, setFilePreview] = useState<ProjectFilePreview | undefined>();
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -407,6 +438,77 @@ export function App() {
       await window.studio.openPath(targetPath);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function previewProjectFile(relativePath?: string) {
+    if (!selectedProject || !relativePath) {
+      return;
+    }
+    setBusy("file");
+    try {
+      const preview = await window.studio.readProjectFile({
+        projectId: selectedProject.id,
+        relativePath
+      });
+      setFilePreview(preview);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function attachImages(files: FileList | null) {
+    if (!files?.length) {
+      return;
+    }
+    try {
+      const nextAttachments = await Promise.all(
+        [...files]
+          .filter((file) => file.type.startsWith("image/"))
+          .slice(0, 6)
+          .map(async (file) => ({
+            id: `${file.name}:${file.lastModified}:${file.size}`,
+            name: file.name,
+            mimeType: file.type || "image/png",
+            size: file.size,
+            dataUrl: await readFileAsDataUrl(file)
+          }))
+      );
+      setPendingAttachments((current) => [...current, ...nextAttachments].slice(0, 6));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function removePendingAttachment(id: string) {
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  }
+
+  async function deleteSelectedProject() {
+    if (!selectedProject) {
+      return;
+    }
+    const ok = window.confirm(
+      `删除项目“${selectedProject.name}”？\n\n这会同时删除本地游戏目录：\n${selectedProject.rootPath}\n\n此操作不可撤销。`
+    );
+    if (!ok) {
+      return;
+    }
+    setBusy("delete");
+    try {
+      const result = await window.studio.deleteProject(selectedProject.id);
+      setProjects(result.projects);
+      setSelectedProject(result.selectedProject);
+      if (result.selectedProject) {
+        setActiveAgentId(result.selectedProject.activeAgentId);
+      }
+      setNotice(`已删除项目：${result.deletedRootPath}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
     }
   }
 
@@ -599,8 +701,38 @@ export function App() {
     }
   }
 
+  async function restoreGitCommit(commitHash: string, label: string) {
+    if (!selectedProject) {
+      return;
+    }
+    const targetHash = commitHash.trim();
+    if (!targetHash) {
+      setNotice("请输入要还原的 Git 提交 hash。");
+      return;
+    }
+    const ok = window.confirm(`还原到 Git 版本 ${label}？\n\n当前未提交的本地变更会被覆盖。`);
+    if (!ok) {
+      return;
+    }
+    setBusy("git");
+    try {
+      const result = await window.studio.restoreProjectGit({
+        projectId: selectedProject.id,
+        commitHash: targetHash
+      });
+      setSelectedProject(result.project);
+      setProjects(await window.studio.listProjects());
+      setNotice(result.message);
+      setGitRestoreHash("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function sendTurn() {
-    if (!selectedProject || !draft.trim()) {
+    if (!selectedProject || (!draft.trim() && pendingAttachments.length === 0)) {
       return;
     }
     setBusy("send");
@@ -611,7 +743,8 @@ export function App() {
         agentId: activeAgentId,
         cliToolId: selectedCli,
         message: draft.trim(),
-        autoStartPreview: autoPreviewAfterSend
+        autoStartPreview: autoPreviewAfterSend,
+        attachments: pendingAttachments.map(({ id: _id, ...attachment }) => attachment)
       });
       setSelectedProject({ ...result.project, messages: result.messages, runs: result.runs });
       setProjects(await window.studio.listProjects());
@@ -620,50 +753,7 @@ export function App() {
         setPreviewNotice(nextPreviewNotice);
       }
       setDraft("");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(undefined);
-    }
-  }
-
-  async function createManualSnapshot() {
-    if (!selectedProject) {
-      return;
-    }
-    setBusy("snapshot");
-    try {
-      const snapshot = await window.studio.createSnapshot({
-        projectId: selectedProject.id,
-        label: `手动快照 ${new Date().toLocaleString("zh-CN")}`,
-        reason: "manual"
-      });
-      setSelectedProject({
-        ...selectedProject,
-        snapshots: [snapshot, ...selectedProject.snapshots]
-      });
-      setNotice(`已创建快照：${snapshot.label}`);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(undefined);
-    }
-  }
-
-  async function restoreSnapshot(snapshot: ProjectSnapshot) {
-    if (!selectedProject) {
-      return;
-    }
-    const ok = window.confirm(`恢复到快照“${snapshot.label}”？当前状态会先自动保存为恢复前快照。`);
-    if (!ok) {
-      return;
-    }
-    setBusy("snapshot");
-    try {
-      const result = await window.studio.restoreSnapshot(selectedProject.id, snapshot.id);
-      setSelectedProject(result.project);
-      setProjects(await window.studio.listProjects());
-      setNotice(`已恢复到快照：${result.snapshot.label}`);
+      setPendingAttachments([]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -846,6 +936,7 @@ export function App() {
   const sendTurnButton = getSendTurnButtonState({
     hasSelectedProject: Boolean(selectedProject),
     draft,
+    attachmentCount: pendingAttachments.length,
     isBusy,
     selectedCliInstalled: activeCliInstalled,
     selectedCliLabel: CLI_TOOL_LABELS[selectedCli]
@@ -1047,6 +1138,15 @@ export function App() {
               <Button icon={<ExternalLink size={16} />} onClick={() => selectedProject.previewUrl && window.open(selectedProject.previewUrl)}>
                 浏览器
               </Button>
+              <Button
+                variant="danger"
+                icon={busy === "delete" ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                onClick={deleteSelectedProject}
+                disabled={isBusy}
+                title="删除项目，并同时删除本地 Godot 游戏目录。"
+              >
+                删除
+              </Button>
             </div>
           ) : null}
         </header>
@@ -1078,16 +1178,32 @@ export function App() {
                   <strong>{message.role === "user" ? "用户" : message.role === "system" ? "系统" : activeAgent.title}</strong>
                   <span>{formatTime(message.createdAt)}</span>
                   {message.cliToolId ? <span>{CLI_TOOL_LABELS[message.cliToolId]}</span> : null}
+                  {attachmentSummary(message.attachments) ? <span>{attachmentSummary(message.attachments)}</span> : null}
                   {message.fileChanges && message.fileChanges.length > 0 ? <span>{message.fileChanges.length} 个文件变更</span> : null}
                 </div>
                 <pre>{message.content}</pre>
+                {message.attachments && message.attachments.length > 0 ? (
+                  <div className="message-attachments">
+                    {message.attachments.map((attachment) => (
+                      <button
+                        key={attachment.id}
+                        className="message-attachment"
+                        onClick={() => previewProjectFile(attachment.projectRelativePath)}
+                        title={attachment.projectRelativePath}
+                      >
+                        <ImageIcon size={15} />
+                        <span>{attachment.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {message.fileChanges && message.fileChanges.length > 0 ? (
                   <div className="message-file-changes">
                     {message.fileChanges.slice(0, 10).map((change) => (
                       <button
                         className={`message-file-change ${change.kind}`}
                         key={`${message.id}:${change.kind}:${change.path}`}
-                        onClick={() => openPath(projectFilePath(selectedProject.rootPath, change.path))}
+                        onClick={() => previewProjectFile(change.path)}
                         title={projectFilePath(selectedProject.rootPath, change.path)}
                       >
                         <span>{fileChangeKindLabel(change.kind)}</span>
@@ -1127,6 +1243,35 @@ export function App() {
             >
               发送
             </Button>
+          </div>
+          {pendingAttachments.length > 0 ? (
+            <div className="pending-attachments">
+              {pendingAttachments.map((attachment) => (
+                <div className="pending-attachment" key={attachment.id}>
+                  <img src={attachment.dataUrl} alt={attachment.name} />
+                  <span title={attachment.name}>{attachment.name}</span>
+                  <button onClick={() => removePendingAttachment(attachment.id)} title="移除图片" disabled={isBusy}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="composer-actions">
+            <label className="attach-button" title="添加图片给 AI 识别">
+              <Paperclip size={15} />
+              <span>图片</span>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                disabled={!selectedProject || isBusy}
+                onChange={(event) => {
+                  void attachImages(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
           </div>
           <label className="composer-option">
             <input type="checkbox" checked={autoPreviewAfterSend} onChange={(event) => setAutoPreviewAfterSend(event.target.checked)} />
@@ -1254,13 +1399,50 @@ export function App() {
               {gitStatus?.changedFiles.length ? (
                 <div className="git-change-list">
                   {gitStatus.changedFiles.slice(0, 8).map((file) => (
-                    <button key={file} onClick={() => openPath(projectFilePath(selectedProject.rootPath, file))} title={projectFilePath(selectedProject.rootPath, file)}>
+                    <button key={file} onClick={() => previewProjectFile(file)} title={projectFilePath(selectedProject.rootPath, file)}>
                       {file}
                     </button>
                   ))}
                   {gitStatus.changedFiles.length > 8 ? <small>还有 {gitStatus.changedFiles.length - 8} 个变更</small> : null}
                 </div>
               ) : null}
+              {gitStatus?.recentCommits.length ? (
+                <div className="git-commit-list">
+                  {gitStatus.recentCommits.slice(0, 5).map((commit) => (
+                    <article className="git-commit-item" key={commit.hash}>
+                      <div>
+                        <strong title={commit.message}>{commit.message}</strong>
+                        <span>
+                          {commit.shortHash} · {formatTime(commit.date)}
+                        </span>
+                      </div>
+                      <button
+                        title="还原到此版本"
+                        onClick={() => restoreGitCommit(commit.hash, `${commit.shortHash} ${commit.message}`)}
+                        disabled={isBusy}
+                      >
+                        <RefreshCw size={14} />
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+              <div className="git-restore-row">
+                <input
+                  value={gitRestoreHash}
+                  onChange={(event) => setGitRestoreHash(event.target.value)}
+                  placeholder="输入任意提交 hash"
+                  disabled={isBusy || !gitStatus?.initialized}
+                />
+                <Button
+                  icon={<RefreshCw size={16} />}
+                  onClick={() => restoreGitCommit(gitRestoreHash, gitRestoreHash.trim() || "指定提交")}
+                  disabled={isBusy || !gitStatus?.initialized || !gitRestoreHash.trim()}
+                  title="还原到指定 Git 提交"
+                >
+                  还原版本
+                </Button>
+              </div>
               <div className="git-commit-row">
                 <input value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} disabled={isBusy} />
                 <Button
@@ -1332,38 +1514,6 @@ export function App() {
           )}
         </section>
 
-        <section className="panel snapshots-panel">
-          <div className="section-title split">
-            <span>
-              <Save size={17} />
-              版本快照
-            </span>
-            <button className="icon-button" title="创建快照" onClick={createManualSnapshot} disabled={!selectedProject || isBusy}>
-              {busy === "snapshot" ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
-            </button>
-          </div>
-          {selectedProject && selectedProject.snapshots.length > 0 ? (
-            <div className="snapshot-list">
-              {selectedProject.snapshots.slice(0, 6).map((snapshot) => (
-                <article className="snapshot-item" key={snapshot.id}>
-                  <div>
-                    <strong>{snapshot.label}</strong>
-                    <span>
-                      {snapshotReasonLabel(snapshot)} · {snapshot.fileCount} 文件 · {formatBytes(snapshot.totalBytes)}
-                    </span>
-                    <small>{formatTime(snapshot.createdAt)}</small>
-                  </div>
-                  <button title="恢复快照" onClick={() => restoreSnapshot(snapshot)} disabled={isBusy}>
-                    <RotateCcw size={15} />
-                  </button>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-text">还没有快照</p>
-          )}
-        </section>
-
         <section className="panel details-panel">
           <div className="section-title">
             <Gamepad2 size={17} />
@@ -1382,13 +1532,13 @@ export function App() {
                 <dd>{selectedProject.exportZipPath ?? "未导出"}</dd>
               </dl>
               <div className="details-actions">
-                <Button icon={<FileJson size={16} />} onClick={() => openPath(projectGuidePath(selectedProject.rootPath))}>
+                <Button icon={<FileJson size={16} />} onClick={() => previewProjectFile("GAMEAISTUDIO.md")}>
                   项目说明
                 </Button>
-                <Button icon={<FileJson size={16} />} onClick={() => openPath(projectAgentContextPath(selectedProject.rootPath))}>
+                <Button icon={<FileJson size={16} />} onClick={() => previewProjectFile(".gameaistudio/agent-context.md")}>
                   Agent 上下文
                 </Button>
-                <Button icon={<Terminal size={16} />} onClick={() => openPath(projectAgentJournalPath(selectedProject.rootPath))}>
+                <Button icon={<Terminal size={16} />} onClick={() => previewProjectFile(".gameaistudio/agent-journal.md")}>
                   Agent 日志
                 </Button>
               </div>
@@ -1492,6 +1642,52 @@ export function App() {
           </section>
         ) : null}
       </aside>
+
+      {filePreview ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <section className="file-preview-modal">
+            <header>
+              <div>
+                <strong>{filePreview.name}</strong>
+                <span title={filePreview.absolutePath}>
+                  {filePreview.relativePath} · {formatBytes(filePreview.size)}
+                </span>
+              </div>
+              <button title="关闭预览" onClick={() => setFilePreview(undefined)}>
+                <X size={18} />
+              </button>
+            </header>
+            <div className="file-preview-body">
+              {filePreview.kind === "image" && filePreview.dataUrl ? (
+                <img src={filePreview.dataUrl} alt={filePreview.name} />
+              ) : filePreview.kind === "text" ? (
+                <CodeEditor
+                  value={`${filePreview.content ?? ""}${filePreview.truncated ? "\n\n... 文件过大，已截断预览。" : ""}`}
+                  language={codeLanguageForPath(filePreview.relativePath)}
+                  readOnly
+                  padding={14}
+                  minHeight={420}
+                  style={{
+                    background: "#0f172a",
+                    color: "#dbeafe",
+                    fontSize: 13,
+                    fontFamily: "Consolas, 'SFMono-Regular', monospace"
+                  }}
+                />
+              ) : (
+                <div className="binary-preview">
+                  <FileJson size={34} />
+                  <p>此文件不是文本或图片，无法在应用内预览。</p>
+                  {filePreview.truncated ? <span>文件较大，已跳过内容加载。</span> : null}
+                  <Button icon={<ExternalLink size={16} />} onClick={() => openPath(filePreview.absolutePath)}>
+                    用系统打开
+                  </Button>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

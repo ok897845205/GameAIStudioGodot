@@ -164,6 +164,7 @@ export class AutoPreviewService {
     }
     state?.watcher.close();
     this.states.delete(projectId);
+    await this.previewServer.stop(projectId);
     await this.markProject(projectId, "stopped");
     const event = this.createEvent(projectId, "stopped", { message: "实时预览已停止。" });
     this.emit(event);

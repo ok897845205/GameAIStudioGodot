@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { AgentMessage, ProjectFileChange, ProjectSnapshot, StudioProject } from "@gameaistudio/shared";
+import type { AgentMessage, ProjectFileChange, StudioProject } from "@gameaistudio/shared";
 import { appendAgentJournal, buildAgentJournalEntry, getAgentJournalPath, readAgentJournalTail } from "./agent-journal-service";
 
 function createProject(rootPath: string): StudioProject {
@@ -33,21 +33,8 @@ function createMessage(project: StudioProject): AgentMessage {
   };
 }
 
-function createSnapshot(id: string, project: StudioProject): ProjectSnapshot {
-  return {
-    id,
-    projectId: project.id,
-    label: id,
-    reason: id,
-    createdAt: "2026-06-08T00:30:00.000Z",
-    fileCount: 2,
-    totalBytes: 64,
-    storagePath: path.join(project.rootPath, ".gameaistudio", "snapshots", id)
-  };
-}
-
 describe("Agent journal", () => {
-  it("formats Agent turn handoff entries with file changes and snapshot references", () => {
+  it("formats Agent turn handoff entries with file changes and context references", () => {
     const project = createProject("E:/projects/gold-miner");
     const changes: ProjectFileChange[] = [
       {
@@ -69,16 +56,13 @@ describe("Agent journal", () => {
       agentMessage: createMessage(project),
       status: "completed",
       fileChanges: changes,
-      contextPath: path.join(project.rootPath, ".gameaistudio", "agent-context.md"),
-      beforeSnapshot: createSnapshot("snap_before", project),
-      afterSnapshot: createSnapshot("snap_after", project)
+      contextPath: path.join(project.rootPath, ".gameaistudio", "agent-context.md")
     });
 
     expect(entry).toContain("Gold Miner");
     expect(entry).toContain("Status: completed");
     expect(entry).toContain("User request: Add hook scoring.");
-    expect(entry).toContain("Before snapshot: snap_before");
-    expect(entry).toContain("After snapshot: snap_after");
+    expect(entry).not.toContain("snapshot");
     expect(entry).toContain("modified: scripts/player.gd");
     expect(entry).toContain("Implemented hook movement");
   });

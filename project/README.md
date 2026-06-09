@@ -48,15 +48,17 @@ Desktop packages built with `pnpm dist:win` produce a named NSIS installer at `d
 - Runs a selected local CLI as a role-based Agent inside the project folder.
 - Prepares `.gameaistudio/agent-context.md` before each Agent turn with the project file map, recent conversation, role context, delivery status, and response contract; Agent CLI prompts reference this file instead of inlining the full context into command-line arguments.
 - Appends `.gameaistudio/agent-journal.md` after Agent turns and injects its recent tail into the next Agent context so producer, designer, programmer, artist, and QA can hand off through project-local state.
-- Initializes `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md` when a project is created, with desktop quick actions to open them from the active project status panel.
+- Initializes `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md` when a project is created, with desktop quick actions that preview them inside a second modal from the active project status panel.
+- Supports in-app preview for text files, images, changed files, and Agent image attachments while keeping preview paths confined to the selected project directory.
 - Reports desktop open-path failures in the UI instead of silently ignoring missing zip, manifest, Agent context, or journal files.
 - Keeps `.gameaistudio/project.json` in the generated Godot project synchronized with the latest preview/export metadata without overwriting `GAMEAISTUDIO.md` Agent notes.
 - Runs a five-role team workflow: producer, designer, programmer, artist, and QA, routing each role to its default local CLI when available, previewing that routing before creation/build actions, falling back to installed tools when needed, then exporting Web, inspecting the Web build artifacts, packaging Web zip, and refreshing preview.
 - Appends a persistent system summary after each team workflow so the conversation shows export, artifact inspection, zip, preview, and next-step status.
 - Persists Agent run records, streams run state/output changes into the desktop UI, and can cancel active local CLI runs.
+- Provides a Codex-style project chat with image attachments; attached images are saved into the project and referenced in the local AI CLI prompt so vision-capable CLIs can use them as part of the request.
 - Captures per-Agent Godot project file changes and shows them in both the conversation and run timeline.
-- Creates project version snapshots before/after Agent work and supports restoring a previous snapshot with a safety snapshot first.
-- Uses Git for project version management when available: new projects are initialized with a project `.gitignore` and initial commit, existing projects can enable Git, inspect branch/head/changed files, and commit versions from the right-side Git panel.
+- Uses Git for project version management when available: new projects are initialized with a project `.gitignore` and initial commit, existing projects can enable Git, inspect branch/head/changed files, view up to five recent commits, commit versions, and restore any valid commit hash from the right-side Git panel.
+- Deletes created game projects from the desktop UI with a confirmation warning that the generated local Godot directory is removed too.
 - Watches Godot project files and refreshes the Web preview after source or asset changes.
 - Reloads the embedded preview frame after preview events and serves preview files with no-cache headers to reduce stale Web builds during iteration.
 - Keeps local preview HTTP requests confined to the generated Web build directory.

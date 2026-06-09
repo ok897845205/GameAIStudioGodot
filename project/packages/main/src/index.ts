@@ -13,8 +13,8 @@ import { GodotService } from "./services/godot-service";
 import { PreviewServer } from "./services/preview-server";
 import { ProcessRegistry } from "./services/process-runner";
 import { ProjectFileChangeService } from "./services/project-file-change-service";
+import { ProjectFilePreviewService } from "./services/project-file-preview-service";
 import { ProjectService } from "./services/project-service";
-import { ProjectSnapshotService } from "./services/project-snapshot-service";
 import { resolveStudioPaths } from "./services/resource-paths";
 import { RunService } from "./services/run-service";
 import { StudioStore } from "./services/store";
@@ -60,7 +60,6 @@ app.whenReady().then(async () => {
   const projectService = new ProjectService(paths, store);
   const gitService = new GitService(projectService);
   const contextService = new AgentContextService();
-  const snapshotService = new ProjectSnapshotService(projectService, store);
   const processRegistry = new ProcessRegistry();
   const fileChangeService = new ProjectFileChangeService();
   const runService = new RunService(store, (event) => {
@@ -68,7 +67,7 @@ app.whenReady().then(async () => {
       window.webContents.send("runs:event", event);
     }
   });
-  const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, snapshotService, contextService);
+  const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
   const godotService = new GodotService(paths, projectService);
   const godotRuntimeService = new GodotRuntimeService(paths);
   previewServer = new PreviewServer(projectService);
@@ -78,6 +77,7 @@ app.whenReady().then(async () => {
     }
   });
   const exportService = new ExportService(projectService);
+  const filePreviewService = new ProjectFilePreviewService(projectService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
   const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService);
 
@@ -86,8 +86,8 @@ app.whenReady().then(async () => {
     cliService,
     environmentService,
     gitService,
+    filePreviewService,
     projectService,
-    snapshotService,
     agentService,
     workflowService,
     godotRuntimeService,

@@ -1,6 +1,15 @@
 import { access, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { GitCommitInput, GitCommitResult, GitProjectStatus, ProjectDetails, StudioProject } from "@gameaistudio/shared";
+import type {
+  GitCommit,
+  GitCommitInput,
+  GitCommitResult,
+  GitProjectStatus,
+  GitRestoreInput,
+  GitRestoreResult,
+  ProjectDetails,
+  StudioProject
+} from "@gameaistudio/shared";
 import { ProjectService } from "./project-service";
 import { runProcess, type ProcessRunResult, type ProcessRunOptions } from "./process-runner";
 
@@ -18,8 +27,8 @@ export function buildProjectGitignore(): string {
     "*.uid",
     "",
     "# GameAIStudio local runtime data",
-    ".gameaistudio/snapshots/",
     ".gameaistudio/last-restore.json",
+    ".gameaistudio/attachments/",
     "",
     "# Local dependencies",
     "node_modules/",
@@ -34,6 +43,24 @@ export function parseGitStatusPorcelain(stdout: string): string[] {
     .filter(Boolean)
     .map((line) => line.slice(3).trim())
     .filter(Boolean);
+}
+
+export function parseGitLog(stdout: string): GitCommit[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [hash = "", shortHash = "", author = "", date = "", ...messageParts] = line.split("\u001f");
+      return {
+        hash,
+        shortHash,
+        author,
+        date,
+        message: messageParts.join("\u001f")
+      };
+    })
+    .filter((commit) => commit.hash && commit.shortHash);
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -73,6 +100,7 @@ export class GitService {
         available: false,
         initialized: false,
         clean: true,
+        recentCommits: [],
         changedFiles: [],
         message: "未检测到 Git，无法启用项目版本管理。",
         error: commitResultMessage(gitVersion),
@@ -86,16 +114,18 @@ export class GitService {
         available: true,
         initialized: false,
         clean: true,
+        recentCommits: [],
         changedFiles: [],
         message: "此项目尚未启用 Git 版本管理。",
         lastCheckedAt: checkedAt
       };
     }
 
-    const [status, branch, head] = await Promise.all([
+    const [status, branch, head, log] = await Promise.all([
       this.git(project, ["status", "--short"], { timeoutMs: 4000 }),
       this.git(project, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 4000 }),
-      this.git(project, ["rev-parse", "--short", "HEAD"], { timeoutMs: 4000 })
+      this.git(project, ["rev-parse", "--short", "HEAD"], { timeoutMs: 4000 }),
+      this.git(project, ["log", "-5", "--pretty=format:%H\u001f%h\u001f%an\u001f%ad\u001f%s", "--date=iso-strict"], { timeoutMs: 4000 })
     ]);
 
     if (status.exitCode !== 0) {
@@ -104,6 +134,7 @@ export class GitService {
         available: true,
         initialized: false,
         clean: true,
+        recentCommits: [],
         changedFiles: [],
         message: "Git 仓库状态读取失败。",
         error: commitResultMessage(status),
@@ -119,6 +150,7 @@ export class GitService {
       clean: changedFiles.length === 0,
       branch: branch.exitCode === 0 ? firstOutputLine(branch) : undefined,
       head: head.exitCode === 0 ? firstOutputLine(head) : undefined,
+      recentCommits: log.exitCode === 0 ? parseGitLog(log.stdout) : [],
       changedFiles,
       message: changedFiles.length === 0 ? "Git 工作区干净。" : `Git 工作区有 ${changedFiles.length} 个未提交变更。`,
       lastCheckedAt: checkedAt
@@ -162,6 +194,56 @@ export class GitService {
 
     await this.writeGitignore(project);
     return this.commitTrackedChanges(project, input.message);
+  }
+
+  async restore(input: GitRestoreInput): Promise<GitRestoreResult> {
+    const project = await this.projectService.requireProject(input.projectId);
+    const status = await this.getStatus(project.id);
+    if (!status.available || !status.initialized) {
+      return this.withProject(project, {
+        ok: false,
+        status,
+        message: status.initialized ? "Git 不可用，无法还原版本。" : "项目尚未启用 Git，无法还原版本。",
+        stdout: "",
+        stderr: status.error ?? status.message,
+        exitCode: null
+      });
+    }
+
+    const target = await this.resolveCommit(project, status, input.commitHash.trim());
+    if (!target) {
+      return this.withProject(project, {
+        ok: false,
+        status,
+        message: "未找到要还原的 Git 提交。",
+        stdout: "",
+        stderr: input.commitHash,
+        exitCode: null
+      });
+    }
+
+    const result = await this.git(project, ["reset", "--hard", target.hash], { timeoutMs: 20000 });
+    if (result.exitCode !== 0) {
+      const nextStatus = await this.getStatus(project.id);
+      return this.withProject(project, {
+        ok: false,
+        status: nextStatus,
+        message: "Git 版本还原失败。",
+        stdout: result.stdout,
+        stderr: result.stderr || commitResultMessage(result),
+        exitCode: result.exitCode
+      });
+    }
+
+    const nextStatus = await this.getStatus(project.id);
+    return this.withProject(project, {
+      ok: true,
+      status: nextStatus,
+      message: `已还原到 Git 版本：${target.shortHash} ${target.message}`,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode
+    });
   }
 
   private async unavailableResult(project: StudioProject, message: string): Promise<GitCommitResult | undefined> {
@@ -231,10 +313,45 @@ export class GitService {
     });
   }
 
-  private async withProject(
+  private async resolveCommit(project: StudioProject, status: GitProjectStatus, commitHash: string): Promise<GitCommit | undefined> {
+    if (!commitHash) {
+      return undefined;
+    }
+
+    const recent = status.recentCommits.find((commit) => commit.hash === commitHash || commit.shortHash === commitHash);
+    if (recent) {
+      return recent;
+    }
+
+    const verified = await this.git(project, ["rev-parse", "--verify", `${commitHash}^{commit}`], { timeoutMs: 4000 });
+    if (verified.exitCode !== 0) {
+      return undefined;
+    }
+
+    const hash = firstOutputLine(verified);
+    if (!hash) {
+      return undefined;
+    }
+
+    const log = await this.git(project, ["log", "-1", "--pretty=format:%H\u001f%h\u001f%an\u001f%ad\u001f%s", "--date=iso-strict", hash], {
+      timeoutMs: 4000
+    });
+    const commit = log.exitCode === 0 ? parseGitLog(log.stdout)[0] : undefined;
+    return (
+      commit ?? {
+        hash,
+        shortHash: hash.slice(0, 7),
+        author: "",
+        date: "",
+        message: "指定提交"
+      }
+    );
+  }
+
+  private async withProject<T extends Omit<GitCommitResult, "project"> | Omit<GitRestoreResult, "project">>(
     project: StudioProject,
-    result: Omit<GitCommitResult, "project">
-  ): Promise<GitCommitResult> {
+    result: T
+  ): Promise<T & { project: ProjectDetails }> {
     const details = await this.projectService.getProject(project.id);
     return {
       ...result,

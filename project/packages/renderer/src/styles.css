@@ -752,26 +752,27 @@ select:focus {
 
 .conversation {
   min-height: 0;
-  padding: 12px;
+  padding: 18px 14px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #f8fafc;
+  background: #f5f7fb;
 }
 
 .message {
-  max-width: 88%;
-  margin: 0 0 12px;
-  padding: 12px;
-  border: 1px solid #e3e8f0;
+  max-width: min(820px, 92%);
+  margin: 0 0 14px;
+  padding: 13px 14px;
+  border: 1px solid #dfe6ef;
   border-radius: 8px;
   background: #ffffff;
+  box-shadow: 0 4px 14px rgba(31, 43, 68, 0.04);
 }
 
 .message.user {
   margin-left: auto;
-  border-color: rgba(47, 125, 211, 0.3);
-  background: #edf5ff;
+  border-color: #9bc5ff;
+  background: #eaf4ff;
 }
 
 .message.system {
@@ -799,7 +800,36 @@ select:focus {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
-  line-height: 1.55;
+  line-height: 1.62;
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.message-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #cfe2ff;
+  border-radius: 8px;
+  background: #f3f8ff;
+  color: #245fb1;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-attachment span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-file-changes {
@@ -905,6 +935,86 @@ select:focus {
 
 .composer-row .button {
   min-height: 76px;
+}
+
+.pending-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pending-attachment {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 7px;
+  width: 220px;
+  min-height: 44px;
+  padding: 5px 6px;
+  border: 1px solid #dbe6f2;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.pending-attachment img {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.pending-attachment span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-attachment button,
+.attach-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pending-attachment button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: -2px;
+}
+
+.attach-button {
+  position: relative;
+  gap: 6px;
+  min-height: 30px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid #dbe6f2;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.attach-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .composer-option {
@@ -1100,10 +1210,6 @@ select:focus {
   padding: 14px;
 }
 
-.snapshots-panel {
-  padding: 14px;
-}
-
 .git-panel,
 .environment-panel {
   padding: 14px;
@@ -1155,15 +1261,67 @@ select:focus {
   font-size: 11px;
 }
 
-.git-commit-row {
+.git-commit-row,
+.git-restore-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   margin-bottom: 8px;
 }
 
-.git-commit-row .button {
+.git-commit-row .button,
+.git-restore-row .button {
   white-space: nowrap;
+}
+
+.git-commit-list {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.git-commit-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.git-commit-item div {
+  min-width: 0;
+}
+
+.git-commit-item strong,
+.git-commit-item span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-item strong {
+  font-size: 12px;
+}
+
+.git-commit-item span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-commit-item button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--blue);
 }
 
 .environment-summary {
@@ -1230,57 +1388,6 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.snapshot-list {
-  display: grid;
-  gap: 8px;
-}
-
-.snapshot-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.snapshot-item div {
-  min-width: 0;
-}
-
-.snapshot-item strong,
-.snapshot-item span,
-.snapshot-item small {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.snapshot-item strong {
-  font-size: 13px;
-}
-
-.snapshot-item span,
-.snapshot-item small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.snapshot-item button {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #ffffff;
-  color: var(--blue);
 }
 
 .run-list {
@@ -1524,6 +1631,105 @@ select:focus {
 .empty-text {
   margin: 0;
   font-size: 13px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.file-preview-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(980px, 96vw);
+  max-height: min(760px, 92vh);
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.28);
+}
+
+.file-preview-modal header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.file-preview-modal header div {
+  min-width: 0;
+}
+
+.file-preview-modal header strong,
+.file-preview-modal header span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-modal header strong {
+  font-size: 15px;
+}
+
+.file-preview-modal header span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-preview-modal header button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.file-preview-body {
+  min-height: 0;
+  overflow: auto;
+  background: #0f172a;
+}
+
+.file-preview-body > img {
+  display: block;
+  max-width: 100%;
+  max-height: 680px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.binary-preview {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  min-height: 420px;
+  padding: 24px;
+  color: #e2e8f0;
+  text-align: center;
+}
+
+.binary-preview p,
+.binary-preview span {
+  margin: 0;
+}
+
+.binary-preview span {
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .spin {

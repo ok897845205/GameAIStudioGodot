@@ -114,6 +114,17 @@ export class PreviewServer {
     };
   }
 
+  async stop(projectId: string): Promise<void> {
+    const preview = this.previews.get(projectId);
+    if (!preview) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      preview.server.close(() => resolve());
+    });
+    this.previews.delete(projectId);
+  }
+
   async stopAll(): Promise<void> {
     await Promise.all(
       [...this.previews.values()].map(

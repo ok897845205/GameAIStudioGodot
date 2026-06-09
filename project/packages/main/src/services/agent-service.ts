@@ -1,9 +1,12 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
+  type AgentAttachment,
+  type AgentAttachmentInput,
   type AgentMessage,
   type CliToolId,
-  type ProjectSnapshot,
   type RunAgentTurnInput,
   type RunAgentTurnResult
 } from "@gameaistudio/shared";
@@ -13,7 +16,6 @@ import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
 import { ProjectFileChangeService } from "./project-file-change-service";
 import { ProjectService } from "./project-service";
-import { ProjectSnapshotService } from "./project-snapshot-service";
 import { ProcessRegistry, type ProcessRunResult, runProcess } from "./process-runner";
 import { RunService } from "./run-service";
 
@@ -24,9 +26,18 @@ export function buildAgentPrompt(input: {
   projectRoot: string;
   userMessage: string;
   context: AgentContextBundle;
+  attachments?: AgentAttachment[];
 }): string {
-  const { agentId, projectName, projectPrompt, projectRoot, userMessage, context } = input;
+  const { agentId, projectName, projectPrompt, projectRoot, userMessage, context, attachments = [] } = input;
   const agent = AGENT_PROFILES.find((profile) => profile.id === agentId) ?? AGENT_PROFILES[0];
+  const attachmentLines = attachments.length
+    ? [
+        "",
+        "本轮图片附件：",
+        ...attachments.map((attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.size} bytes): ${path.join(projectRoot, attachment.projectRelativePath)}`),
+        "请把这些图片作为用户需求的一部分进行识别、理解和回应。"
+      ]
+    : [];
   return [
     agent.systemPrompt,
     "",
@@ -47,8 +58,56 @@ export function buildAgentPrompt(input: {
     `- 请先阅读 ${context.contextPath}，里面包含项目文件地图、最近对话、交付状态和响应契约。`,
     "- 不要依赖命令行参数里展开的完整上下文；完整上下文以该文件为准。",
     "本轮用户消息：",
-    userMessage
+    userMessage,
+    ...attachmentLines
   ].join("\n");
+}
+
+function sanitizeAttachmentName(value: string): string {
+  const trimmed = value.trim() || "image";
+  return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 96);
+}
+
+function parseImageDataUrl(input: AgentAttachmentInput): { mimeType: string; bytes: Buffer } {
+  const match = /^data:([^;]+);base64,(.*)$/s.exec(input.dataUrl);
+  if (!match) {
+    throw new Error(`图片附件格式无效：${input.name}`);
+  }
+  const mimeType = match[1] || input.mimeType;
+  if (!mimeType.startsWith("image/")) {
+    throw new Error(`只支持图片附件：${input.name}`);
+  }
+  return {
+    mimeType,
+    bytes: Buffer.from(match[2] ?? "", "base64")
+  };
+}
+
+async function persistAttachments(projectRoot: string, attachments: AgentAttachmentInput[] = []): Promise<AgentAttachment[]> {
+  if (attachments.length === 0) {
+    return [];
+  }
+  const attachmentRoot = path.join(projectRoot, ".gameaistudio", "attachments");
+  await mkdir(attachmentRoot, { recursive: true });
+  const persisted: AgentAttachment[] = [];
+
+  for (const attachment of attachments) {
+    const id = createMessageId();
+    const { mimeType, bytes } = parseImageDataUrl(attachment);
+    const safeName = sanitizeAttachmentName(attachment.name);
+    const relativePath = path.join(".gameaistudio", "attachments", `${id}-${safeName}`).replace(/\\/g, "/");
+    await writeFile(path.join(projectRoot, relativePath), bytes);
+    persisted.push({
+      id,
+      kind: "image",
+      name: safeName,
+      mimeType,
+      size: bytes.length,
+      projectRelativePath: relativePath
+    });
+  }
+
+  return persisted;
 }
 
 function processOutput(result: ProcessRunResult): string {
@@ -114,7 +173,6 @@ export class AgentService {
     private readonly runService: RunService,
     private readonly processRegistry: ProcessRegistry,
     private readonly fileChangeService: ProjectFileChangeService,
-    private readonly snapshotService: ProjectSnapshotService,
     private readonly contextService: AgentContextService
   ) {}
 
@@ -149,6 +207,7 @@ export class AgentService {
     }
 
     const now = new Date().toISOString();
+    const attachments = await persistAttachments(project.rootPath, input.attachments);
     const userMessage: AgentMessage = {
       id: createMessageId(),
       projectId: project.id,
@@ -156,7 +215,8 @@ export class AgentService {
       role: "user",
       content: input.message,
       createdAt: now,
-      cliToolId: input.cliToolId
+      cliToolId: input.cliToolId,
+      attachments
     };
 
     const tools = await this.cliService.discover();
@@ -194,15 +254,17 @@ export class AgentService {
       return {
         project: await this.projectService.getProject(project.id),
         messages,
-        runs: await this.runService.listRuns(project.id),
-        snapshots: await this.snapshotService.list(project.id)
+        runs: await this.runService.listRuns(project.id)
       };
     }
 
+    const attachmentContext = attachments.length
+      ? `${input.message}\n\n图片附件：\n${attachments.map((attachment) => `- ${attachment.name}: ${path.join(project.rootPath, attachment.projectRelativePath)}`).join("\n")}`
+      : input.message;
     const context = await this.contextService.prepare({
       project: await this.projectService.getProject(project.id),
       agentId: input.agentId,
-      userMessage: input.message
+      userMessage: attachmentContext
     });
     const prompt = buildAgentPrompt({
       agentId: input.agentId,
@@ -210,14 +272,10 @@ export class AgentService {
       projectPrompt: project.prompt,
       projectRoot: project.rootPath,
       userMessage: input.message,
-      context
+      context,
+      attachments
     });
     const command = this.cliService.buildAgentCommand(input.cliToolId, prompt, selectedTool.executablePath);
-    const beforeSnapshot = await this.snapshotService.create({
-      projectId: project.id,
-      label: `${agent.title} 运行前`,
-      reason: `before-agent:${agent.id}`
-    });
     const beforeFiles = await this.fileChangeService.createSnapshot(project.rootPath);
     let outputTail = "";
     let lastOutputFlushAt = 0;
@@ -281,14 +339,6 @@ export class AgentService {
     });
     const messages = await this.projectService.appendMessages(project.id, [userMessage, agentMessage]);
     const succeeded = result.exitCode === 0;
-    let afterSnapshot: ProjectSnapshot | undefined;
-    if (succeeded && fileChanges.length > 0) {
-      afterSnapshot = await this.snapshotService.create({
-        projectId: project.id,
-        label: `${agent.title} 完成后`,
-        reason: `after-agent:${agent.id}`
-      });
-    }
     await appendAgentJournal(
       project.rootPath,
       buildAgentJournalEntry({
@@ -299,9 +349,7 @@ export class AgentService {
         agentMessage,
         status: result.cancelled ? "cancelled" : succeeded ? "completed" : "failed",
         fileChanges,
-        contextPath: context.contextPath,
-        beforeSnapshot,
-        afterSnapshot
+        contextPath: context.contextPath
       })
     ).catch(() => undefined);
     if (run && stepId) {
@@ -323,8 +371,7 @@ export class AgentService {
     return {
       project: await this.projectService.getProject(updatedProject.id),
       messages,
-      runs: await this.runService.listRuns(project.id),
-      snapshots: await this.snapshotService.list(project.id)
+      runs: await this.runService.listRuns(project.id)
     };
   }
 }

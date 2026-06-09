@@ -45,8 +45,7 @@ function createProject(rootPath: string, messages: AgentMessage[]): ProjectDetai
       message: "Web build is missing required files: *.wasm, *.pck."
     },
     messages,
-    runs: [],
-    snapshots: []
+    runs: []
   };
 }
 

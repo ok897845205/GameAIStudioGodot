@@ -12,7 +12,6 @@ import { ProjectFileChangeService } from "./project-file-change-service";
 import { ProjectService } from "./project-service";
 import type { StudioPaths } from "./resource-paths";
 import { RunService } from "./run-service";
-import { ProjectSnapshotService } from "./project-snapshot-service";
 import { StudioStore } from "./store";
 
 const WEB_EXPORT_PRESET = `[preset.0]
@@ -157,7 +156,6 @@ describe("AgentService", () => {
     const runService = new RunService(store);
     const processRegistry = new ProcessRegistry();
     const fileChangeService = new ProjectFileChangeService();
-    const snapshotService = new ProjectSnapshotService(projectService, store);
     const contextService = new AgentContextService();
 
     try {
@@ -196,7 +194,6 @@ describe("AgentService", () => {
         runService,
         processRegistry,
         fileChangeService,
-        snapshotService,
         contextService
       );
 
@@ -221,9 +218,68 @@ describe("AgentService", () => {
         ])
       );
       expect(result.runs[0]?.status).toBe("completed");
-      expect(result.snapshots.some((snapshot) => snapshot.reason === "before-agent:programmer")).toBe(true);
-      expect(result.snapshots.some((snapshot) => snapshot.reason === "after-agent:programmer")).toBe(true);
       expect(await readFile(path.join(project.rootPath, ".gameaistudio", "agent-journal.md"), "utf8")).toContain("scripts/agent_generated.gd");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists image attachments and points the Agent prompt at their project files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-agent-service-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const projectService = new ProjectService(paths, store);
+    const runService = new RunService(store);
+    const processRegistry = new ProcessRegistry();
+    const fileChangeService = new ProjectFileChangeService();
+    const contextService = new AgentContextService();
+
+    try {
+      await writeTemplate(paths);
+      const project = await projectService.createProject({
+        name: "Attachment Demo",
+        dimension: "2d",
+        prompt: "用截图做 UI"
+      });
+      const fakeCliScript = path.join(root, "fake-codex-attachments.js");
+      await writeFile(
+        fakeCliScript,
+        [
+          "const fs = require('fs');",
+          "const prompt = process.argv.slice(2).join(' ');",
+          "fs.writeFileSync('prompt.txt', prompt, 'utf8');",
+          "console.log('saw attachment prompt');"
+        ].join("\n"),
+        "utf8"
+      );
+      const cliTool = fakeTool(process.execPath);
+      const cliService = {
+        discover: async () => [cliTool],
+        buildAgentCommand: (_toolId: string, prompt: string) => ({ command: process.execPath, args: [fakeCliScript, prompt] })
+      } as unknown as CliService;
+      const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+
+      const result = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "designer",
+        cliToolId: "codex",
+        message: "参考这张截图调整聊天区。",
+        autoStartPreview: false,
+        attachments: [
+          {
+            name: "chat.png",
+            mimeType: "image/png",
+            size: 4,
+            dataUrl: "data:image/png;base64,iVBORw=="
+          }
+        ]
+      });
+
+      const userMessage = result.messages.find((message) => message.role === "user");
+      expect(userMessage?.attachments?.[0]?.projectRelativePath).toContain(".gameaistudio/attachments/");
+      expect(await readFile(path.join(project.rootPath, userMessage!.attachments![0]!.projectRelativePath), "base64")).toBe("iVBORw==");
+      expect(await readFile(path.join(project.rootPath, "prompt.txt"), "utf8")).toContain("本轮图片附件");
+      expect(await readFile(path.join(project.rootPath, "prompt.txt"), "utf8")).toContain("chat.png");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

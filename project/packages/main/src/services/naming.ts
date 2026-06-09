@@ -57,7 +57,3 @@ export function createRunId(): string {
 export function createRunStepId(): string {
   return `step_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
-
-export function createSnapshotId(): string {
-  return `snap_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-}

@@ -1,4 +1,4 @@
-import type { GodotRunResult } from "@gameaistudio/shared";
+import type { CliFailureKind, GodotRunResult } from "@gameaistudio/shared";
 import type { RuntimeEnvironment } from "./runtime-environment";
 
 /**
@@ -63,9 +63,13 @@ export type TurnChunk =
       timedOut?: boolean;
     };
 
+export type DiscoverySource = "path" | "npm-global" | "well-known";
+
 export type DiscoverResult = {
   found: boolean;
   executablePath?: string;
+  /** Where the executable was found — PATH, npm global bin, or a well-known install dir. */
+  source?: DiscoverySource;
 };
 
 export type HealthOptions = {
@@ -91,9 +95,13 @@ export type AdapterHealth = {
   imagesOk?: boolean | "unknown";
   /** Can write into the project directory. */
   writable?: boolean | "unknown";
+  /** `false` when the latest probe hit a rate limit / quota ceiling. */
+  quota?: boolean | "unknown";
   version?: string;
   /** Human-readable note for the worst failing check. */
   detail?: string;
+  /** Classified kind of the most recent failure, if any. */
+  lastErrorKind?: CliFailureKind;
 };
 
 export type ImageInputMode =

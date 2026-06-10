@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   AGENT_PROFILES,
@@ -15,8 +15,10 @@ import { AgentContextService, type AgentContextBundle } from "./agent-context-se
 import { appendAgentJournal, buildAgentJournalEntry } from "./agent-journal-service";
 import {
   applyCliPermissionFailureDiagnostic,
+  classifyCliFailure,
   processOutput
 } from "./cli-diagnostics";
+import { summarizeGitState } from "./git-service";
 import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
@@ -68,6 +70,46 @@ export function buildAgentPrompt(input: {
     userMessage,
     ...attachmentLines
   ].join("\n");
+}
+
+export type ProjectDirectoryCheck =
+  | { ok: true }
+  | { ok: false; kind: "project-dir-missing" | "file-write"; reason: string };
+
+/**
+ * Preflight before launching a CLI: the project root must exist and be
+ * writable, otherwise the turn fails with a classified error instead of an
+ * opaque CLI crash. The probe writes (and removes) a marker inside
+ * `.gameaistudio/` so it never touches game files.
+ */
+export async function verifyProjectDirectoryWritable(rootPath: string): Promise<ProjectDirectoryCheck> {
+  try {
+    const info = await stat(rootPath);
+    if (!info.isDirectory()) {
+      return { ok: false, kind: "project-dir-missing", reason: `路径存在但不是目录：${rootPath}` };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "project-dir-missing",
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
+
+  const probeDir = path.join(rootPath, ".gameaistudio");
+  const probePath = path.join(probeDir, `.write-probe-${Date.now()}`);
+  try {
+    await mkdir(probeDir, { recursive: true });
+    await writeFile(probePath, "write-probe", "utf8");
+    await rm(probePath, { force: true });
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "file-write",
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 function sanitizeAttachmentName(value: string): string {
@@ -138,14 +180,33 @@ export function buildAgentProcessMessage(input: {
     return `${input.toolLabel} CLI 已结束但没有输出，也未检测到项目文件变更。请确认该 CLI 已登录，并支持非交互运行。`;
   }
 
+  const diagnosis = classifyCliFailure({
+    exitCode: input.result.exitCode,
+    output,
+    cancelled: input.result.cancelled,
+    timedOut: input.result.timedOut
+  });
   const reason = input.result.timedOut
     ? `${input.toolLabel} CLI 运行超时。`
     : `${input.toolLabel} CLI 执行失败（exitCode=${input.result.exitCode ?? "unknown"}）。`;
-  const hint = buildCliFailureHint(input.toolId, output);
-  if (output) {
-    return `${reason}\n\n${output}${hint ? `\n\n${hint}` : ""}`;
-  }
-  return `${reason}\n\n没有返回可读输出。请在终端运行该 CLI，确认它已登录并支持非交互模式。`;
+  // Surface the classified reason as a short line; the raw output follows for
+  // anyone who needs the detail.
+  const reasonLine =
+    diagnosis && diagnosis.kind !== "unknown" && diagnosis.kind !== "timeout"
+      ? `原因：${diagnosis.summary}`
+      : undefined;
+  const hint = buildCliFailureHint(input.toolId, output) ?? diagnosis?.hint;
+  const hintLine = hint
+    ? hint.startsWith("修复建议")
+      ? hint
+      : `修复建议：${hint}`
+    : undefined;
+  const parts = [
+    [reason, reasonLine].filter(Boolean).join("\n"),
+    output || "没有返回可读输出。请在终端运行该 CLI，确认它已登录并支持非交互模式。",
+    ...(hintLine ? [hintLine] : [])
+  ];
+  return parts.join("\n\n");
 }
 
 function buildCliFailureHint(toolId: CliToolId | undefined, output: string): string | undefined {
@@ -267,7 +328,20 @@ export class AgentService {
     }
 
     const now = new Date().toISOString();
-    const attachments = await persistAttachments(project.rootPath, input.attachments);
+    // Preflight: the CLI runs with cwd = project root and must be able to
+    // read/write it. Failing here produces a classified, actionable error
+    // instead of an opaque CLI crash (and never touches other directories).
+    const dirCheck = await verifyProjectDirectoryWritable(project.rootPath);
+    if (!dirCheck.ok) {
+      plog.error("agent-turn", "项目目录预检失败", {
+        agent: agent.title,
+        cli: CLI_TOOL_LABELS[input.cliToolId],
+        errorKind: dirCheck.kind,
+        cwd: project.rootPath,
+        reason: dirCheck.reason
+      });
+    }
+    const attachments = dirCheck.ok ? await persistAttachments(project.rootPath, input.attachments) : [];
     const userMessage: AgentMessage = {
       id: createMessageId(),
       projectId: project.id,
@@ -279,15 +353,23 @@ export class AgentService {
       attachments
     };
 
-    const tools = await this.cliService.discover();
-    const selectedTool = tools.find((tool) => tool.id === input.cliToolId);
-    const unavailableMessage = !selectedTool?.installed
-      ? `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。请先安装或加入 PATH。\n建议命令：${selectedTool?.installCommand.join(" ") ?? "查看 CLI 设置"}`
-      : selectedTool.status !== "available"
-        ? `${selectedTool.label} CLI 当前不可用，暂不执行 Agent 回合。\n${selectedTool.health.detail ?? "请先在设置中查看分层健康状态，修复登录或非交互模式后刷新 CLI。"}`
-        : attachments.length > 0 && !selectedTool.capabilities.supportsImages
-          ? `${selectedTool.label} Adapter 不支持图片输入。请移除图片附件，或切换到支持图片的 CLI。`
-          : undefined;
+    let unavailableMessage: string | undefined;
+    if (!dirCheck.ok) {
+      unavailableMessage =
+        dirCheck.kind === "project-dir-missing"
+          ? `项目目录不存在或无法访问：${project.rootPath}\n${dirCheck.reason}\n项目可能已被移动或删除，请检查后重新打开。`
+          : `项目目录不可写：${project.rootPath}\n${dirCheck.reason}\n请检查磁盘空间与目录权限后重试。`;
+    } else {
+      const tools = await this.cliService.discover();
+      const selectedTool = tools.find((tool) => tool.id === input.cliToolId);
+      unavailableMessage = !selectedTool?.installed
+        ? `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。请先安装或加入 PATH。\n建议命令：${selectedTool?.installCommand.join(" ") ?? "查看 CLI 设置"}`
+        : selectedTool.status !== "available"
+          ? `${selectedTool.label} CLI 当前不可用，暂不执行 Agent 回合。\n${selectedTool.health.detail ?? "请先在设置中查看分层健康状态，修复登录或非交互模式后刷新 CLI。"}`
+          : attachments.length > 0 && !selectedTool.capabilities.supportsImages
+            ? `${selectedTool.label} Adapter 不支持图片输入。请移除图片附件，或切换到支持图片的 CLI。`
+            : undefined;
+    }
     if (unavailableMessage) {
       plog.warn("agent-turn", "CLI 不可用，跳过执行", {
         agent: agent.title,
@@ -347,6 +429,9 @@ export class AgentService {
       context,
       attachments
     });
+    // Git snapshot before the CLI runs — paired with the after-summary in the
+    // final log line so every turn shows what it changed in version terms.
+    const gitBefore = await summarizeGitState(project.rootPath);
     const beforeFiles = await this.fileChangeService.createSnapshot(project.rootPath);
     // Stable id for the in-flight assistant message: emitted with each stream
     // delta and reused as the final message id so the streaming bubble and the
@@ -498,6 +583,21 @@ export class AgentService {
     const messages = await this.projectService.appendMessages(project.id, [userMessage, agentMessage]);
     const succeeded = result.exitCode === 0;
     const turnStatus = result.cancelled ? "cancelled" : succeeded ? "completed" : "failed";
+    const gitAfter = await summarizeGitState(project.rootPath);
+    const formatGit = (state: typeof gitBefore): string =>
+      state.initialized
+        ? `${state.branch ?? "?"}@${state.head ?? "?"} 未提交变更 ${state.changedCount}`
+        : state.available
+          ? "未初始化"
+          : "git 不可用";
+    const failureDiagnosis = succeeded || result.cancelled
+      ? undefined
+      : classifyCliFailure({
+          exitCode: result.exitCode,
+          output: finalVisibleOutput,
+          cancelled: result.cancelled,
+          timedOut: result.timedOut
+        });
     plog.log(turnStatus === "failed" ? "error" : "info", "agent-turn", `结束(${turnStatus})`, {
       agent: agent.title,
       cli: CLI_TOOL_LABELS[input.cliToolId],
@@ -508,6 +608,11 @@ export class AgentService {
       fileChanges: fileChanges.length,
       detectedPermissionFailure: permissionDiagnostic.detected,
       rawExitCode: permissionDiagnostic.rawExitCode,
+      errorKind: failureDiagnosis?.kind,
+      errorSummary: failureDiagnosis?.summary,
+      errorEvidence: failureDiagnosis?.evidence,
+      gitBefore: formatGit(gitBefore),
+      gitAfter: formatGit(gitAfter),
       stderr: turnStatus === "failed" ? result.stderr.trim().slice(-800) || undefined : undefined,
     });
     await appendAgentJournal(

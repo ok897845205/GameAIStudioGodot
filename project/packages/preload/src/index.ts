@@ -10,7 +10,8 @@ import type {
   RunAgentTurnInput,
   RunStudioWorkflowInput,
   StudioApi,
-  StudioRunEvent
+  StudioRunEvent,
+  UpdateProjectAgentClisInput
 } from "@gameaistudio/shared";
 
 const api: StudioApi = {
@@ -20,6 +21,7 @@ const api: StudioApi = {
   testCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:test", toolId),
   installCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:install", toolId),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke("projects:create", input),
+  updateProjectAgentClis: (input: UpdateProjectAgentClisInput) => ipcRenderer.invoke("projects:update-agent-clis", input),
   deleteProject: (projectId: string) => ipcRenderer.invoke("projects:delete", projectId),
   listProjects: () => ipcRenderer.invoke("projects:list"),
   getProject: (projectId: string) => ipcRenderer.invoke("projects:get", projectId),

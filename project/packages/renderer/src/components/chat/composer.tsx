@@ -2,6 +2,9 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
@@ -27,6 +30,15 @@ export function Composer({
   const canStop = isRunning && capabilities.cancel;
   const canAttachImages = Boolean(capabilities.attachments);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [attachNotice, setAttachNotice] = useState("");
+
+  // Transient "当前 CLI 不支持图片输入" style hint for paste / drop attempts.
+  useEffect(() => {
+    if (!attachNotice) return;
+    const timer = setTimeout(() => setAttachNotice(""), 2500);
+    return () => clearTimeout(timer);
+  }, [attachNotice]);
 
   // Create one object URL per pending attachment (not per render) and revoke
   // them when the attachment set changes or the composer unmounts.
@@ -61,20 +73,60 @@ export function Composer({
     }
   };
 
-  const addFiles = (files: FileList | null) => {
-    if (!files || !canAttachImages) return;
-    for (const file of Array.from(files)) {
-      if (file.type.startsWith("image/")) {
-        void composerRuntime.addAttachment(file);
-      }
+  const addFiles = (files: FileList | File[] | null): number => {
+    if (!files) return 0;
+    const images = Array.from(files).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (images.length === 0) return 0;
+    if (!canAttachImages) {
+      setAttachNotice("当前 CLI 不支持图片输入，请切换到支持图片的 CLI。");
+      return 0;
     }
+    for (const file of images) {
+      void composerRuntime.addAttachment(file);
+    }
+    return images.length;
+  };
+
+  // Clipboard images (screenshots) paste straight into the composer.
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.some((file) => file.type.startsWith("image/"))) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  };
+
+  const onDragOver = (e: DragEvent<HTMLFormElement>) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    setDragActive(true);
+  };
+
+  const onDrop = (e: DragEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setDragActive(false);
+    addFiles(Array.from(e.dataTransfer?.files ?? []));
   };
 
   return (
     <form
       onSubmit={onSubmit}
-      className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/40"
+      onDragOver={onDragOver}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={onDrop}
+      className={cn(
+        "flex flex-col gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring/40",
+        dragActive &&
+          (canAttachImages
+            ? "ring-2 ring-primary/50"
+            : "ring-2 ring-destructive/40"),
+      )}
     >
+      {attachNotice && (
+        <p className="px-1 pt-1 text-xs text-destructive">{attachNotice}</p>
+      )}
       {composer.attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 px-1 pt-1">
           {composer.attachments.map((att, idx) => {
@@ -141,6 +193,7 @@ export function Composer({
           value={composer.text}
           onChange={(e) => composerRuntime.setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           rows={1}
           placeholder={placeholder}
           className={cn(

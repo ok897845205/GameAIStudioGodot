@@ -1,6 +1,6 @@
 import { ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
-import type { CliToolId, CreateProjectInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput } from "@gameaistudio/shared";
+import type { CliToolId, CreateProjectInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, UpdateProjectAgentClisInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -111,6 +111,14 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     const project = await deps.projectService.createProject(input);
     await deps.gitService.initializeProject(project.id);
     return projectDetailsWithGit(deps, project.id);
+  });
+  handle("projects:update-agent-clis", async (_event, input: UpdateProjectAgentClisInput) => {
+    const project = await deps.projectService.requireProject(input.projectId);
+    await deps.projectService.updateProject({
+      ...project,
+      agentCliToolIds: { ...project.agentCliToolIds, ...input.agentCliToolIds }
+    });
+    return projectDetailsWithGit(deps, input.projectId);
   });
   handle("projects:delete", async (_event, projectId: string) => {
     await deps.autoPreviewService.stop(projectId).catch(() => undefined);

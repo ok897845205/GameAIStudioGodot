@@ -29,6 +29,38 @@ export interface FileLoggerOptions {
 
 const MAX_META_STRING = 2000;
 
+// ── Sensitive-data redaction ──────────────────────────────────────────────────
+// Local-CLI logging routinely captures argv, env hints, prompts and stderr.
+// Tokens/keys and the local username must never land in a log file that users
+// may share for support. Applied centrally to every formatted line.
+
+const REDACTION_RULES: Array<{ pattern: RegExp; replacement: string }> = [
+  // OpenAI / Anthropic style secret keys: sk-..., sk-ant-..., rk-...
+  { pattern: /\b(sk|rk)-[A-Za-z0-9_-]{8,}/g, replacement: "$1-***" },
+  // Authorization headers / bearer tokens.
+  { pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*/gi, replacement: "Bearer ***" },
+  // KEY/TOKEN/SECRET/PASSWORD assignments (env style, JSON, CLI flags).
+  // Uppercase-only on purpose: lowercase JSON fields like "input_tokens"
+  // are usage metrics, not secrets.
+  {
+    pattern:
+      /\b([A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)(\\?["']?\s*[=:]\s*\\?["']?)(?!\*\*\*)[^\s\\"',;}]+/g,
+    replacement: "$1$2***",
+  },
+  // Local usernames inside home-directory paths (Windows + POSIX).
+  { pattern: /([A-Za-z]:\\+Users\\+)([^\\/\s"',;]+)/g, replacement: "$1<user>" },
+  { pattern: /(\/(?:home|Users)\/)([^/\s"',;]+)/g, replacement: "$1<user>" },
+];
+
+/** Masks tokens, keys and the local username in a log line. */
+export function redactSensitiveText(text: string): string {
+  let redacted = text;
+  for (const rule of REDACTION_RULES) {
+    redacted = redacted.replace(rule.pattern, rule.replacement);
+  }
+  return redacted;
+}
+
 function safeMeta(meta: LogMeta): string {
   try {
     const seen = new WeakSet<object>();
@@ -88,7 +120,9 @@ export class FileLogger {
       return;
     }
     const ts = new Date().toISOString();
-    const line = `${ts} ${level.toUpperCase().padEnd(5)} [${scope}] ${message}${meta ? safeMeta(meta) : ""}\n`;
+    const line = `${ts} ${level.toUpperCase().padEnd(5)} [${scope}] ${redactSensitiveText(
+      `${message}${meta ? safeMeta(meta) : ""}`,
+    )}\n`;
 
     if (this.mirrorConsole) {
       const sink = level === "error" ? console.error : level === "warn" ? console.warn : console.log;

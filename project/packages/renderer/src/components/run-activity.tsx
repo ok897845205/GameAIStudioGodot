@@ -4,8 +4,10 @@ import {
   ChevronDown,
   ChevronRight,
   CircleDashed,
+  ClipboardCopy,
   Loader2,
   MinusCircle,
+  Terminal,
   XCircle,
 } from "lucide-react";
 import {
@@ -74,14 +76,36 @@ function formatDuration(ms?: number): string | undefined {
   return `${m}m${Math.round(s - m * 60)}s`;
 }
 
+function buildStepDiagnosticText(run: StudioRun, step: StudioRunStep): string {
+  return [
+    `运行：${run.title}（${statusLabel(run.status)}）`,
+    `步骤：${step.title}（${statusLabel(step.status)}）`,
+    `Agent：${agentTitle(step.agentId) ?? step.agentId ?? "-"}`,
+    `CLI：${step.cliToolId ? CLI_TOOL_LABELS[step.cliToolId as CliToolId] : "-"}`,
+    `exitCode：${typeof step.exitCode === "number" ? step.exitCode : "-"}`,
+    `耗时：${formatDuration(step.durationMs) ?? "-"}`,
+    step.startedAt ? `开始：${step.startedAt}` : undefined,
+    step.completedAt ? `结束：${step.completedAt}` : undefined,
+    step.message?.trim() ? `消息：${step.message.trim()}` : undefined,
+    step.output?.trim() ? `输出尾部：\n${step.output.trim().slice(-2000)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function StepRow({
+  run,
   step,
   defaultOpen,
+  onOpenLog,
 }: {
+  run: StudioRun;
   step: StudioRunStep;
   defaultOpen: boolean;
+  onOpenLog?: () => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [copied, setCopied] = useState(false);
   // Keep the running step expanded as new output streams in.
   useEffect(() => {
     if (step.status === "running") setOpen(true);
@@ -102,7 +126,12 @@ function StepRow({
     formatDuration(step.durationMs),
   ].filter(Boolean) as string[];
 
-  const hasBody = Boolean(step.output?.trim() || step.message?.trim());
+  const hasBody = Boolean(
+    step.output?.trim() ||
+      step.message?.trim() ||
+      step.status === "failed" ||
+      step.status === "cancelled",
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card/40">
@@ -148,13 +177,50 @@ function StepRow({
               {step.output.trim()}
             </pre>
           )}
+          {(step.status === "failed" || step.status === "cancelled") && (
+            <div className="mt-1.5 flex items-center gap-3 text-[11px]">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+                title="复制 Agent / CLI / exitCode / 输出尾部等诊断信息"
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(buildStepDiagnosticText(run, step))
+                    .then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    });
+                }}
+              >
+                <ClipboardCopy className="size-3" />
+                {copied ? "已复制" : "复制诊断"}
+              </button>
+              {onOpenLog && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  title="查看项目日志（.gameaistudio/logs/project.log）"
+                  onClick={onOpenLog}
+                >
+                  <Terminal className="size-3" />
+                  查看日志
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export function RunActivityPanel({ runs }: { runs: StudioRun[] }) {
+export function RunActivityPanel({
+  runs,
+  onOpenLog,
+}: {
+  runs: StudioRun[];
+  onOpenLog?: () => void;
+}) {
   const ordered = useMemo(
     () =>
       [...runs].sort(
@@ -223,7 +289,13 @@ export function RunActivityPanel({ runs }: { runs: StudioRun[] }) {
       </div>
 
       {run.steps.map((step) => (
-        <StepRow key={step.id} step={step} defaultOpen={step.status === "running"} />
+        <StepRow
+          key={step.id}
+          run={run}
+          step={step}
+          defaultOpen={step.status === "running"}
+          onOpenLog={onOpenLog}
+        />
       ))}
 
       {run.summary && (

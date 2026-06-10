@@ -4,13 +4,16 @@ import {
   runProcess,
 } from "../../services/process-runner";
 import {
+  classifyCliFailure,
   hasCliPermissionFailure,
   processOutput,
   tailText,
 } from "../../services/cli-diagnostics";
+import { sanitizeCliText } from "../../services/cli-text";
 import { getProjectLogger } from "../../services/logger";
 import {
   findExecutableInDirectory,
+  wellKnownExecutableDirs,
   type RuntimeEnvironment,
 } from "../runtime-environment";
 import type {
@@ -20,6 +23,7 @@ import type {
   AgentTurnRequest,
   AiAdapter,
   DiscoverResult,
+  DiscoverySource,
   HealthOptions,
   TurnChunk,
 } from "../adapter-contract";
@@ -96,26 +100,42 @@ export function createLocalCliAdapter(
 ): LocalCliAdapter {
   const runner = deps.runner ?? runProcess;
 
-  const resolveExecutable = async (
+  const resolveExecutableInfo = async (
     env: RuntimeEnvironment,
-  ): Promise<string | undefined> => {
+  ): Promise<{ executablePath: string; source: DiscoverySource } | undefined> => {
     const onPath = await env.which(config.command);
-    if (onPath) return onPath;
-    // Fallback: an npm-installed CLI whose global bin is not on PATH.
+    if (onPath) return { executablePath: onPath, source: "path" };
+    // Fallback 1: an npm-installed CLI whose global bin is not on PATH.
     const manager = config.installCommand[0] ?? "npm";
     const npmExecutable = await env.which(manager);
     const globalBin = npmExecutable
       ? await env.npmGlobalBin(npmExecutable)
       : undefined;
-    return findExecutableInDirectory(config.command, globalBin, env.platform);
+    const inGlobalBin = findExecutableInDirectory(
+      config.command,
+      globalBin,
+      env.platform,
+    );
+    if (inGlobalBin) return { executablePath: inGlobalBin, source: "npm-global" };
+    // Fallback 2: well-known per-user install dirs (~/.local/bin, ~/.<cli>/bin, …).
+    for (const dir of wellKnownExecutableDirs(env, config.command)) {
+      const found = findExecutableInDirectory(config.command, dir, env.platform);
+      if (found) return { executablePath: found, source: "well-known" };
+    }
+    return undefined;
   };
+
+  const resolveExecutable = async (
+    env: RuntimeEnvironment,
+  ): Promise<string | undefined> =>
+    (await resolveExecutableInfo(env))?.executablePath;
 
   const discover = async (
     env: RuntimeEnvironment,
   ): Promise<DiscoverResult> => {
-    const executablePath = await resolveExecutable(env);
-    return executablePath
-      ? { found: true, executablePath }
+    const info = await resolveExecutableInfo(env);
+    return info
+      ? { found: true, executablePath: info.executablePath, source: info.source }
       : { found: false };
   };
 
@@ -145,7 +165,9 @@ export function createLocalCliAdapter(
 
     let headlessOk: AdapterHealth["headlessOk"] = "unknown";
     let authed: AdapterHealth["authed"] = hasCredEnv ? true : "unknown";
+    let quota: AdapterHealth["quota"] = "unknown";
     let detail: string | undefined;
+    let lastErrorKind: AdapterHealth["lastErrorKind"];
 
     // The headless probe makes a real model call — only run it on an explicit
     // request (default), never on discovery (`{ probe: false }`).
@@ -154,18 +176,33 @@ export function createLocalCliAdapter(
         stdin: config.headlessProbe.prompt,
         timeoutMs: config.headlessProbe.timeoutMs ?? 20000,
       });
-      const combined = `${probe.stdout}\n${probe.stderr}`;
-      if (AUTH_FAILURE.test(combined)) {
-        headlessOk = false;
-        authed = false;
-        detail = "非交互模式返回未授权（如 401 / 未登录）。请在该 CLI 内完成登录或配置凭据。";
-      } else if (probe.exitCode === 0) {
+      const combined = sanitizeCliText(`${probe.stdout}\n${probe.stderr}`);
+      if (probe.exitCode === 0 && !AUTH_FAILURE.test(combined)) {
         headlessOk = true;
+        quota = true;
         if (authed === "unknown") authed = true;
       } else {
         headlessOk = false;
-        detail =
-          firstLine(probe.stderr) ?? `非交互探测退出码 ${probe.exitCode}。`;
+        const diagnosis = classifyCliFailure({
+          exitCode: probe.exitCode === 0 ? 1 : probe.exitCode,
+          output: combined,
+          timedOut: probe.timedOut,
+        });
+        lastErrorKind = diagnosis?.kind;
+        if (diagnosis?.kind === "auth") {
+          authed = false;
+          detail =
+            "非交互模式返回未授权（如 401 / 未登录）。请在该 CLI 内完成登录或配置凭据。";
+        } else if (diagnosis?.kind === "quota") {
+          quota = false;
+          detail = `${diagnosis.summary}${diagnosis.evidence ? ` — ${diagnosis.evidence}` : ""}`;
+        } else {
+          detail =
+            diagnosis?.evidence ??
+            firstLine(probe.stderr) ??
+            diagnosis?.summary ??
+            `非交互探测退出码 ${probe.exitCode}。`;
+        }
       }
     }
 
@@ -173,8 +210,10 @@ export function createLocalCliAdapter(
       installed: version.exitCode === 0,
       authed,
       headlessOk,
+      quota,
       ...(versionText ? { version: versionText } : {}),
       ...(detail ? { detail } : {}),
+      ...(lastErrorKind ? { lastErrorKind } : {}),
     };
   };
 
@@ -262,18 +301,29 @@ export function createLocalCliAdapter(
         });
         structuredStdoutBuffer = extracted.buffer;
         for (const delta of extracted.deltas) {
-          if (delta.text) push({ type: "text-delta", text: delta.text });
-          if (delta.stderr) push({ type: "stderr-delta", text: delta.stderr });
+          // Sanitize at the streaming boundary so ANSI/TUI control bytes never
+          // reach the chat bubble, the run log or persisted messages.
+          if (delta.text) {
+            const text = sanitizeCliText(delta.text);
+            if (text) push({ type: "text-delta", text });
+          }
+          if (delta.stderr) {
+            const text = sanitizeCliText(delta.stderr);
+            if (text) push({ type: "stderr-delta", text });
+          }
         }
       },
-      onStderr: (chunk) => push({ type: "stderr-delta", text: chunk }),
+      onStderr: (chunk) => {
+        const text = sanitizeCliText(chunk);
+        if (text) push({ type: "stderr-delta", text });
+      },
     })
       .then((result) => {
         const parsedOutput = parseLocalCliOutput(config.outputFormat, result);
         const normalizedResult = {
           ...result,
-          stdout: parsedOutput.content,
-          stderr: parsedOutput.stderr,
+          stdout: sanitizeCliText(parsedOutput.content),
+          stderr: sanitizeCliText(parsedOutput.stderr),
         };
         const combinedOutput = processOutput(normalizedResult);
         const permissionFailure = hasCliPermissionFailure(combinedOutput);

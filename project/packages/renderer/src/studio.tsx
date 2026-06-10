@@ -691,6 +691,27 @@ export function StudioApp() {
     }
   }
 
+  // Persist a per-Agent CLI choice on the project (used by the team workflow
+  // and as the default when switching to that Agent's tab).
+  async function updateAgentCli(agentId: string, cliToolId: CliToolId) {
+    if (!selectedProject) return;
+    setBusy("cli");
+    try {
+      const detail = await window.studio.updateProjectAgentClis({
+        projectId: selectedProject.id,
+        agentCliToolIds: { [agentId]: cliToolId },
+      });
+      setSelectedProject(detail);
+      if (agentId === activeAgentId) setSelectedCli(cliToolId);
+      const agent = agents.find((a) => a.id === agentId);
+      setNotice(`${agent?.title ?? agentId} 现在使用 ${CLI_TOOL_LABELS[cliToolId]}。`);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   const git = selectedProject?.gitStatus;
   const gitChanges: GitFileChange[] =
     git?.changes ??
@@ -1089,7 +1110,12 @@ export function StudioApp() {
             )}
 
             {rightTab === "activity" && (
-              <RunActivityPanel runs={selectedProject.runs ?? []} />
+              <RunActivityPanel
+                runs={selectedProject.runs ?? []}
+                onOpenLog={() =>
+                  previewProjectFile(".gameaistudio/logs/project.log")
+                }
+              />
             )}
 
             {rightTab === "git" && (
@@ -1222,6 +1248,46 @@ export function StudioApp() {
 
             {rightTab === "status" && (
               <>
+                <section className="space-y-1.5">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    Agent CLI 配置（团队工作流使用）
+                  </div>
+                  {workflowAgents.map((agent) => {
+                    const toolId =
+                      selectedProject.agentCliToolIds?.[agent.id] ??
+                      chooseAgentCli(agent, tools);
+                    const tool = tools.find((t) => t.id === toolId);
+                    return (
+                      <div
+                        key={agent.id}
+                        className="grid grid-cols-[minmax(0,1fr)_8.5rem_auto] items-center gap-2 rounded-md border border-border px-2 py-1.5 text-xs"
+                      >
+                        <span className="truncate font-medium">{agent.title}</span>
+                        <select
+                          value={toolId}
+                          onChange={(e) =>
+                            updateAgentCli(agent.id, e.target.value as CliToolId)
+                          }
+                          className="h-7 rounded-md border border-border bg-background px-1.5 text-xs"
+                          disabled={isBusy}
+                          title={`${agent.title} 使用的本地 AI CLI`}
+                        >
+                          {Object.entries(CLI_TOOL_LABELS).map(([id, label]) => {
+                            const optionTool = tools.find((t) => t.id === id);
+                            return (
+                              <option key={id} value={id}>
+                                {label} · {cliToolStatusLabel(optionTool)}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <Badge tone={cliToolStatusTone(tool)} className="shrink-0">
+                          {cliToolStatusLabel(tool)}
+                        </Badge>
+                      </div>
+                    );
+                  })}
+                </section>
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                   <dt className="text-muted-foreground">类型</dt>
                   <dd>{selectedProject.dimension.toUpperCase()}</dd>
@@ -1424,7 +1490,18 @@ export function StudioApp() {
                       title={t.executablePath ?? t.command}
                     >
                       {t.installed
-                        ? t.version || t.executablePath
+                        ? [
+                            t.version || t.executablePath,
+                            t.source === "npm-global"
+                              ? "来源：npm 全局"
+                              : t.source === "well-known"
+                                ? "来源：本机安装目录"
+                                : t.source === "path"
+                                  ? "来源：PATH"
+                                  : undefined,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")
                         : `命令：${t.command}`}
                     </div>
                     <div className="mt-1 flex flex-wrap gap-1">
@@ -1437,10 +1514,18 @@ export function StudioApp() {
                       <Badge tone={healthTone(t.health.headlessOk)}>
                         Headless {healthText(t.health.headlessOk)}
                       </Badge>
+                      {t.health.quota === false && (
+                        <Badge tone="danger">额度受限</Badge>
+                      )}
                       <Badge tone={t.capabilities.supportsImages ? "success" : "muted"}>
                         图片 {t.capabilities.supportsImages ? "可用" : "不支持"}
                       </Badge>
                     </div>
+                    {t.installed && t.status !== "available" && t.health.detail && (
+                      <p className="mt-1 break-words text-xs text-danger" title={t.health.detail}>
+                        最近错误：{t.health.detail}
+                      </p>
+                    )}
                   </div>
                   {t.installed ? (
                     <div className="flex shrink-0 items-center gap-2">

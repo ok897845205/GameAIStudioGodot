@@ -77,6 +77,7 @@ describe("local-cli-adapter discover", () => {
     expect(await adapter.discover(env)).toEqual({
       found: true,
       executablePath: "/usr/bin/claude",
+      source: "path",
     });
   });
 
@@ -463,5 +464,116 @@ describe("local-cli-adapter runTurn", () => {
       content: "实现完成。",
       exitCode: 0,
     });
+  });
+});
+
+describe("local-cli-adapter well-known directory discovery", () => {
+  it("falls back to ~/.local/bin when PATH and npm global miss", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const home = await mkdtemp(path.join(os.tmpdir(), "gas-home-"));
+    try {
+      const binDir = path.join(home, ".local", "bin");
+      await mkdir(binDir, { recursive: true });
+      const executable = path.join(binDir, "claude");
+      await writeFile(executable, "#!/bin/sh\n", "utf8");
+
+      const adapter = createLocalCliAdapter(config, { runner: makeRunner({}) });
+      // Use the host platform so the well-known directory paths join with the
+      // native separator (the temp home is a real on-disk directory).
+      const env = {
+        ...fakeEnv({ platform: process.platform }),
+        homeDir: home,
+        localAppDataDir: undefined,
+      } as unknown as RuntimeEnvironment;
+
+      expect(await adapter.discover(env)).toEqual({
+        found: true,
+        executablePath: executable,
+        source: "well-known",
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("local-cli-adapter output sanitization", () => {
+  const ESC = String.fromCharCode(0x1b);
+
+  it("strips ANSI sequences from plain streaming deltas and the final output", async () => {
+    const raw = `${ESC}[32m已完成${ESC}[0m\r\n下一步`;
+    const runner = makeRunner({
+      "/usr/bin/claude --print": {
+        exitCode: 0,
+        stdout: raw,
+        stream: [raw],
+        stderrStream: [`${ESC}[31mwarn${ESC}[0m`],
+      },
+    });
+    const adapter = createLocalCliAdapter(config, { runner });
+    const env = fakeEnv({
+      which: async (c) => (c === "claude" ? "/usr/bin/claude" : undefined),
+    });
+
+    const chunks: TurnChunk[] = [];
+    for await (const chunk of adapter.runTurn(
+      { prompt: "hi", workingDir: "/p", images: [], signal: new AbortController().signal },
+      env,
+    )) {
+      chunks.push(chunk);
+    }
+
+    const text = chunks
+      .filter((c) => c.type === "text-delta")
+      .map((c) => (c as { text: string }).text)
+      .join("");
+    expect(text).toBe("已完成\n下一步");
+    const stderr = chunks
+      .filter((c) => c.type === "stderr-delta")
+      .map((c) => (c as { text: string }).text)
+      .join("");
+    expect(stderr).toBe("warn");
+    expect(chunks.at(-1)).toMatchObject({
+      type: "final",
+      content: "已完成\n下一步",
+      exitCode: 0,
+    });
+  });
+});
+
+describe("local-cli-adapter quota health", () => {
+  it("marks quota=false and keeps the evidence when the probe is rate limited", async () => {
+    const runner = makeRunner({
+      "/usr/bin/claude --version": { exitCode: 0, stdout: "claude 1.2.3" },
+      "/usr/bin/claude --print": {
+        exitCode: 1,
+        stderr: "API error: 429 rate limit reached for requests",
+      },
+    });
+    const adapter = createLocalCliAdapter(config, { runner });
+    const env = fakeEnv({
+      which: async (c) => (c === "claude" ? "/usr/bin/claude" : undefined),
+    });
+
+    const health = await adapter.health(env);
+    expect(health.headlessOk).toBe(false);
+    expect(health.quota).toBe(false);
+    expect(health.lastErrorKind).toBe("quota");
+    expect(health.detail).toContain("429");
+  });
+
+  it("marks quota=true when the probe succeeds", async () => {
+    const runner = makeRunner({
+      "/usr/bin/claude --version": { exitCode: 0, stdout: "claude 1.2.3" },
+      "/usr/bin/claude --print": { exitCode: 0, stdout: "pong" },
+    });
+    const adapter = createLocalCliAdapter(config, { runner });
+    const env = fakeEnv({
+      which: async (c) => (c === "claude" ? "/usr/bin/claude" : undefined),
+    });
+
+    expect((await adapter.health(env)).quota).toBe(true);
   });
 });

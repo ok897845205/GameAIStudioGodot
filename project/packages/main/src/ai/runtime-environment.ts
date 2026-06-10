@@ -69,6 +69,33 @@ export function npmGlobalBinPath(
 }
 
 /**
+ * Well-known directories where CLIs land when their installer does not touch
+ * PATH (native installers, pipx/uv tools, per-user app dirs). Checked after
+ * PATH and the npm global bin, never instead of them — no user paths are
+ * hardcoded; everything derives from the environment.
+ */
+export function wellKnownExecutableDirs(
+  env: Pick<RuntimeEnvironment, "platform" | "homeDir" | "localAppDataDir">,
+  command: string,
+): string[] {
+  if (!env.homeDir) {
+    return [];
+  }
+  const pathModule = env.platform === "win32" ? path.win32 : path.posix;
+  const dirs = [
+    // Claude Code's native installer (and many others) use ~/.local/bin.
+    pathModule.join(env.homeDir, ".local", "bin"),
+    pathModule.join(env.homeDir, "bin"),
+    // Per-CLI home directories (e.g. ~/.codex/bin) used by self-updaters.
+    pathModule.join(env.homeDir, `.${command}`, "bin"),
+  ];
+  if (env.platform === "win32" && env.localAppDataDir) {
+    dirs.push(pathModule.join(env.localAppDataDir, "Programs", command));
+  }
+  return dirs;
+}
+
+/**
  * The single source of truth for "what does this machine look like".
  *
  * AI adapters (and the CLI services that will become them) ask this object for

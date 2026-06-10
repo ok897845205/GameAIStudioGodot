@@ -94,6 +94,46 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Compact git snapshot for log lines — recorded before/after every Agent turn
+ * so the project log shows exactly what a CLI run changed. Never throws.
+ */
+export interface GitStateSummary {
+  available: boolean;
+  initialized: boolean;
+  branch?: string;
+  head?: string;
+  changedCount: number;
+}
+
+export async function summarizeGitState(
+  projectRoot: string,
+  runner: CommandRunner = runProcess
+): Promise<GitStateSummary> {
+  try {
+    const status = await runner("git", ["status", "--porcelain"], { cwd: projectRoot, timeoutMs: 8000 });
+    if (status.exitCode !== 0) {
+      // git missing entirely vs. directory that is not a repository.
+      const available = !/\bENOENT\b|not recognized|不是内部或外部命令/i.test(status.stderr);
+      return { available, initialized: false, changedCount: 0 };
+    }
+    const changedCount = parseGitStatusPorcelain(status.stdout).length;
+    const [branch, head] = await Promise.all([
+      runner("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectRoot, timeoutMs: 8000 }),
+      runner("git", ["rev-parse", "--short", "HEAD"], { cwd: projectRoot, timeoutMs: 8000 })
+    ]);
+    return {
+      available: true,
+      initialized: true,
+      changedCount,
+      ...(branch.exitCode === 0 ? { branch: firstOutputLine(branch) } : {}),
+      ...(head.exitCode === 0 ? { head: firstOutputLine(head) } : {})
+    };
+  } catch {
+    return { available: false, initialized: false, changedCount: 0 };
+  }
+}
+
 function firstOutputLine(result: ProcessRunResult): string | undefined {
   return (result.stdout || result.stderr)
     .split(/\r?\n/)

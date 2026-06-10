@@ -1,6 +1,7 @@
 import type {
   CliCredentialStatus,
   CliDiagnostic,
+  CliDiscoverySource,
   CliTool,
   CliToolId,
   CliToolCapabilities,
@@ -100,10 +101,17 @@ async function getInstallManagerInfo(
   };
 }
 
+const DISCOVERY_SOURCE_LABELS: Record<CliDiscoverySource, string> = {
+  path: "PATH",
+  "npm-global": "npm 全局目录",
+  "well-known": "常见安装目录",
+};
+
 export function buildCliDiagnostics(input: {
   installed: boolean;
   status: CliTool["status"];
   executablePath?: string;
+  source?: CliDiscoverySource;
   version?: string;
   installManager: string;
   installManagerPath?: string;
@@ -125,7 +133,9 @@ export function buildCliDiagnostics(input: {
       id: "cli-found",
       severity: "ok",
       title: "CLI 已发现",
-      detail: input.executablePath ?? "已在 PATH 中发现命令。"
+      detail: input.executablePath
+        ? `${input.executablePath}${input.source ? `（来源：${DISCOVERY_SOURCE_LABELS[input.source]}）` : ""}`
+        : "已在 PATH 中发现命令。"
     });
   } else {
     diagnostics.push({
@@ -299,6 +309,7 @@ export class CliService {
       installed: true,
       status,
       executablePath,
+      source: discovered.source,
       version: health.version
     };
     return { ...baseTool, diagnostics: buildCliDiagnostics(baseTool) } satisfies CliTool;

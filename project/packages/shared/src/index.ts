@@ -14,6 +14,28 @@ export type CliImageInputMode = "file-flag" | "prompt-path-reference" | "base64"
 
 export type CliHealthValue = boolean | "unknown";
 
+/** Where a CLI executable was found during discovery. */
+export type CliDiscoverySource = "path" | "npm-global" | "well-known";
+
+/**
+ * Structured reason for a failed CLI invocation. The UI shows the short
+ * summary; logs carry the kind plus the raw evidence line.
+ */
+export type CliFailureKind =
+  | "cancelled"
+  | "timeout"
+  | "not-installed"
+  | "auth"
+  | "quota"
+  | "network"
+  | "permission"
+  | "non-interactive"
+  | "model-unavailable"
+  | "project-dir-missing"
+  | "file-write"
+  | "parse"
+  | "unknown";
+
 export interface CliToolCapabilities {
   runModel: CliRunModel;
   supportsImages: boolean;
@@ -29,8 +51,12 @@ export interface CliToolHealth {
   headlessOk: CliHealthValue;
   imagesOk?: CliHealthValue;
   writable?: CliHealthValue;
+  /** `false` when the latest probe hit a rate limit / quota ceiling. */
+  quota?: CliHealthValue;
   version?: string;
   detail?: string;
+  /** Classified kind of the most recent failure, if any. */
+  lastErrorKind?: CliFailureKind;
 }
 
 export interface CliDiagnostic {
@@ -48,6 +74,8 @@ export interface CliTool {
   installed: boolean;
   status: CliToolStatus;
   executablePath?: string;
+  /** Where the executable was discovered (PATH / npm global bin / well-known dir). */
+  source?: CliDiscoverySource;
   version?: string;
   installCommand: string[];
   installHint: string;
@@ -215,6 +243,11 @@ export interface CreateProjectInput {
   dimension: GameDimension;
   prompt: string;
   agentCliToolIds?: Partial<Record<string, CliToolId>>;
+}
+
+export interface UpdateProjectAgentClisInput {
+  projectId: string;
+  agentCliToolIds: Partial<Record<string, CliToolId>>;
 }
 
 export interface RunAgentTurnInput {
@@ -473,6 +506,7 @@ export interface StudioApi {
   testCliTool(toolId: CliToolId): Promise<CliTool>;
   installCliTool(toolId: CliToolId): Promise<GodotRunResult>;
   createProject(input: CreateProjectInput): Promise<ProjectDetails>;
+  updateProjectAgentClis(input: UpdateProjectAgentClisInput): Promise<ProjectDetails>;
   deleteProject(projectId: string): Promise<DeleteProjectResult>;
   listProjects(): Promise<StudioProject[]>;
   getProject(projectId: string): Promise<ProjectDetails>;

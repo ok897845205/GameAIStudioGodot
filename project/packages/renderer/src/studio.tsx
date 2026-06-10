@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Download,
   ExternalLink,
+  FileText,
   FolderOpen,
   Gamepad2,
   GitBranch,
@@ -713,6 +714,32 @@ export function StudioApp() {
         : "为此项目启用 Git 版本管理并提交当前状态。";
   const appMaintenanceLogPath = joinFsPath(bootstrap?.dataRoot, "logs/app.log");
   const projectMaintenanceLogPath = joinFsPath(selectedProject?.rootPath, ".gameaistudio/logs/project.log");
+  const projectPreviewButtons = [
+    {
+      label: "项目说明",
+      title: "预览 GAMEAISTUDIO.md",
+      relativePath: "GAMEAISTUDIO.md",
+      icon: <FileText />,
+    },
+    {
+      label: "Agent 上下文",
+      title: "预览 .gameaistudio/agent-context.md",
+      relativePath: ".gameaistudio/agent-context.md",
+      icon: <FileText />,
+    },
+    {
+      label: "Agent 日志",
+      title: "预览 .gameaistudio/agent-journal.md",
+      relativePath: ".gameaistudio/agent-journal.md",
+      icon: <Terminal />,
+    },
+    {
+      label: "项目日志",
+      title: "预览 .gameaistudio/logs/project.log",
+      relativePath: ".gameaistudio/logs/project.log",
+      icon: <Terminal />,
+    },
+  ];
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -1215,24 +1242,30 @@ export function StudioApp() {
                     {projectMaintenanceLogPath ?? "未创建"}
                   </dd>
                 </dl>
-                <div className="flex gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  {projectPreviewButtons.map((item) => (
+                    <Button
+                      key={item.relativePath}
+                      size="sm"
+                      variant="outline"
+                      className="justify-start"
+                      onClick={() => previewProjectFile(item.relativePath)}
+                      disabled={isBusy}
+                      title={item.title}
+                    >
+                      {item.icon}
+                      {item.label}
+                    </Button>
+                  ))}
                   <Button
                     size="sm"
                     variant="outline"
-                    className="flex-1"
-                    onClick={() => openPath(projectMaintenanceLogPath)}
-                    disabled={!projectMaintenanceLogPath}
-                  >
-                    <Terminal /> 项目日志
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="flex-1"
+                    className="col-span-2 justify-start"
                     onClick={() => openPath(appMaintenanceLogPath)}
                     disabled={!appMaintenanceLogPath}
+                    title={appMaintenanceLogPath}
                   >
-                    <FolderOpen /> app.log
+                    <FolderOpen /> 打开 app.log
                   </Button>
                 </div>
               </>
@@ -1501,11 +1534,11 @@ export function StudioApp() {
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => openPath(projectMaintenanceLogPath)}
+                  onClick={() => previewProjectFile(".gameaistudio/logs/project.log")}
                   disabled={!projectMaintenanceLogPath}
                   title={projectMaintenanceLogPath}
                 >
-                  <Terminal /> 打开项目日志
+                  <Terminal /> 预览项目日志
                 </Button>
               </div>
               <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

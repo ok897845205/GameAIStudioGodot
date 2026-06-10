@@ -1,7 +1,8 @@
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type PreviewStatus, type ProjectDetails } from "@gameaistudio/shared";
 import { readAgentJournalTail } from "./agent-journal-service";
+import { writeUtf8BomFile } from "./text-file-encoding";
 
 export interface AgentContextFile {
   path: string;
@@ -262,7 +263,7 @@ export class AgentContextService {
     });
 
     await mkdir(path.dirname(contextPath), { recursive: true });
-    await writeFile(contextPath, markdown, "utf8");
+    await writeUtf8BomFile(contextPath, markdown);
 
     return {
       contextPath,

@@ -93,7 +93,7 @@ describe("npm global executable fallback", () => {
     const command = service.buildAgentCommand("codex", "hello", "C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.cmd");
 
     expect(command.command).toBe("C:\\Users\\KSG\\AppData\\Roaming\\npm\\codex.cmd");
-    expect(command.args).toEqual(["exec", "--skip-git-repo-check", "-"]);
+    expect(command.args).toEqual(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"]);
     expect(command.stdin).toBe("hello");
   });
 
@@ -102,7 +102,7 @@ describe("npm global executable fallback", () => {
     const command = service.buildAgentCommand("kimi", "hello", "C:\\Users\\KSG\\.local\\bin\\kimi.exe");
 
     expect(command.command).toBe("C:\\Users\\KSG\\.local\\bin\\kimi.exe");
-    expect(command.args).toEqual(["--print"]);
+    expect(command.args).toEqual(["--print", "--final-message"]);
     expect(command.stdin).toBe("hello");
   });
 

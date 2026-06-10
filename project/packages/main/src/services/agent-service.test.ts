@@ -325,4 +325,60 @@ describe("AgentService", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("marks sandbox ACL failures as failed even when the CLI exits with 0", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-agent-service-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const projectService = new ProjectService(paths, store);
+    const runService = new RunService(store);
+    const processRegistry = new ProcessRegistry();
+    const fileChangeService = new ProjectFileChangeService();
+    const contextService = new AgentContextService();
+
+    try {
+      await writeTemplate(paths);
+      const project = await projectService.createProject({
+        name: "Sandbox Failure Demo",
+        dimension: "2d",
+        prompt: "我要创建一个跑酷游戏"
+      });
+      const cliTool = fakeTool("fake-codex");
+      const cliService = {
+        discover: async () => [cliTool],
+        runTurn: async function* () {
+          yield {
+            type: "text-delta",
+            text: "OpenAI Codex\nsandbox: read-only\nexecution error: Io(Custom { kind: Other, error: \"windows sandbox: helper_unknown_error: apply deny-read ACLs\" })"
+          };
+          yield {
+            type: "final",
+            content:
+              "execution error: Io(Custom { kind: Other, error: \"windows sandbox: helper_unknown_error: apply deny-read ACLs\" })",
+            stderr: "",
+            exitCode: 0,
+            durationMs: 5
+          };
+        }
+      } as unknown as CliService;
+      const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+
+      const result = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "programmer",
+        cliToolId: "codex",
+        message: "请实现第一版跑酷玩法。",
+        autoStartPreview: false
+      });
+
+      const agentMessage = [...result.messages].reverse().find((message) => message.role === "agent");
+      expect(agentMessage?.exitCode).toBe(1);
+      expect(agentMessage?.content).toContain("Codex CLI 执行失败（exitCode=1）");
+      expect(agentMessage?.content).toContain("权限诊断");
+      expect(result.runs[0]?.status).toBe("failed");
+      expect(result.runs[0]?.steps[0]?.status).toBe("failed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

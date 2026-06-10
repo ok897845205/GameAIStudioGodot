@@ -8,6 +8,7 @@ import {
   type AgentMessage,
   type CliTool,
   type CliToolId,
+  type ProjectFileChange,
   type ProjectDetails,
   type StudioProject,
   type WebBuildInspection
@@ -83,6 +84,18 @@ function createInspection(project: StudioProject, ok: boolean): WebBuildInspecti
     requiredFiles: ["index.html", "*.wasm", "*.pck"],
     missingRequiredFiles: ok ? [] : ["*.wasm", "*.pck"],
     message: ok ? "Web build contains 3 files." : "Web build is missing required files: *.wasm, *.pck."
+  };
+}
+
+function fileChange(filePath = "scripts/player.gd"): ProjectFileChange {
+  return {
+    path: filePath,
+    kind: "modified",
+    beforeSize: 10,
+    afterSize: 20,
+    beforeHash: "before",
+    afterHash: "after",
+    isText: true
   };
 }
 
@@ -205,7 +218,8 @@ describe("buildWorkflowRunSteps", () => {
           content: "done",
           createdAt: new Date().toISOString(),
           cliToolId: "codex",
-          exitCode: 0
+          exitCode: 0,
+          fileChanges: [fileChange()]
         };
         return {
           messages: [message],
@@ -286,6 +300,7 @@ describe("buildWorkflowRunSteps", () => {
     let inspectCalled = false;
     let zipCalled = false;
     let previewCalled = false;
+    let commitCalled = false;
 
     const projectService = {
       requireProject: async () => project,
@@ -366,7 +381,13 @@ describe("buildWorkflowRunSteps", () => {
         godotService as never,
         exportService as never,
         autoPreviewService as never,
-        runService
+        runService,
+        {
+          commit: async () => {
+            commitCalled = true;
+            return {} as never;
+          }
+        }
       );
 
       const result = await workflow.run({
@@ -387,12 +408,274 @@ describe("buildWorkflowRunSteps", () => {
       expect(inspectCalled).toBe(false);
       expect(zipCalled).toBe(false);
       expect(previewCalled).toBe(false);
+      expect(commitCalled).toBe(false);
       expect(result.run.steps.map((step) => step.status)).toEqual(["failed", "failed", "failed", "failed", "failed", "failed"]);
       expect(result.run.steps.slice(2).every((step) => step.message?.includes("所有 Agent 步骤都失败"))).toBe(true);
       expect(result.project.messages).toHaveLength(1);
       expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
       expect(result.project.messages[0]?.content).toContain("Web zip: 未执行");
       expect(result.project.messages[0]?.content).toContain("所有 2 个 Agent 步骤失败");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips auto delivery and git auto-save when any Agent step fails after project changes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-workflow-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+    const messages: AgentMessage[] = [];
+    let exportCalled = false;
+    let inspectCalled = false;
+    let zipCalled = false;
+    let previewCalled = false;
+    let commitCalled = false;
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({
+        ...project,
+        messages,
+        runs: await runService.listRuns(project.id)
+      }),
+      appendMessages: async (_projectId: string, nextMessages: AgentMessage[]) => {
+        messages.push(...nextMessages);
+        return messages;
+      }
+    };
+    const cliService = {
+      discover: async () => [tool("codex")]
+    };
+    const agentService = {
+      runTurn: async (input: { agentId: string; cliToolId: CliToolId }) => {
+        const failed = input.agentId === "programmer";
+        const message: AgentMessage = {
+          id: `msg_${input.agentId}`,
+          projectId: project.id,
+          agentId: input.agentId,
+          role: "agent",
+          content: failed ? "Codex CLI 执行失败（exitCode=1）。\n\nERROR: Selected model is at capacity." : "done",
+          createdAt: new Date().toISOString(),
+          cliToolId: input.cliToolId,
+          exitCode: failed ? 1 : 0,
+          fileChanges: [fileChange(failed ? "scripts/player.gd" : ".gameaistudio/producer-brief.md")]
+        };
+        return {
+          messages: [message],
+          project: { ...project, messages: [message], runs: [] },
+          runs: []
+        };
+      }
+    };
+    const godotService = {
+      exportWeb: async () => {
+        exportCalled = true;
+        return {
+          ok: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 1
+        };
+      }
+    };
+    const exportService = {
+      inspectWebBuild: async () => {
+        inspectCalled = true;
+        return createInspection(project, true);
+      },
+      zipWebBuild: async () => {
+        zipCalled = true;
+        return {
+          zipPath: path.join(project.rootPath, "dist", "game.zip"),
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+    const autoPreviewService = {
+      start: async () => {
+        previewCalled = true;
+        return {
+          projectId: project.id,
+          url: "http://127.0.0.1:3000",
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+
+    try {
+      const workflow = new WorkflowService(
+        projectService as never,
+        cliService as never,
+        agentService as never,
+        godotService as never,
+        exportService as never,
+        autoPreviewService as never,
+        runService,
+        {
+          commit: async () => {
+            commitCalled = true;
+            return {} as never;
+          }
+        }
+      );
+
+      const result = await workflow.run({
+        projectId: project.id,
+        message: "创建跑酷游戏",
+        agentIds: ["producer", "programmer"],
+        autoExportWeb: true,
+        autoPackageWebZip: true,
+        autoStartPreview: true
+      });
+
+      expect(result.run.status).toBe("failed");
+      expect(result.exportResult).toBeUndefined();
+      expect(result.inspectionResult).toBeUndefined();
+      expect(result.zipResult).toBeUndefined();
+      expect(result.previewResult).toBeUndefined();
+      expect(exportCalled).toBe(false);
+      expect(inspectCalled).toBe(false);
+      expect(zipCalled).toBe(false);
+      expect(previewCalled).toBe(false);
+      expect(commitCalled).toBe(false);
+      expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "failed", "failed", "failed", "failed", "failed"]);
+      expect(result.run.steps.slice(2).every((step) => step.message?.includes("已有 1 个 Agent 步骤失败"))).toBe(true);
+      expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
+      expect(result.project.messages[0]?.content).toContain("失败步骤 5 个");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips auto delivery when Agent steps succeed but do not change project files", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-workflow-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+    const messages: AgentMessage[] = [];
+    let exportCalled = false;
+    let inspectCalled = false;
+    let zipCalled = false;
+    let previewCalled = false;
+    let commitCalled = false;
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({
+        ...project,
+        messages,
+        runs: await runService.listRuns(project.id)
+      }),
+      appendMessages: async (_projectId: string, nextMessages: AgentMessage[]) => {
+        messages.push(...nextMessages);
+        return messages;
+      }
+    };
+    const cliService = {
+      discover: async () => [tool("codex")]
+    };
+    const agentService = {
+      runTurn: async () => {
+        const message: AgentMessage = {
+          id: "msg_1",
+          projectId: project.id,
+          agentId: "producer",
+          role: "agent",
+          content: "我给出了建议，但没有写入文件。",
+          createdAt: new Date().toISOString(),
+          cliToolId: "codex",
+          exitCode: 0,
+          fileChanges: []
+        };
+        return {
+          messages: [message],
+          project: { ...project, messages: [message], runs: [] },
+          runs: []
+        };
+      }
+    };
+    const godotService = {
+      exportWeb: async () => {
+        exportCalled = true;
+        return {
+          ok: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 1
+        };
+      }
+    };
+    const exportService = {
+      inspectWebBuild: async () => {
+        inspectCalled = true;
+        return createInspection(project, true);
+      },
+      zipWebBuild: async () => {
+        zipCalled = true;
+        return {
+          projectId: project.id,
+          zipPath: path.join(project.rootPath, "dist", "game.zip"),
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+    const autoPreviewService = {
+      start: async () => {
+        previewCalled = true;
+        return {
+          projectId: project.id,
+          url: "http://127.0.0.1:3000",
+          webBuildPath: project.webBuildPath
+        };
+      }
+    };
+
+    try {
+      const workflow = new WorkflowService(
+        projectService as never,
+        cliService as never,
+        agentService as never,
+        godotService as never,
+        exportService as never,
+        autoPreviewService as never,
+        runService,
+        {
+          commit: async () => {
+            commitCalled = true;
+            return {} as never;
+          }
+        }
+      );
+
+      const result = await workflow.run({
+        projectId: project.id,
+        message: "创建黄金矿工",
+        agentIds: ["producer"],
+        autoExportWeb: true,
+        autoPackageWebZip: true,
+        autoStartPreview: true
+      });
+
+      expect(result.run.status).toBe("failed");
+      expect(result.exportResult).toBeUndefined();
+      expect(result.inspectionResult).toBeUndefined();
+      expect(result.zipResult).toBeUndefined();
+      expect(result.previewResult).toBeUndefined();
+      expect(exportCalled).toBe(false);
+      expect(inspectCalled).toBe(false);
+      expect(zipCalled).toBe(false);
+      expect(previewCalled).toBe(false);
+      expect(commitCalled).toBe(false);
+      expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "failed", "failed", "failed", "failed"]);
+      expect(result.run.summary).toContain("没有产生项目文件变更");
+      expect(result.run.steps.slice(1).every((step) => step.message?.includes("没有产生项目文件变更"))).toBe(true);
+      expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
+      expect(result.project.messages[0]?.content).toContain("Web zip: 未执行");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -407,6 +690,7 @@ describe("buildWorkflowRunSteps", () => {
     const manifestPath = path.join(project.webBuildPath, "gameaistudio-export.json");
     await store.upsertProject(project);
     const messages: AgentMessage[] = [];
+    const commits: Array<{ projectId: string; message: string }> = [];
 
     const projectService = {
       requireProject: async () => project,
@@ -433,7 +717,8 @@ describe("buildWorkflowRunSteps", () => {
           content: "done",
           createdAt: new Date().toISOString(),
           cliToolId: "codex",
-          exitCode: 0
+          exitCode: 0,
+          fileChanges: [fileChange()]
         };
         return {
           messages: [message],
@@ -477,7 +762,13 @@ describe("buildWorkflowRunSteps", () => {
         godotService as never,
         exportService as never,
         autoPreviewService as never,
-        runService
+        runService,
+        {
+          commit: async (commit) => {
+            commits.push(commit);
+            return {} as never;
+          }
+        }
       );
 
       const result = await workflow.run({
@@ -496,6 +787,9 @@ describe("buildWorkflowRunSteps", () => {
       expect(result.project.messages[0]?.content).toContain("导出清单");
       expect(result.project.messages[0]?.content).toContain("gameaistudio-export.json");
       expect(result.project.messages[0]?.content).toContain(manifestPath);
+      expect(commits).toHaveLength(1);
+      expect(commits[0]?.projectId).toBe(project.id);
+      expect(commits[0]?.message).toContain("自动保存：团队工作流");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -79,7 +79,9 @@ describe("AgentContextService", () => {
       });
 
       const markdown = await readFile(bundle.contextPath, "utf8");
+      const bytes = await readFile(bundle.contextPath);
       expect(bundle.contextPath).toBe(path.join(dir, ".gameaistudio", "agent-context.md"));
+      expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
       expect(markdown).toContain("Active agent: 程序");
       expect(markdown).toContain("## Delivery Status");
       expect(markdown).toContain("Preview: ready (http://127.0.0.1:3000/index.html?v=42)");

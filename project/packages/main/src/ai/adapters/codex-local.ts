@@ -5,7 +5,13 @@ export const codexLocalConfig: LocalCliConfig = {
   label: "Codex",
   command: "codex",
   versionArgs: ["--version"],
-  promptArgs: ["exec", "--skip-git-repo-check", "-"],
+  // Codex's Windows workspace-write sandbox can fail before the model runs when
+  // it tries to apply deny-read ACLs from an Electron child process. GameAIStudio
+  // already launches Codex from the selected project root and logs every turn, so
+  // use Codex's documented no-sandbox automation mode for reliable local access.
+  promptArgs: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"],
+  outputFormat: "codex-jsonl",
+  imageArgs: (images) => images.flatMap((image) => (image.path ? ["--image", image.path] : [])),
   installCommand: ["npm", "install", "-g", "@openai/codex"],
   installHint: "通过 npm 全局安装 OpenAI Codex CLI，或把已安装的 codex 加入 PATH。",
   credentialEnvVars: ["OPENAI_API_KEY"],
@@ -14,7 +20,7 @@ export const codexLocalConfig: LocalCliConfig = {
   capabilities: {
     runModel: "local",
     supportsImages: true,
-    imageInputMode: "prompt-path-reference",
+    imageInputMode: "file-flag",
     supportsStream: true,
     supportsResume: false,
     headless: true,

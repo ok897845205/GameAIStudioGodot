@@ -18,6 +18,7 @@ import { AgentService } from "./agent-service";
 import { AutoPreviewService } from "./auto-preview-service";
 import { CliService } from "./cli-service";
 import { ExportService } from "./export-service";
+import type { GitService } from "./git-service";
 import { GodotService } from "./godot-service";
 import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
@@ -66,6 +67,14 @@ function inspectionOutput(result: WebBuildInspection): string {
 
 function workflowResultLine(label: string, value: string | undefined): string {
   return `- ${label}: ${value ?? "未执行"}`;
+}
+
+function countAgentFileChanges(run: StudioRun, agentCount: number): number {
+  return run.steps.slice(0, agentCount).reduce((total, step) => total + (step.fileChanges?.length ?? 0), 0);
+}
+
+function hasAutoDelivery(input: RunStudioWorkflowInput): boolean {
+  return Boolean(input.autoExportWeb || input.autoPackageWebZip || input.autoStartPreview);
 }
 
 function buildWorkflowSummaryMessage(input: {
@@ -201,7 +210,8 @@ export class WorkflowService {
     private readonly godotService: GodotService,
     private readonly exportService: ExportService,
     private readonly autoPreviewService: AutoPreviewService,
-    private readonly runService: RunService
+    private readonly runService: RunService,
+    private readonly gitService?: Pick<GitService, "commit">
   ) {}
 
   async run(input: RunStudioWorkflowInput): Promise<RunStudioWorkflowResult> {
@@ -281,7 +291,8 @@ export class WorkflowService {
         status: stepFailed ? "failed" : "completed",
         cliToolId,
         exitCode: lastAgentMessage?.exitCode,
-        message: stepFailed ? lastAgentMessage?.content ?? `${CLI_TOOL_LABELS[cliToolId]} 执行失败。` : `${agent.title} 已完成。`
+        message: stepFailed ? lastAgentMessage?.content ?? `${CLI_TOOL_LABELS[cliToolId]} 执行失败。` : `${agent.title} 已完成。`,
+        ...(lastAgentMessage?.fileChanges ? { fileChanges: lastAgentMessage.fileChanges } : {})
       });
     }
 
@@ -304,6 +315,89 @@ export class WorkflowService {
       plog.error("workflow", "团队工作流失败：所有 Agent 步骤失败", {
         project: project.name,
         failedAgentSteps,
+        durationMs: Date.now() - workflowStartedAt,
+      });
+      await this.projectService.appendMessages(project.id, [
+        buildWorkflowSummaryMessage({
+          projectId: project.id,
+          run: latestRun,
+          exportResult,
+          inspectionResult,
+          zipResult,
+          previewResult
+        })
+      ]);
+
+      return {
+        project: await this.projectService.getProject(project.id),
+        run: latestRun,
+        exportResult,
+        inspectionResult,
+        zipResult,
+        previewResult
+      };
+    }
+
+    if (hasAutoDelivery(input) && failedAgentSteps > 0) {
+      const skipped = await failQueuedDeliverySteps({
+        runService: this.runService,
+        runId: run.id,
+        run: latestRun,
+        startIndex: stepCursor,
+        message: `已有 ${failedAgentSteps} 个 Agent 步骤失败，已跳过后续 Web 导出、打包和预览，避免交付半成品。`
+      });
+      latestRun = skipped.run;
+      failedSteps += skipped.failedSteps;
+      latestRun = await this.runService.finishRun(
+        run.id,
+        "failed",
+        `团队工作流结束，有 ${failedAgentSteps} 个 Agent 步骤失败，已跳过自动交付步骤。`
+      );
+      plog.warn("workflow", "团队工作流失败：部分 Agent 步骤失败", {
+        project: project.name,
+        failedAgentSteps,
+        durationMs: Date.now() - workflowStartedAt,
+      });
+      await this.projectService.appendMessages(project.id, [
+        buildWorkflowSummaryMessage({
+          projectId: project.id,
+          run: latestRun,
+          exportResult,
+          inspectionResult,
+          zipResult,
+          previewResult
+        })
+      ]);
+      return {
+        project: await this.projectService.getProject(project.id),
+        run: latestRun,
+        exportResult,
+        inspectionResult,
+        zipResult,
+        previewResult
+      };
+    }
+
+    const agentFileChangeCount = countAgentFileChanges(latestRun, agents.length);
+    if (hasAutoDelivery(input) && agents.length > 0 && agentFileChangeCount === 0) {
+      const skipped = await failQueuedDeliverySteps({
+        runService: this.runService,
+        runId: run.id,
+        run: latestRun,
+        startIndex: stepCursor,
+        message: "Agent 步骤没有产生项目文件变更，已跳过 Web 导出、zip 打包和预览，避免交付旧模板。"
+      });
+      latestRun = skipped.run;
+      failedSteps += skipped.failedSteps;
+      latestRun = await this.runService.finishRun(
+        run.id,
+        "failed",
+        "团队工作流结束，但 Agent 没有产生项目文件变更，已跳过自动交付步骤。"
+      );
+      plog.warn("workflow", "团队工作流失败：没有项目文件变更", {
+        project: project.name,
+        agents: agents.map((agent) => agent.title),
+        agentFileChangeCount,
         durationMs: Date.now() - workflowStartedAt,
       });
       await this.projectService.appendMessages(project.id, [
@@ -473,6 +567,21 @@ export class WorkflowService {
         previewResult
       })
     ]);
+    if (latestRun.status === "completed" && agentFileChangeCount > 0 && this.gitService) {
+      try {
+        await this.gitService.commit({
+          projectId: project.id,
+          message: `自动保存：团队工作流 ${new Date().toLocaleString("zh-CN", { hour12: false })}`
+        });
+      } catch (error) {
+        plog.warn("git", "团队工作流自动保存 Git 版本失败", {
+          project: project.name,
+          projectId: project.id,
+          agentFileChangeCount,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
 
     return {
       project: await this.projectService.getProject(project.id),

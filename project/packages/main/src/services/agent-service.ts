@@ -13,6 +13,10 @@ import {
 } from "@gameaistudio/shared";
 import { AgentContextService, type AgentContextBundle } from "./agent-context-service";
 import { appendAgentJournal, buildAgentJournalEntry } from "./agent-journal-service";
+import {
+  applyCliPermissionFailureDiagnostic,
+  processOutput
+} from "./cli-diagnostics";
 import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
@@ -54,6 +58,7 @@ export function buildAgentPrompt(input: {
     "- 先阅读或遵循 Agent 上下文文件中的项目文件地图、最近对话和交付要求。",
     "- 优先交付一个可预览、可导出的最小可玩版本；程序类任务要尽量直接修改 Godot 文件。",
     "- 如需运行命令，说明命令和目的；如果当前 CLI 不能执行命令，也要给出可继续的具体文件级改动方案。",
+    "- 在 Windows PowerShell 里读写文本文件时，必须显式使用 `-Encoding UTF8`；不要用默认编码读取中文路径、中文文档或 Godot 场景。",
     "- 回答末尾给出完成内容、涉及文件、未完成风险、下一步建议。",
     "",
     "上下文读取：",
@@ -110,15 +115,6 @@ async function persistAttachments(projectRoot: string, attachments: AgentAttachm
   }
 
   return persisted;
-}
-
-function processOutput(result: ProcessRunResult): string {
-  return [
-    result.stdout.trim(),
-    result.stderr.trim() ? `\n--- stderr ---\n${result.stderr.trim()}` : ""
-  ]
-    .join("")
-    .trim();
 }
 
 export function buildAgentProcessMessage(input: {
@@ -453,7 +449,7 @@ export class AgentService {
       });
     }
 
-    const result: ProcessRunResult = {
+    let result: ProcessRunResult = {
       exitCode,
       stdout: finalStdout || streamedStdout,
       stderr: finalStderr || streamedStderr || adapterError,
@@ -461,6 +457,8 @@ export class AgentService {
       cancelled: cancelled || controller.signal.aborted,
       timedOut
     };
+    const permissionDiagnostic = applyCliPermissionFailureDiagnostic(result, CLI_TOOL_LABELS[input.cliToolId]);
+    result = permissionDiagnostic.result;
     const finalVisibleOutput = processOutput(result);
     if (finalVisibleOutput && finalVisibleOutput !== outputTail.trim()) {
       outputTail = finalVisibleOutput.slice(-6000);
@@ -508,6 +506,8 @@ export class AgentService {
       cliDurationMs: result.durationMs,
       timedOut: result.timedOut,
       fileChanges: fileChanges.length,
+      detectedPermissionFailure: permissionDiagnostic.detected,
+      rawExitCode: permissionDiagnostic.rawExitCode,
       stderr: turnStatus === "failed" ? result.stderr.trim().slice(-800) || undefined : undefined,
     });
     await appendAgentJournal(

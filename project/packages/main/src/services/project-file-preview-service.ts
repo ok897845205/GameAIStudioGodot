@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ProjectFilePreview } from "@gameaistudio/shared";
 import { isPathInsideDirectory } from "./preview-server";
 import { ProjectService } from "./project-service";
+import { stripUtf8Bom } from "./text-file-encoding";
 
 const MAX_TEXT_BYTES = 512 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -21,6 +22,7 @@ const TEXT_MIME_TYPES: Record<string, string> = {
   ".gd": "text/plain; charset=utf-8",
   ".godot": "text/plain; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".log": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
   ".ts": "text/typescript; charset=utf-8",
   ".tsx": "text/typescript; charset=utf-8",
@@ -98,7 +100,7 @@ export class ProjectFilePreviewService {
     return {
       ...base,
       kind: "text",
-      content: sample.toString("utf8"),
+      content: stripUtf8Bom(sample.toString("utf8")),
       truncated
     };
   }

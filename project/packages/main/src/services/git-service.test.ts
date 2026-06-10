@@ -102,6 +102,10 @@ describe("buildProjectGitignore", () => {
     expect(content).toContain(".godot/");
     expect(content).toContain("build/");
     expect(content).toContain("dist/");
+    expect(content).toContain(".gameaistudio/project.json");
+    expect(content).toContain(".gameaistudio/agent-context.md");
+    expect(content).toContain(".gameaistudio/agent-journal.md");
+    expect(content).toContain(".gameaistudio/logs/");
     expect(content).toContain(".gameaistudio/attachments/");
     expect(content).not.toContain(".gameaistudio/snapshots/");
   });

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   AGENT_PROFILES,
@@ -8,6 +8,7 @@ import {
   type ProjectFileChange,
   type StudioProject
 } from "@gameaistudio/shared";
+import { appendUtf8BomFile, stripUtf8Bom } from "./text-file-encoding";
 
 const AGENT_JOURNAL_RELATIVE_PATH = path.join(".gameaistudio", "agent-journal.md");
 const DEFAULT_JOURNAL_TAIL_CHARS = 5000;
@@ -104,13 +105,13 @@ export function buildAgentJournalEntry(input: {
 export async function appendAgentJournal(projectRoot: string, entry: string): Promise<string> {
   const journalPath = getAgentJournalPath(projectRoot);
   await mkdir(path.dirname(journalPath), { recursive: true });
-  await appendFile(journalPath, `${entry.trimEnd()}\n\n`, "utf8");
+  await appendUtf8BomFile(journalPath, `${entry.trimEnd()}\n\n`);
   return journalPath;
 }
 
 export async function readAgentJournalTail(projectRoot: string, maxChars = DEFAULT_JOURNAL_TAIL_CHARS): Promise<string> {
   try {
-    const journal = await readFile(getAgentJournalPath(projectRoot), "utf8");
+    const journal = stripUtf8Bom(await readFile(getAgentJournalPath(projectRoot), "utf8"));
     if (journal.length <= maxChars) {
       return journal.trim();
     }

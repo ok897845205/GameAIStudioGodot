@@ -102,6 +102,10 @@ describe("ProjectService", () => {
       expect(await readFile(path.join(project.rootPath, "GAMEAISTUDIO.md"), "utf8")).toContain("Original prompt: 我要创建一个黄金矿工");
       expect(await readFile(path.join(project.rootPath, ".gameaistudio", "agent-context.md"), "utf8")).toContain("No Agent turn has been prepared yet");
       expect(await readFile(path.join(project.rootPath, ".gameaistudio", "agent-journal.md"), "utf8")).toContain("Project created");
+      for (const relativePath of ["GAMEAISTUDIO.md", ".gameaistudio/agent-context.md", ".gameaistudio/agent-journal.md"]) {
+        const bytes = await readFile(path.join(project.rootPath, relativePath));
+        expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      }
       expect((await store.listProjects()).map((stored) => stored.id)).toEqual([project.id]);
     } finally {
       await rm(root, { recursive: true, force: true });

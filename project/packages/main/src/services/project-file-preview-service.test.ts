@@ -40,6 +40,47 @@ describe("ProjectFilePreviewService", () => {
     }
   });
 
+  it("previews project maintenance logs as text files", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-file-preview-"));
+    const project = createProject(dir);
+    await mkdir(path.join(dir, ".gameaistudio", "logs"), { recursive: true });
+    await writeFile(path.join(dir, ".gameaistudio", "logs", "project.log"), "INFO [cli-adapter] started\n", "utf8");
+    const service = new ProjectFilePreviewService({ requireProject: async () => project } as never);
+
+    try {
+      const preview = await service.read({
+        projectId: project.id,
+        relativePath: ".gameaistudio/logs/project.log"
+      });
+
+      expect(preview.kind).toBe("text");
+      expect(preview.content).toContain("[cli-adapter]");
+      expect(preview.mimeType).toContain("text/plain");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips UTF-8 BOM from text previews", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-file-preview-"));
+    const project = createProject(dir);
+    await mkdir(project.rootPath, { recursive: true });
+    await writeFile(path.join(project.rootPath, "GAMEAISTUDIO.md"), "\uFEFF# Demo\n", "utf8");
+    const service = new ProjectFilePreviewService({ requireProject: async () => project } as never);
+
+    try {
+      const preview = await service.read({
+        projectId: project.id,
+        relativePath: "GAMEAISTUDIO.md"
+      });
+
+      expect(preview.kind).toBe("text");
+      expect(preview.content).toBe("# Demo\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns image files as data urls", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-file-preview-"));
     const project = createProject(dir);

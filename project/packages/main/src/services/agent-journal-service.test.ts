@@ -74,7 +74,10 @@ describe("Agent journal", () => {
       await appendAgentJournal(dir, "## entry 1\n\nold");
       await appendAgentJournal(dir, "## entry 2\n\nnew");
 
+      const bytes = await readFile(getAgentJournalPath(dir));
       expect(await readFile(getAgentJournalPath(dir), "utf8")).toContain("## entry 1");
+      expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      expect(await readAgentJournalTail(dir, 1000)).not.toContain("\uFEFF");
       expect(await readAgentJournalTail(dir, 18)).toContain("entry 2");
     } finally {
       await rm(dir, { recursive: true, force: true });

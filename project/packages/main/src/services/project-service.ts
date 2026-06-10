@@ -12,6 +12,7 @@ import { getAppLogger, getProjectLogger } from "./logger";
 import { createMessageId, createProjectId, sanitizeProjectName } from "./naming";
 import { getTemplatePath, type StudioPaths } from "./resource-paths";
 import { StudioStore } from "./store";
+import { writeUtf8BomFile } from "./text-file-encoding";
 
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
@@ -182,7 +183,7 @@ export class ProjectService {
   }
 
   private async writeProjectGuide(project: StudioProject): Promise<void> {
-    await writeFile(
+    await writeUtf8BomFile(
       path.join(project.rootPath, "GAMEAISTUDIO.md"),
       [
         `# ${project.name}`,
@@ -196,15 +197,14 @@ export class ProjectService {
         "- Maintain Web export compatibility.",
         "- Read `.gameaistudio/agent-context.md` when GameAIStudio prepares an Agent turn.",
         "- Record major design decisions in this file when useful."
-      ].join("\n"),
-      "utf8"
+      ].join("\n")
     );
   }
 
   private async writeInitialAgentFiles(project: StudioProject): Promise<void> {
     const studioDir = path.join(project.rootPath, ".gameaistudio");
     await mkdir(studioDir, { recursive: true });
-    await writeFile(
+    await writeUtf8BomFile(
       path.join(studioDir, "agent-context.md"),
       [
         "# GameAIStudio Agent Context",
@@ -220,10 +220,9 @@ export class ProjectService {
         "- GAMEAISTUDIO.md",
         "- .gameaistudio/project.json",
         "- .gameaistudio/agent-journal.md"
-      ].join("\n"),
-      "utf8"
+      ].join("\n")
     );
-    await writeFile(
+    await writeUtf8BomFile(
       path.join(studioDir, "agent-journal.md"),
       [
         "# GameAIStudio Agent Journal",
@@ -234,8 +233,7 @@ export class ProjectService {
         `- Original user goal: ${project.prompt}`,
         "- Status: waiting for the first Agent turn.",
         ""
-      ].join("\n"),
-      "utf8"
+      ].join("\n")
     );
   }
 

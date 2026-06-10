@@ -4,18 +4,30 @@ import {
   runProcess,
 } from "../../services/process-runner";
 import {
+  hasCliPermissionFailure,
+  processOutput,
+  tailText,
+} from "../../services/cli-diagnostics";
+import { getProjectLogger } from "../../services/logger";
+import {
   findExecutableInDirectory,
   type RuntimeEnvironment,
 } from "../runtime-environment";
 import type {
   AdapterCapabilities,
   AdapterHealth,
+  AdapterImageInput,
   AgentTurnRequest,
   AiAdapter,
   DiscoverResult,
   HealthOptions,
   TurnChunk,
 } from "../adapter-contract";
+import {
+  appendAndExtractStructuredDeltas,
+  parseLocalCliOutput,
+  type LocalCliOutputFormat,
+} from "./local-cli-output";
 
 export type LocalCliConfig = {
   id: string;
@@ -24,6 +36,10 @@ export type LocalCliConfig = {
   versionArgs: string[];
   /** Args for a headless prompt run; the prompt itself is delivered via stdin. */
   promptArgs: string[];
+  /** How stdout should be interpreted before it is shown to the user. */
+  outputFormat?: LocalCliOutputFormat;
+  /** Optional image argv builder for CLIs that accept real image attachments. */
+  imageArgs?: (images: AdapterImageInput[]) => string[];
   installCommand: string[];
   installHint: string;
   credentialEnvVars: string[];
@@ -48,6 +64,25 @@ const firstLine = (text: string): string | undefined =>
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
+
+function buildPromptArgs(config: LocalCliConfig, req: AgentTurnRequest): string[] {
+  const args = [...config.promptArgs];
+  const imageArgs = config.imageArgs?.(req.images) ?? [];
+  if (imageArgs.length === 0) {
+    return args;
+  }
+
+  const stdinPromptIndex = args.lastIndexOf("-");
+  if (stdinPromptIndex === -1) {
+    return [...args, ...imageArgs];
+  }
+
+  return [
+    ...args.slice(0, stdinPromptIndex),
+    ...imageArgs,
+    ...args.slice(stdinPromptIndex)
+  ];
+}
 
 /**
  * Builds a local-CLI adapter: a CLI spawned on the user's machine. All per-CLI
@@ -176,6 +211,8 @@ export function createLocalCliAdapter(
     env: RuntimeEnvironment,
   ): AsyncIterable<TurnChunk> {
     const executablePath = (await resolveExecutable(env)) ?? config.command;
+    const promptArgs = buildPromptArgs(config, req);
+    const plog = getProjectLogger(req.workingDir);
 
     const registry = new ProcessRegistry();
     const key = "turn:active";
@@ -187,25 +224,81 @@ export function createLocalCliAdapter(
     const queue: TurnChunk[] = [];
     let wake: (() => void) | undefined;
     let finished = false;
+    let structuredStdoutBuffer = "";
     const push = (chunk: TurnChunk) => {
       queue.push(chunk);
       wake?.();
     };
 
-    const task = runner(executablePath, config.promptArgs, {
+    plog.info("cli-adapter", "启动本地 CLI", {
+      adapterId: config.id,
+      adapter: config.label,
+      command: config.command,
+      executablePath,
+      args: promptArgs,
+      cwd: req.workingDir,
+      contextPath: req.contextPath,
+      promptLength: req.prompt.length,
+      imageCount: req.images.length,
+      imagePaths: req.images.map((image) => image.path ?? image.name),
+      timeoutMs: 15 * 60 * 1000,
+    });
+    push({
+      type: "step",
+      title: `${config.label} CLI 启动：${config.command} ${promptArgs.join(" ")}`,
+    });
+
+    const task = runner(executablePath, promptArgs, {
       cwd: req.workingDir,
       stdin: req.prompt,
       timeoutMs: 15 * 60 * 1000,
       processKey: key,
       registry,
-      onStdout: (chunk) => push({ type: "text-delta", text: chunk }),
+      onStdout: (chunk) => {
+        const extracted = appendAndExtractStructuredDeltas({
+          format: config.outputFormat,
+          buffer: structuredStdoutBuffer,
+          chunk,
+        });
+        structuredStdoutBuffer = extracted.buffer;
+        for (const delta of extracted.deltas) {
+          if (delta.text) push({ type: "text-delta", text: delta.text });
+          if (delta.stderr) push({ type: "stderr-delta", text: delta.stderr });
+        }
+      },
       onStderr: (chunk) => push({ type: "stderr-delta", text: chunk }),
     })
       .then((result) => {
+        const parsedOutput = parseLocalCliOutput(config.outputFormat, result);
+        const normalizedResult = {
+          ...result,
+          stdout: parsedOutput.content,
+          stderr: parsedOutput.stderr,
+        };
+        const combinedOutput = processOutput(normalizedResult);
+        const permissionFailure = hasCliPermissionFailure(combinedOutput);
+        plog.log(result.exitCode === 0 && !permissionFailure ? "info" : "warn", "cli-adapter", "本地 CLI 结束", {
+          adapterId: config.id,
+          adapter: config.label,
+          executablePath,
+          args: promptArgs,
+          cwd: req.workingDir,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          cancelled: result.cancelled,
+          timedOut: result.timedOut,
+          detectedPermissionFailure: permissionFailure,
+          outputFormat: config.outputFormat ?? "plain",
+          sessionId: parsedOutput.sessionId,
+          parsedStdoutTail: tailText(normalizedResult.stdout, 2000),
+          parsedStderrTail: tailText(normalizedResult.stderr, 2000),
+          rawStdoutTail: tailText(result.stdout, 2000),
+          rawStderrTail: tailText(result.stderr, 2000),
+        });
         push({
           type: "final",
-          content: result.stdout,
-          stderr: result.stderr,
+          content: normalizedResult.stdout,
+          stderr: normalizedResult.stderr,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
           cancelled: result.cancelled,
@@ -213,6 +306,14 @@ export function createLocalCliAdapter(
         });
       })
       .catch((error: unknown) => {
+        plog.error("cli-adapter", "本地 CLI 调用异常", {
+          adapterId: config.id,
+          adapter: config.label,
+          executablePath,
+          args: promptArgs,
+          cwd: req.workingDir,
+          error: error instanceof Error ? error.message : String(error),
+        });
         push({
           type: "error",
           error: error instanceof Error ? error.message : String(error),

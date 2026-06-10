@@ -148,4 +148,78 @@ describe("runAgentTurnWithOptionalPreview", () => {
     expect(result.previewResult).toBeUndefined();
     expect(result.previewError).toBeUndefined();
   });
+
+  it("auto-commits successful Agent turns with project file changes", async () => {
+    const baseProject = project();
+    const message = agentMessage(baseProject.id, "scripts/hook.gd");
+    const runResult: RunAgentTurnResult = {
+      project: baseProject,
+      messages: [message],
+      runs: []
+    };
+    const commits: Array<{ projectId: string; message: string }> = [];
+
+    await runAgentTurnWithOptionalPreview(
+      {
+        agentService: { runTurn: async () => runResult },
+        autoPreviewService: {
+          refresh: async () => ({
+            projectId: baseProject.id,
+            url: "http://127.0.0.1:3123?v=1",
+            webBuildPath: baseProject.webBuildPath
+          })
+        },
+        gitService: {
+          commit: async (commit) => {
+            commits.push(commit);
+            return {} as never;
+          }
+        },
+        projectService: { getProject: async () => baseProject }
+      },
+      input(false)
+    );
+
+    expect(commits).toEqual([
+      {
+        projectId: baseProject.id,
+        message: "自动保存：programmer Agent 回合"
+      }
+    ]);
+  });
+
+  it("does not auto-commit failed Agent turns", async () => {
+    const baseProject = project();
+    const failedMessage = {
+      ...agentMessage(baseProject.id, "scripts/hook.gd"),
+      exitCode: 1
+    };
+    const runResult: RunAgentTurnResult = {
+      project: baseProject,
+      messages: [failedMessage],
+      runs: []
+    };
+    let commitCalled = false;
+
+    await runAgentTurnWithOptionalPreview(
+      {
+        agentService: { runTurn: async () => runResult },
+        autoPreviewService: {
+          refresh: async () => {
+            throw new Error("unexpected");
+          }
+        },
+        gitService: {
+          commit: async () => {
+            commitCalled = true;
+            return {} as never;
+          }
+        },
+        projectService: { getProject: async () => baseProject }
+      },
+      input(false)
+    );
+
+    expect(commitCalled).toBe(false);
+  });
 });

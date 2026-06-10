@@ -1,9 +1,18 @@
 # GameAIStudio 最小可用更新服务器
 
-这个目录用于生成和暂存可以直接上传到服务器的静态更新资源。目标服务器域名为：
+这个目录用于生成和暂存可以直接上传到服务器的静态更新资源。客户端更新源由 `project/.env` 配置：
 
-```text
-https://www.legoumarket.cloud
+```env
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://your-update-host.example.com/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_CHANNEL=stable
+```
+
+发布上传目标由 `project/release.env` 配置：
+
+```env
+GAMEAISTUDIO_RELEASE_BASE_URL=https://your-update-host.example.com/gameaistudio
+GAMEAISTUDIO_RELEASE_SSH_HOST=your-ssh-host
+GAMEAISTUDIO_RELEASE_REMOTE_DIR=/var/www/gameaistudio
 ```
 
 推荐服务器目录：
@@ -18,9 +27,30 @@ https://www.legoumarket.cloud
 对外访问地址：
 
 ```text
-https://www.legoumarket.cloud/gameaistudio/update.json
-https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup-x.x.x.exe
+${GAMEAISTUDIO_RELEASE_BASE_URL}/update.json
+${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup-x.x.x.exe
 ```
+
+如果域名或本机代理导致 HTTPS 访问不稳定，可以先在 `.env` 中配置 IP + 端口直连更新源：
+
+```env
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=http://your-server-ip:your-port/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true
+```
+
+同时在 `release.env` 中配置相同的发布根地址：
+
+```env
+GAMEAISTUDIO_RELEASE_BASE_URL=http://your-server-ip:your-port/gameaistudio
+```
+
+这种模式是 HTTP，客户端 `.env` 必须显式配置：
+
+```text
+GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true
+```
+
+它适合当前最小可用更新链路和内测环境；正式公开发布仍建议恢复 HTTPS 域名。
 
 ## 本地生成更新资源
 
@@ -30,7 +60,7 @@ https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup-x.x.x.exe
 pnpm release:update
 ```
 
-默认行为是发布下一个 patch 版本，例如 `0.1.0 -> 0.1.1`，这是可选更新，并会自动上传到 `tencent-clawdbot:/var/www/gameaistudio/`。
+默认行为是发布下一个 patch 版本，例如 `0.1.0 -> 0.1.1`，这是可选更新，并会自动上传到 `GAMEAISTUDIO_RELEASE_SSH_HOST:GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
 
 其他命令：
 
@@ -73,7 +103,7 @@ server/gameaistudio/releases/GameAIStudio-Setup.exe
 可以使用 VS Code Remote SSH，也可以用命令上传：
 
 ```powershell
-scp -i C:\Users\KSG\.ssh\leezs.pem -r .\server\gameaistudio\* ubuntu@101.33.218.121:/var/www/gameaistudio/
+scp -r .\server\gameaistudio\* <ssh-host>:<remote-dir>/
 ```
 
 正常情况下不需要手动上传，`pnpm release:update*` 命令会自动上传。只想生成本地文件时可以执行：
@@ -85,13 +115,13 @@ pnpm release:update:local
 上传后用浏览器检查：
 
 ```text
-https://www.legoumarket.cloud/gameaistudio/update.json
-https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe
+${GAMEAISTUDIO_RELEASE_BASE_URL}/update.json
+${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
 ```
 
 ## Nginx
 
-`nginx/gameaistudio.conf` 是最小可用 Nginx 示例。首次部署时可以放到：
+`nginx/gameaistudio.conf` 是最小可用 Nginx 模板，里面的 `${...}` 需要先替换为实际端口和域名/IP。首次部署时可以渲染后放到：
 
 ```text
 /etc/nginx/sites-available/gameaistudio.conf
@@ -110,6 +140,6 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-正式环境需要使用 HTTPS，建议通过 certbot 为 `www.legoumarket.cloud` 配置证书。
+正式环境需要使用 HTTPS，建议通过 certbot 为你的更新域名配置证书。
 
-如果服务器已经有自己的 `www.legoumarket.cloud` 站点，可以把 `nginx/gameaistudio-static-snippet.conf` include 到现有 `server` 块里，这样不会覆盖原来的 `/api/` 等服务。
+如果服务器已经有自己的站点，可以把 `nginx/gameaistudio-static-snippet.conf` include 到现有 `server` 块里，这样不会覆盖原来的 `/api/` 等服务。

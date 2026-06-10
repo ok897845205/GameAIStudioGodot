@@ -28,6 +28,14 @@ pnpm build
 pnpm dist:win
 ```
 
+`pnpm dist:win` 默认走离线打包模式：使用本地 `node_modules/electron/dist`，并设置 `ELECTRON_BUILDER_OFFLINE=true` 跳过签名时间戳联网。这样日常打包不会因为 GitHub 或时间戳服务器 TLS 抖动失败。
+
+如果首次打包时缺少 electron-builder 的 NSIS/winCodeSign 缓存，可以先执行一次在线模式完成缓存预热：
+
+```powershell
+pnpm dist:win:online
+```
+
 安装包输出路径：
 
 ```text
@@ -81,11 +89,20 @@ GameAIStudio 使用自定义 JSON 更新清单。打包后的应用会在 asar �
 内置 `.env` 示例：
 
 ```env
-GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://your-update-host.example.com/gameaistudio/update.json
 GAMEAISTUDIO_UPDATE_CHANNEL=stable
+GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=false
 ```
 
-`project/.env` 会被包含进安装包。正式发布前，需要把 `GAMEAISTUDIO_UPDATE_MANIFEST_URL` 填成真实可访问的更新清单地址。
+发布脚本 `release.env` 示例：
+
+```env
+GAMEAISTUDIO_RELEASE_BASE_URL=https://your-update-host.example.com/gameaistudio
+GAMEAISTUDIO_RELEASE_SSH_HOST=your-ssh-host
+GAMEAISTUDIO_RELEASE_REMOTE_DIR=/var/www/gameaistudio
+```
+
+`project/.env` 会被包含进安装包，`project/release.env` 只供发布脚本读取，不会被打进应用。服务器地址只放在配置里，不写死在应用代码或发布脚本中。如需 IP + 端口直连的 HTTP 更新源，必须显式配置 `GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true`；正式公开发布建议使用 HTTPS 域名更新源。
 
 ### 版本策略
 
@@ -127,7 +144,7 @@ major.minor.patch
     }
   ],
   "nextEnv": {
-    "content": "GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json\nGAMEAISTUDIO_UPDATE_CHANNEL=stable\n",
+    "content": "GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://your-update-host.example.com/gameaistudio/update.json\nGAMEAISTUDIO_UPDATE_CHANNEL=stable\n",
     "sha256": "<next-env-sha256>",
     "effective": "nextLaunch"
   }
@@ -142,11 +159,11 @@ major.minor.patch
 - `packages[].url`
 - `packages[].sha256`
 
-打包后的正式应用只接受 HTTPS 更新清单地址和 HTTPS 安装包地址。开发模式下允许使用 localhost HTTP，方便本地测试。
+打包后的正式应用默认只接受 HTTPS 更新清单地址和 HTTPS 安装包地址。内测阶段如需 IP/端口直连 HTTP，必须在 `.env` 或服务器下发的 `nextEnv.content` 中显式设置 `GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true`。开发模式下仍允许使用 localhost HTTP，方便本地测试。
 
 ### 发布更新步骤
 
-1. 设置或确认 `project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`。
+1. 设置或确认 `project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`，以及 `project/release.env` 中的 `GAMEAISTUDIO_RELEASE_BASE_URL`、`GAMEAISTUDIO_RELEASE_SSH_HOST` 和 `GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
 2. 选择发布版本命令：
 
 ```powershell
@@ -189,7 +206,7 @@ pnpm release:update -- --notes-file release-notes.md
 
 脚本会把更新日志写入 `update.json` 的 `releaseNotes`，软件关于弹层里的“更新日志”区域会展示这段内容。示例文件见 `release-notes.example.md`。
 
-4. 命令会自动更新 `package.json` 中的 `version`，执行 Windows 打包，复制安装包到 `../server/gameaistudio/releases/`，生成 `../server/gameaistudio/update.json`，并上传到服务器 `/var/www/gameaistudio/`。
+4. 命令会自动更新 `package.json` 中的 `version`，执行 Windows 打包，复制安装包到 `../server/gameaistudio/releases/`，生成 `../server/gameaistudio/update.json`，并上传到 `GAMEAISTUDIO_RELEASE_SSH_HOST:GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
 5. 如果只想检查发布计划，不写文件也不打包，可以执行：
 
 ```powershell
@@ -205,8 +222,8 @@ pnpm verify:release
 7. 用浏览器检查：
 
 ```text
-https://www.legoumarket.cloud/gameaistudio/update.json
-https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe
+${GAMEAISTUDIO_RELEASE_BASE_URL}/update.json
+${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
 ```
 
 8. 打开旧版本应用的关于弹层，点击 `检查更新`。

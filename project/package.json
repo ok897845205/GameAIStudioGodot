@@ -12,7 +12,8 @@
     "assets:icon": "node scripts/generate-app-icon.mjs",
     "build": "pnpm run assets:icon && electron-vite build",
     "dist": "pnpm build && electron-builder",
-    "dist:win": "pnpm build && electron-builder --win",
+    "dist:win": "node scripts/build-windows-installer.mjs",
+    "dist:win:online": "node scripts/build-windows-installer.mjs --online",
     "release:update:local": "node scripts/prepare-update-release.mjs",
     "release:update": "node scripts/prepare-update-release.mjs --upload",
     "release:update:patch": "node scripts/prepare-update-release.mjs patch --upload",
@@ -51,6 +52,7 @@
     "appId": "com.gameaistudio.desktop",
     "productName": "GameAIStudio",
     "icon": "build/icon.ico",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "dist"
     },

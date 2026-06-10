@@ -16,9 +16,11 @@ import { flushAllLogs, getAppLogger } from "./logger";
 
 const MANIFEST_URL_KEY = "GAMEAISTUDIO_UPDATE_MANIFEST_URL";
 const CHANNEL_KEY = "GAMEAISTUDIO_UPDATE_CHANNEL";
-const ALLOWED_ENV_KEYS = new Set([MANIFEST_URL_KEY, CHANNEL_KEY]);
+const ALLOW_INSECURE_KEY = "GAMEAISTUDIO_UPDATE_ALLOW_INSECURE";
+const ALLOWED_ENV_KEYS = new Set([MANIFEST_URL_KEY, CHANNEL_KEY, ALLOW_INSECURE_KEY]);
 const DEFAULT_CHANNEL = "stable";
 const MANIFEST_TIMEOUT_MS = 20_000;
+const NETWORK_ERROR_HINT = "请确认域名 DNS 指向更新服务器、服务器 443/HTTPS 证书可用，或检查 userData/update.env 中的更新地址。";
 
 interface UpdateConfig {
   source: UpdateConfigSource;
@@ -26,6 +28,7 @@ interface UpdateConfig {
   userConfigPath: string;
   manifestUrl?: string;
   channel?: string;
+  allowInsecureHttp: boolean;
   configured: boolean;
   error?: string;
 }
@@ -151,10 +154,20 @@ function parseVersion(version: string): { major: number; minor: number; patch: n
   };
 }
 
-function isAllowedUpdateUrl(rawUrl: string, allowInsecureLocalhost: boolean): boolean {
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function isAllowedUpdateUrl(
+  rawUrl: string,
+  allowInsecureLocalhost: boolean,
+  allowInsecureHttp = false,
+): boolean {
   try {
     const url = new URL(rawUrl);
     if (url.protocol === "https:") return true;
+    if (allowInsecureHttp && url.protocol === "http:") return true;
     if (
       allowInsecureLocalhost &&
       url.protocol === "http:" &&
@@ -168,6 +181,33 @@ function isAllowedUpdateUrl(rawUrl: string, allowInsecureLocalhost: boolean): bo
   }
 }
 
+function errorDetail(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error);
+  const value = error as { name?: unknown; message?: unknown; code?: unknown };
+  const parts: string[] = [];
+  if (typeof value.name === "string" && value.name && value.name !== "Error") parts.push(value.name);
+  if (typeof value.message === "string" && value.message) parts.push(value.message);
+  if (typeof value.code === "string" && value.code) parts.push(value.code);
+  return parts.length > 0 ? parts.join(" · ") : String(error);
+}
+
+function errorCause(error: unknown): unknown {
+  if (!error || typeof error !== "object" || !("cause" in error)) return undefined;
+  return (error as { cause?: unknown }).cause;
+}
+
+function formatNetworkFetchError(action: string, url: string, error: unknown): string {
+  const details: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const detail = errorDetail(current);
+    if (detail && !details.includes(detail)) details.push(detail);
+    current = errorCause(current);
+  }
+  const reason = details.length > 0 ? `原因：${details.join("；")}` : "原因：网络请求失败";
+  return `${action}失败：无法访问 ${url}。${reason}。${NETWORK_ERROR_HINT}`;
+}
+
 function envToConfig(
   values: Record<string, string | undefined>,
   source: UpdateConfigSource,
@@ -177,25 +217,28 @@ function envToConfig(
 ): UpdateConfig {
   const manifestUrl = values[MANIFEST_URL_KEY]?.trim();
   const channel = values[CHANNEL_KEY]?.trim() || DEFAULT_CHANNEL;
+  const allowInsecureHttp = parseBooleanEnv(values[ALLOW_INSECURE_KEY]);
   if (!manifestUrl) {
     return {
       source,
       path: configPath,
       userConfigPath,
       channel,
+      allowInsecureHttp,
       configured: false,
       error: `${MANIFEST_URL_KEY} 未配置`,
     };
   }
-  if (!isAllowedUpdateUrl(manifestUrl, allowInsecureLocalhost)) {
+  if (!isAllowedUpdateUrl(manifestUrl, allowInsecureLocalhost, allowInsecureHttp)) {
     return {
       source,
       path: configPath,
       userConfigPath,
       manifestUrl,
       channel,
+      allowInsecureHttp,
       configured: false,
-      error: "更新地址必须使用 HTTPS",
+      error: "更新地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true",
     };
   }
   return {
@@ -204,6 +247,7 @@ function envToConfig(
     userConfigPath,
     manifestUrl,
     channel,
+    allowInsecureHttp,
     configured: true,
   };
 }
@@ -292,6 +336,7 @@ export class UpdateService {
   private readonly onEvent?: (event: UpdateEvent) => void;
 
   private lastInfo?: UpdateInfo;
+  private lastConfig?: UpdateConfig;
   private lastManifestPackage?: UpdateManifestPackage;
   private downloadedInstallerPath?: string;
 
@@ -303,6 +348,7 @@ export class UpdateService {
     this.defaultEnv = options.defaultEnv ?? {
       [MANIFEST_URL_KEY]: process.env[MANIFEST_URL_KEY],
       [CHANNEL_KEY]: process.env[CHANNEL_KEY] ?? DEFAULT_CHANNEL,
+      [ALLOW_INSECURE_KEY]: process.env[ALLOW_INSECURE_KEY],
     };
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
@@ -319,6 +365,7 @@ export class UpdateService {
   async getStatus(): Promise<UpdateInfo> {
     if (this.lastInfo) return this.lastInfo;
     const config = await this.loadConfig();
+    this.lastConfig = config;
     const info = this.baseInfo(config, config.configured ? "idle" : "not-configured");
     if (config.error) info.error = config.error;
     this.lastInfo = info;
@@ -328,6 +375,7 @@ export class UpdateService {
   async checkForUpdates(): Promise<UpdateInfo> {
     const log = getAppLogger();
     const config = await this.loadConfig();
+    this.lastConfig = config;
     const checking = this.baseInfo(config, config.configured ? "checking" : "not-configured");
     this.lastInfo = checking;
     this.emit("checking", "正在检查软件更新", checking);
@@ -349,45 +397,39 @@ export class UpdateService {
     }
 
     try {
-      log.info("update", "开始下载更新 manifest", {
-        manifestUrl: config.manifestUrl,
-        source: config.source,
-        channel: config.channel,
-      });
-      const manifest = await this.fetchManifest(config.manifestUrl);
-      if (manifest.channel && config.channel && manifest.channel !== config.channel) {
-        log.warn("update", "manifest channel 与本地配置不一致", {
-          localChannel: config.channel,
-          manifestChannel: manifest.channel,
-        });
-      }
-      await this.applyNextEnv(manifest.nextEnv);
-      const selectedPackage = this.selectPackage(manifest);
-      const policy = classifyUpdatePolicy(this.currentVersion, manifest);
-      const info: UpdateInfo = {
-        ...this.baseInfo(config, policy.policy === "none" ? "idle" : "available"),
-        latestVersion: manifest.latestVersion,
-        policy: policy.policy,
-        reason: policy.reason,
-        releaseDate: manifest.releaseDate,
-        releaseNotes: manifest.releaseNotes,
-        package: selectedPackage ? selectedPackageInfo(selectedPackage) : undefined,
-        checkedAt: this.now().toISOString(),
-      };
-
-      this.lastInfo = info;
-      this.lastManifestPackage = selectedPackage;
-      this.downloadedInstallerPath = undefined;
-      log.info("update", "更新 manifest 解析完成", {
-        currentVersion: this.currentVersion,
-        latestVersion: manifest.latestVersion,
-        policy: info.policy,
-        reason: info.reason,
-        packageUrl: selectedPackage?.url,
-      });
-      this.emit(info.status, policy.policy === "none" ? "当前已是最新版本" : "发现可用更新", info);
-      return info;
+      return await this.checkConfiguredSource(config);
     } catch (error) {
+      if (config.source === "userData") {
+        const fallback = await this.loadConfig({ skipUserData: true });
+        if (fallback.configured && fallback.manifestUrl && fallback.manifestUrl !== config.manifestUrl) {
+          log.warn("update", "userData 更新源检查失败，尝试回退内置更新源", {
+            userManifestUrl: config.manifestUrl,
+            fallbackManifestUrl: fallback.manifestUrl,
+            error,
+          });
+          const fallbackChecking = this.baseInfo(fallback, "checking");
+          this.lastConfig = fallback;
+          this.lastInfo = fallbackChecking;
+          this.emit("checking", "用户目录更新源失败，正在尝试内置更新源", fallbackChecking);
+          try {
+            return await this.checkConfiguredSource(fallback);
+          } catch (fallbackError) {
+            const info: UpdateInfo = {
+              ...fallbackChecking,
+              status: "error",
+              error: `用户目录更新源失败：${error instanceof Error ? error.message : String(error)}；内置更新源也失败：${
+                fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+              }`,
+              checkedAt: this.now().toISOString(),
+            };
+            this.lastInfo = info;
+            log.error("update", "更新检查失败：userData 与内置更新源均失败", { error, fallbackError });
+            this.emit("error", "更新检查失败", info);
+            return info;
+          }
+        }
+      }
+
       const info: UpdateInfo = {
         ...checking,
         status: "error",
@@ -401,6 +443,53 @@ export class UpdateService {
     }
   }
 
+  private async checkConfiguredSource(config: UpdateConfig): Promise<UpdateInfo> {
+    const log = getAppLogger();
+    if (!config.manifestUrl) {
+      throw new Error(config.error ?? "未配置更新服务器地址");
+    }
+
+    log.info("update", "开始下载更新 manifest", {
+      manifestUrl: config.manifestUrl,
+      source: config.source,
+      channel: config.channel,
+    });
+    const manifest = await this.fetchManifest(config.manifestUrl, config.allowInsecureHttp);
+    if (manifest.channel && config.channel && manifest.channel !== config.channel) {
+      log.warn("update", "manifest channel 与本地配置不一致", {
+        localChannel: config.channel,
+        manifestChannel: manifest.channel,
+      });
+    }
+    await this.applyNextEnv(manifest.nextEnv);
+    const selectedPackage = this.selectPackage(manifest);
+    const policy = classifyUpdatePolicy(this.currentVersion, manifest);
+    const info: UpdateInfo = {
+      ...this.baseInfo(config, policy.policy === "none" ? "idle" : "available"),
+      latestVersion: manifest.latestVersion,
+      policy: policy.policy,
+      reason: policy.reason,
+      releaseDate: manifest.releaseDate,
+      releaseNotes: manifest.releaseNotes,
+      package: selectedPackage ? selectedPackageInfo(selectedPackage) : undefined,
+      checkedAt: this.now().toISOString(),
+    };
+
+    this.lastConfig = config;
+    this.lastInfo = info;
+    this.lastManifestPackage = selectedPackage;
+    this.downloadedInstallerPath = undefined;
+    log.info("update", "更新 manifest 解析完成", {
+      currentVersion: this.currentVersion,
+      latestVersion: manifest.latestVersion,
+      policy: info.policy,
+      reason: info.reason,
+      packageUrl: selectedPackage?.url,
+    });
+    this.emit(info.status, policy.policy === "none" ? "当前已是最新版本" : "发现可用更新", info);
+    return info;
+  }
+
   async downloadAndInstall(): Promise<UpdateInstallResult> {
     let info = this.lastInfo;
     if (!info || info.policy === "none" || !this.lastManifestPackage) {
@@ -410,8 +499,8 @@ export class UpdateService {
     if (!pkg || !info.package || info.policy === "none") {
       throw new Error("当前没有可安装的更新。");
     }
-    if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost)) {
-      throw new Error("安装包下载地址必须使用 HTTPS。");
+    if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost, this.lastConfig?.allowInsecureHttp)) {
+      throw new Error("安装包下载地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true。");
     }
 
     const installerPath = this.downloadedInstallerPath ?? (await this.downloadPackage(pkg, info));
@@ -445,14 +534,16 @@ export class UpdateService {
     };
   }
 
-  private async loadConfig(): Promise<UpdateConfig> {
-    const user = await this.tryReadEnvConfig("userData", this.userConfigPath);
-    if (user?.configured) return user;
-    if (user?.error) {
-      getAppLogger().warn("update", "userData update.env 无效，回退内置配置", {
-        path: this.userConfigPath,
-        error: user.error,
-      });
+  private async loadConfig(options: { skipUserData?: boolean } = {}): Promise<UpdateConfig> {
+    if (!options.skipUserData) {
+      const user = await this.tryReadEnvConfig("userData", this.userConfigPath);
+      if (user?.configured) return user;
+      if (user?.error) {
+        getAppLogger().warn("update", "userData update.env 无效，回退内置配置", {
+          path: this.userConfigPath,
+          error: user.error,
+        });
+      }
     }
 
     const bundled = await this.tryReadEnvConfig("bundled", this.bundledEnvPath);
@@ -497,25 +588,30 @@ export class UpdateService {
     };
   }
 
-  private async fetchManifest(manifestUrl: string): Promise<UpdateManifest> {
+  private async fetchManifest(manifestUrl: string, allowInsecureHttp: boolean): Promise<UpdateManifest> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
     try {
-      const response = await this.fetchImpl(manifestUrl, {
-        signal: controller.signal,
-        headers: { accept: "application/json" },
-      });
+      let response: Response;
+      try {
+        response = await this.fetchImpl(manifestUrl, {
+          signal: controller.signal,
+          headers: { accept: "application/json" },
+        });
+      } catch (error) {
+        throw new Error(formatNetworkFetchError("更新 manifest 下载", manifestUrl, error));
+      }
       if (!response.ok) {
         throw new Error(`更新 manifest 下载失败：HTTP ${response.status}`);
       }
       const payload = (await response.json()) as unknown;
-      return this.parseManifest(payload);
+      return this.parseManifest(payload, allowInsecureHttp);
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  private parseManifest(payload: unknown): UpdateManifest {
+  private parseManifest(payload: unknown, allowInsecureHttp: boolean): UpdateManifest {
     if (!payload || typeof payload !== "object") {
       throw new Error("更新 manifest 格式无效。");
     }
@@ -532,8 +628,8 @@ export class UpdateService {
       if (!pkg.platform || !pkg.arch || !pkg.url || !pkg.sha256) {
         throw new Error("更新安装包信息缺少 platform/arch/url/sha256。");
       }
-      if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost)) {
-        throw new Error("更新安装包地址必须使用 HTTPS。");
+      if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost, allowInsecureHttp)) {
+        throw new Error("更新安装包地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true。");
       }
     }
     if (manifest.nextEnv) {
@@ -605,7 +701,12 @@ export class UpdateService {
     });
 
     await unlink(tempPath).catch(() => undefined);
-    const response = await this.fetchImpl(pkg.url);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(pkg.url);
+    } catch (error) {
+      throw new Error(formatNetworkFetchError("安装包下载", pkg.url, error));
+    }
     if (!response.ok) {
       throw new Error(`安装包下载失败：HTTP ${response.status}`);
     }

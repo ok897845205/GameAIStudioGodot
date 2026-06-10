@@ -11,12 +11,11 @@ const projectRoot = path.resolve(scriptDir, "..");
 const workspaceRoot = path.resolve(projectRoot, "..");
 const packageJsonPath = path.join(projectRoot, "package.json");
 const envPath = path.join(projectRoot, ".env");
+const releaseEnvPath = path.join(projectRoot, "release.env");
 const defaultNotesPath = path.join(projectRoot, "release-notes.md");
 const serverRoot = path.join(workspaceRoot, "server", "gameaistudio");
 const releasesDir = path.join(serverRoot, "releases");
 const updateJsonPath = path.join(serverRoot, "update.json");
-const DEFAULT_RELEASE_SSH_HOST = "tencent-clawdbot";
-const DEFAULT_RELEASE_REMOTE_DIR = "/var/www/gameaistudio";
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
@@ -34,9 +33,9 @@ function printUsage() {
   --skip-build              跳过 pnpm dist:win，复用 dist 中已有安装包
   --upload                  生成后上传到服务器
   --no-upload               只生成本地 server 目录，不上传
-  --ssh-host <host>         SSH 主机，默认 tencent-clawdbot
-  --remote-dir <path>       服务器目录，默认 /var/www/gameaistudio
-  --server-url <url>        静态更新服务根地址，默认从 .env 推断
+  --ssh-host <host>         SSH 主机，默认读取 release.env 的 GAMEAISTUDIO_RELEASE_SSH_HOST
+  --remote-dir <path>       服务器目录，默认读取 release.env 的 GAMEAISTUDIO_RELEASE_REMOTE_DIR
+  --server-url <url>        静态更新服务根地址，默认读取 release.env 或从 .env 推断
   --channel <name>          更新通道，默认读取 GAMEAISTUDIO_UPDATE_CHANNEL
   --notes <text>            更新说明
   --notes-file <path>       从文件读取更新说明
@@ -55,8 +54,8 @@ function parseArgs(argv) {
     dryRun: false,
     skipBuild: false,
     upload: false,
-    sshHost: process.env.GAMEAISTUDIO_RELEASE_SSH_HOST ?? DEFAULT_RELEASE_SSH_HOST,
-    remoteDir: process.env.GAMEAISTUDIO_RELEASE_REMOTE_DIR ?? DEFAULT_RELEASE_REMOTE_DIR,
+    sshHost: undefined,
+    remoteDir: undefined,
     serverUrl: undefined,
     channel: undefined,
     notes: undefined,
@@ -247,6 +246,14 @@ function parseEnv(content) {
   return env;
 }
 
+function firstConfigured(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
 function inferServerUrl(manifestUrl) {
   if (!manifestUrl) return undefined;
   try {
@@ -261,8 +268,13 @@ function inferServerUrl(manifestUrl) {
 }
 
 function normalizeBaseUrl(url) {
-  if (!url) return "https://www.legoumarket.cloud/gameaistudio";
-  return url.replace(/\/+$/, "");
+  const normalized = firstConfigured(url)?.replace(/\/+$/, "");
+  if (!normalized) {
+    throw new Error(
+      "未配置更新服务根地址。请在 project/release.env 设置 GAMEAISTUDIO_RELEASE_BASE_URL，或在 project/.env 设置 GAMEAISTUDIO_UPDATE_MANIFEST_URL，或传入 --server-url。",
+    );
+  }
+  return normalized;
 }
 
 function toUrlPathSegment(fileName) {
@@ -305,12 +317,26 @@ async function readReleaseNotes(options, targetVersion) {
   return { text: `GameAIStudio ${targetVersion} 更新。`, source: "默认文案" };
 }
 
+function quoteCmdArg(value) {
+  const text = String(value);
+  if (!text) return '""';
+  if (!/[ \t&()^|<>"%]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function spawnCommand(command, args, options) {
+  if (process.platform === "win32" && (command === "pnpm" || command === "electron-builder")) {
+    const commandLine = [command, ...args].map(quoteCmdArg).join(" ");
+    return spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", commandLine], options);
+  }
+  return spawn(command, args, options);
+}
+
 async function run(command, args, cwd) {
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnCommand(command, args, {
       cwd,
       stdio: "inherit",
-      shell: process.platform === "win32",
     });
     child.on("error", reject);
     child.on("exit", (code) => {
@@ -335,7 +361,10 @@ function fixedInstallerName(packageJson) {
 
 async function uploadArtifacts(options, artifacts) {
   if (!options.sshHost) {
-    throw new Error("启用上传时必须配置 SSH 主机。");
+    throw new Error("启用上传时必须配置 SSH 主机：请设置 GAMEAISTUDIO_RELEASE_SSH_HOST 或传入 --ssh-host。");
+  }
+  if (!options.remoteDir) {
+    throw new Error("启用上传时必须配置服务器目录：请设置 GAMEAISTUDIO_RELEASE_REMOTE_DIR 或传入 --remote-dir。");
   }
   const remoteDir = options.remoteDir.replace(/\/+$/, "");
   const remoteReleasesDir = `${remoteDir}/releases`;
@@ -363,8 +392,22 @@ async function main() {
   const packageJson = JSON.parse(packageRaw);
   const envRaw = await readOptionalFile(envPath);
   const env = parseEnv(envRaw);
+  const releaseEnvRaw = await readOptionalFile(releaseEnvPath);
+  const releaseEnv = parseEnv(releaseEnvRaw);
   const currentVersion = packageJson.version;
   const target = nextVersion(currentVersion, options.mode);
+  options.sshHost = firstConfigured(
+    options.sshHost,
+    process.env.GAMEAISTUDIO_RELEASE_SSH_HOST,
+    releaseEnv.GAMEAISTUDIO_RELEASE_SSH_HOST,
+    env.GAMEAISTUDIO_RELEASE_SSH_HOST,
+  );
+  options.remoteDir = firstConfigured(
+    options.remoteDir,
+    process.env.GAMEAISTUDIO_RELEASE_REMOTE_DIR,
+    releaseEnv.GAMEAISTUDIO_RELEASE_REMOTE_DIR,
+    env.GAMEAISTUDIO_RELEASE_REMOTE_DIR,
+  );
 
   if (compareVersions(target.version, currentVersion) < 0) {
     throw new Error(`目标版本 ${target.version} 不能低于当前版本 ${currentVersion}`);
@@ -374,9 +417,13 @@ async function main() {
   }
 
   const serverUrl = normalizeBaseUrl(
-    options.serverUrl ??
-      process.env.GAMEAISTUDIO_RELEASE_BASE_URL ??
+    firstConfigured(
+      options.serverUrl,
+      process.env.GAMEAISTUDIO_RELEASE_BASE_URL,
+      releaseEnv.GAMEAISTUDIO_RELEASE_BASE_URL,
+      env.GAMEAISTUDIO_RELEASE_BASE_URL,
       inferServerUrl(env.GAMEAISTUDIO_UPDATE_MANIFEST_URL),
+    ),
   );
   const channel = options.channel ?? env.GAMEAISTUDIO_UPDATE_CHANNEL ?? "stable";
   const policy = classifyPolicy(currentVersion, target.version, target.source, options.policyOverride);

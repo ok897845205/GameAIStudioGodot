@@ -25,6 +25,13 @@ pnpm release:update
 
 `pnpm dev` 会以开发模式启动 Electron 桌面应用。`pnpm build` 会把应用编译输出到 `project/out/`。`pnpm dist:win` 会生成 Windows NSIS 安装包，路径为 `project/dist/GameAIStudio-Setup-<version>.exe`。
 
+`pnpm dist:win` 默认使用离线打包模式：Electron 使用本地 `node_modules/electron/dist`，Windows 签名跳过在线时间戳，避免打包时因为 GitHub 或时间戳服务器 TLS 抖动失败。如果首次打包缺少 electron-builder 的 NSIS/winCodeSign 缓存，可以先执行一次：
+
+```powershell
+cd project
+pnpm dist:win:online
+```
+
 ## 软件更新流程
 
 GameAIStudio 使用自定义更新清单，不在应用代码里写死安装包下载地址。
@@ -40,9 +47,20 @@ GameAIStudio 使用自定义更新清单，不在应用代码里写死安装包�
 内置 `.env` 示例：
 
 ```env
-GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://your-update-host.example.com/gameaistudio/update.json
 GAMEAISTUDIO_UPDATE_CHANNEL=stable
+GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=false
 ```
+
+发布脚本 `release.env` 示例：
+
+```env
+GAMEAISTUDIO_RELEASE_BASE_URL=https://your-update-host.example.com/gameaistudio
+GAMEAISTUDIO_RELEASE_SSH_HOST=your-ssh-host
+GAMEAISTUDIO_RELEASE_REMOTE_DIR=/var/www/gameaistudio
+```
+
+服务器地址只放在配置里，不写死在应用代码或发布脚本中。`project/.env` 会被打包进应用，`project/release.env` 只供发布脚本读取，不会打进安装包。如需 IP + 端口直连的 HTTP 更新源，必须显式配置 `GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true`；正式公开发布建议使用 HTTPS 域名更新源。
 
 更新清单示例：
 
@@ -89,11 +107,7 @@ pnpm verify:release
 
 ## 发布更新
 
-最小可用更新服务器资源位于 `server/` 目录。默认域名：
-
-```text
-https://www.legoumarket.cloud/gameaistudio/update.json
-```
+最小可用更新服务器资源位于 `server/` 目录。更新服务根地址由 `project/release.env` 中的 `GAMEAISTUDIO_RELEASE_BASE_URL`、`project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`，或命令行参数 `--server-url` 决定。
 
 在 `project/` 目录执行：
 
@@ -131,12 +145,12 @@ pnpm release:update -- --notes-file release-notes.md
 - `major`：大版本，强制更新。
 - 精确版本：按版本差异判断；只变 patch 时可选，变 minor/major 时强制。
 
-命令会更新 `project/package.json` 版本号，执行 Windows 打包，复制安装包到 `server/gameaistudio/releases/`，生成 `server/gameaistudio/update.json`，并上传到服务器 `/var/www/gameaistudio/`。
+命令会更新 `project/package.json` 版本号，执行 Windows 打包，复制安装包到 `server/gameaistudio/releases/`，生成 `server/gameaistudio/update.json`，并上传到 `GAMEAISTUDIO_RELEASE_SSH_HOST:GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
 
 固定下载链接：
 
 ```text
-https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe
+${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
 ```
 
 固定下载包不带版本号，便于对外传播；更新清单里的安装包仍使用带版本号的文件名，便于定位和回滚。

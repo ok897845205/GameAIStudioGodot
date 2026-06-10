@@ -1926,7 +1926,7 @@ export function StudioApp() {
                 {currentUpdateInfo.manifestUrl}
               </p>
             )}
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            <p className="mt-3 break-words text-xs leading-5 text-muted-foreground">
               {updateMessage || updateReasonText(currentUpdateInfo)}
             </p>
             <div className="mt-3 border-t border-border pt-3">

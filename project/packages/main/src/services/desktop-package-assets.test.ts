@@ -46,6 +46,7 @@ describe("desktop package assets", () => {
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       build?: {
         files?: string[];
+        electronDist?: string;
         win?: { artifactName?: string; target?: Array<{ target?: string; arch?: string[] }> };
         nsis?: {
           oneClick?: boolean;
@@ -59,6 +60,7 @@ describe("desktop package assets", () => {
     };
 
     expect(packageJson.build?.win?.artifactName).toBe("${productName}-Setup-${version}.${ext}");
+    expect(packageJson.build?.electronDist).toBe("node_modules/electron/dist");
     expect(packageJson.build?.files).toContain(".env");
     expect(packageJson.build?.win?.target).toEqual([{ target: "nsis", arch: ["x64"] }]);
     expect(packageJson.build?.nsis).toMatchObject({

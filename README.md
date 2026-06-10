@@ -20,6 +20,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm dist:win
+pnpm release:update
 ```
 
 `pnpm dev` 会以开发模式启动 Electron 桌面应用。`pnpm build` 会把应用编译输出到 `project/out/`。`pnpm dist:win` 会生成 Windows NSIS 安装包，路径为 `project/dist/GameAIStudio-Setup-<version>.exe`。
@@ -85,6 +86,60 @@ pnpm verify:release
 ```
 
 发布检查会运行类型检查、测试、2D/3D Web zip 冒烟测试和 Windows 安装包打包。Windows 打包成功后会生成 `project/dist/GameAIStudio-Setup-<version>.exe`。
+
+## 发布更新
+
+最小可用更新服务器资源位于 `server/` 目录。默认域名：
+
+```text
+https://www.legoumarket.cloud/gameaistudio/update.json
+```
+
+在 `project/` 目录执行：
+
+```powershell
+pnpm release:update
+```
+
+默认会发布下一个 patch 版本，例如 `0.1.0 -> 0.1.1`，这是可选更新，并会自动上传到服务器。其他命令：
+
+```powershell
+pnpm release:update:patch
+pnpm release:update:minor
+pnpm release:update:major
+pnpm release:update:version -- 1.2.3
+```
+
+更新前可以配置更新日志。短说明可以直接传参数：
+
+```powershell
+pnpm release:update -- --notes "修复本地 CLI 调用失败，优化更新弹层。"
+```
+
+多行更新日志可以写入 `project/release-notes.md`，发布脚本会自动读取；也可以显式指定文件：
+
+```powershell
+pnpm release:update -- --notes-file release-notes.md
+```
+
+生成的 `update.json` 会写入 `releaseNotes`，软件关于弹层里的“更新日志”区域会展示这段内容。可以参考 `project/release-notes.example.md`。
+
+规则：
+
+- `patch`：迭代版本，可选更新。
+- `minor`：小版本，强制更新。
+- `major`：大版本，强制更新。
+- 精确版本：按版本差异判断；只变 patch 时可选，变 minor/major 时强制。
+
+命令会更新 `project/package.json` 版本号，执行 Windows 打包，复制安装包到 `server/gameaistudio/releases/`，生成 `server/gameaistudio/update.json`，并上传到服务器 `/var/www/gameaistudio/`。
+
+固定下载链接：
+
+```text
+https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe
+```
+
+固定下载包不带版本号，便于对外传播；更新清单里的安装包仍使用带版本号的文件名，便于定位和回滚。
 
 ## 参考项目
 

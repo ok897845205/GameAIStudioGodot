@@ -46,6 +46,7 @@ pnpm smoke:templates
 pnpm smoke:webzip
 pnpm dist:win
 pnpm verify:release
+pnpm release:update
 ```
 
 `pnpm verify:release` 是发布检查命令，会运行类型检查、测试、Web zip 冒烟流程和 Windows 安装包打包。
@@ -145,23 +146,72 @@ major.minor.patch
 
 ### 发布更新步骤
 
-1. 更新 `package.json` 中的 `version`。
-2. 设置或确认 `project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`。
-3. 运行发布检查：
+1. 设置或确认 `project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`。
+2. 选择发布版本命令：
+
+```powershell
+pnpm release:update
+pnpm release:update:patch
+pnpm release:update:minor
+pnpm release:update:major
+pnpm release:update:version -- 1.2.3
+```
+
+版本规则：
+
+- `pnpm release:update` 默认等同于 `patch`，例如 `0.1.0 -> 0.1.1`，可选更新。
+- `pnpm release:update:patch` 发布迭代版本，可选更新。
+- `pnpm release:update:minor` 发布小版本，强制更新。
+- `pnpm release:update:major` 发布大版本，强制更新。
+- `pnpm release:update:version -- 1.2.3` 发布精确版本；只变 patch 时可选，变 minor/major 时强制。
+
+3. 配置更新日志。短说明可以直接传参数：
+
+```powershell
+pnpm release:update -- --notes "修复本地 CLI 调用失败，优化更新弹层。"
+```
+
+多行更新日志可以写入 `release-notes.md`，发布脚本会自动读取：
+
+```markdown
+# GameAIStudio 0.1.1 更新日志
+
+- 修复本地 AI CLI 调用时的路径和权限问题。
+- 优化软件更新检查和安装包下载流程。
+- 增强项目日志，方便定位 Agent 执行失败原因。
+```
+
+也可以显式指定文件：
+
+```powershell
+pnpm release:update -- --notes-file release-notes.md
+```
+
+脚本会把更新日志写入 `update.json` 的 `releaseNotes`，软件关于弹层里的“更新日志”区域会展示这段内容。示例文件见 `release-notes.example.md`。
+
+4. 命令会自动更新 `package.json` 中的 `version`，执行 Windows 打包，复制安装包到 `../server/gameaistudio/releases/`，生成 `../server/gameaistudio/update.json`，并上传到服务器 `/var/www/gameaistudio/`。
+5. 如果只想检查发布计划，不写文件也不打包，可以执行：
+
+```powershell
+pnpm release:update -- --dry-run
+```
+
+6. 如需完整发布检查，也可以单独运行：
 
 ```powershell
 pnpm verify:release
 ```
 
-4. 把 `dist/GameAIStudio-Setup-<version>.exe` 上传到资源服务器或 CDN。
-5. 计算安装包 SHA-256：
+7. 用浏览器检查：
 
-```powershell
-Get-FileHash .\dist\GameAIStudio-Setup-<version>.exe -Algorithm SHA256
+```text
+https://www.legoumarket.cloud/gameaistudio/update.json
+https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe
 ```
 
-6. 更新服务器上的 `update.json`，填写 `latestVersion`、安装包 `url`、`sha256`、`size` 和更新说明。
-7. 打开应用关于弹层，点击 `检查更新`。
+8. 打开旧版本应用的关于弹层，点击 `检查更新`。
+
+固定下载包 `GameAIStudio-Setup.exe` 不带版本号，便于对外传播；更新清单里的安装包可以继续使用 `GameAIStudio-Setup-x.x.x.exe`，便于定位和回滚。
 
 如果服务器返回 `nextEnv`，应用会校验它的 SHA-256，并写入 `%APPDATA%\GameAIStudio\update.env`。下次启动时，应用会优先读取用户目录里的更新配置，再读取内置 `.env`。
 

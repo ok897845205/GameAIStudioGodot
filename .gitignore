@@ -19,3 +19,9 @@ Thumbs.db
 
 # Local engine binaries
 project/engine/*.exe
+project/release-notes.md
+
+# Generated update server artifacts
+server/gameaistudio/update.json
+server/gameaistudio/releases/*
+!server/gameaistudio/releases/.gitkeep

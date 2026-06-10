@@ -1,0 +1,22 @@
+{
+  "appId": "com.gameaistudio.desktop",
+  "channel": "stable",
+  "latestVersion": "0.1.1",
+  "downloadUrl": "https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup.exe",
+  "releaseDate": "2026-06-10T12:00:00+08:00",
+  "releaseNotes": "GameAIStudio 0.1.1 更新。",
+  "packages": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "url": "https://www.legoumarket.cloud/gameaistudio/releases/GameAIStudio-Setup-0.1.1.exe",
+      "sha256": "<installer-sha256>",
+      "size": 180000000
+    }
+  ],
+  "nextEnv": {
+    "content": "GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://www.legoumarket.cloud/gameaistudio/update.json\nGAMEAISTUDIO_UPDATE_CHANNEL=stable\n",
+    "sha256": "<next-env-sha256>",
+    "effective": "nextLaunch"
+  }
+}

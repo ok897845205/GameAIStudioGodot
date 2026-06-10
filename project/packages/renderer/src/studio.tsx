@@ -91,6 +91,25 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+function formatDateTime(value?: string): string {
+  if (!value) return "未获取";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function updateReleaseNotesText(info?: UpdateInfo): string {
+  if (!info?.configured) return "配置更新服务器后，这里会显示服务器返回的更新日志。";
+  if (!info.latestVersion) return "检查更新后，这里会显示服务器返回的更新日志。";
+  return info.releaseNotes?.trim() || "本次更新暂无说明。";
+}
+
 function gitChangeLabel(kind: GitFileChange["kind"]): string {
   const labels: Record<GitFileChange["kind"], string> = {
     added: "新增",
@@ -1896,6 +1915,8 @@ export function StudioApp() {
               </dd>
               <dt className="text-muted-foreground">安装包</dt>
               <dd>{formatBytes(currentUpdateInfo?.package?.size)}</dd>
+              <dt className="text-muted-foreground">发布</dt>
+              <dd>{formatDateTime(currentUpdateInfo?.releaseDate)}</dd>
             </dl>
             {currentUpdateInfo?.manifestUrl && (
               <p className="mt-2 truncate text-xs text-muted-foreground" title={currentUpdateInfo.manifestUrl}>
@@ -1905,11 +1926,20 @@ export function StudioApp() {
             <p className="mt-3 text-xs leading-5 text-muted-foreground">
               {updateMessage || updateReasonText(currentUpdateInfo)}
             </p>
-            {currentUpdateInfo?.releaseNotes && (
-              <p className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-xs">
-                {currentUpdateInfo.releaseNotes}
-              </p>
-            )}
+            <div className="mt-3 border-t border-border pt-3">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-medium">
+                  <Info className="size-3.5 text-primary" />
+                  更新日志
+                </span>
+                <span className="text-muted-foreground">
+                  {currentUpdateInfo?.latestVersion ? `v${currentUpdateInfo.latestVersion}` : "未获取版本"}
+                </span>
+              </div>
+              <div className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                {updateReleaseNotesText(currentUpdateInfo)}
+              </div>
+            </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Button
                 variant="outline"

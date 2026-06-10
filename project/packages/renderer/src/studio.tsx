@@ -1139,14 +1139,17 @@ export function StudioApp() {
               {theme === "dark" ? <Sun /> : <Moon />}
             </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start"
-            onClick={() => setAboutOpen(true)}
-          >
-            <Info /> 关于
-          </Button>
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="justify-start"
+              onClick={() => setAboutOpen(true)}
+            >
+              <Info /> 关于
+            </Button>
+            <span className="shrink-0 text-xs text-muted-foreground">v{APP_VERSION}</span>
+          </div>
         </div>
       </aside>
 

@@ -13,11 +13,20 @@ import type {
   RunStudioWorkflowInput,
   StudioApi,
   StudioRunEvent,
+  UpdateEvent,
   UpdateProjectAgentClisInput
 } from "@gameaistudio/shared";
 
 const api: StudioApi = {
   bootstrap: () => ipcRenderer.invoke("studio:bootstrap"),
+  getUpdateStatus: () => ipcRenderer.invoke("updates:status"),
+  checkForUpdates: () => ipcRenderer.invoke("updates:check"),
+  downloadAndInstallUpdate: () => ipcRenderer.invoke("updates:download-install"),
+  onUpdateEvent: (callback: (event: UpdateEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: UpdateEvent) => callback(event);
+    ipcRenderer.on("update:event", handler);
+    return () => ipcRenderer.removeListener("update:event", handler);
+  },
   refreshEnvironment: () => ipcRenderer.invoke("environment:refresh"),
   refreshCliTools: () => ipcRenderer.invoke("cli:refresh"),
   testCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:test", toolId),

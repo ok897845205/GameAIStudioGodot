@@ -1,8 +1,40 @@
-# GameAIStudio Desktop
+# GameAIStudio 桌面端
 
-This folder contains the newly written desktop app for GameAIStudio, an AI-assisted game creation platform that creates Godot projects, runs local AI CLI agents, previews Web exports, and packages playable Web zip builds.
+本目录包含 GameAIStudio 的全新桌面端应用。它是一个 AI 辅助游戏创造平台，可以创建 Godot 项目，运行本机 AI CLI Agent，预览 Web 导出结果，并打包成可游玩的 Web zip。
 
-## Commands
+## 本地运行
+
+首次运行前安装依赖：
+
+```powershell
+pnpm install
+```
+
+以开发模式启动 Electron 桌面应用：
+
+```powershell
+pnpm dev
+```
+
+只编译应用，不生成安装包：
+
+```powershell
+pnpm build
+```
+
+生成 Windows 安装包：
+
+```powershell
+pnpm dist:win
+```
+
+安装包输出路径：
+
+```text
+dist/GameAIStudio-Setup-<version>.exe
+```
+
+## 常用命令
 
 ```powershell
 pnpm install
@@ -16,58 +48,168 @@ pnpm dist:win
 pnpm verify:release
 ```
 
-`pnpm verify:release` is the release gate. It runs type checks, tests, the Web zip smoke path, and Windows installer packaging.
+`pnpm verify:release` 是发布检查命令，会运行类型检查、测试、Web zip 冒烟流程和 Windows 安装包打包。
 
-## Runtime Paths
+## 运行目录
 
-- Built-in Godot engine: `engine/`
-- Built-in templates: `gameaistudio_template/`
-- User projects: `%USERPROFILE%\Documents\GameAIStudio\projects`
-- Studio state: `%USERPROFILE%\Documents\GameAIStudio\studio-state.json`
+- 内置 Godot 引擎：`engine/`
+- 内置 Godot 模板：`gameaistudio_template/`
+- 用户游戏项目：`%USERPROFILE%\Documents\GameAIStudio\projects`
+- 工作室状态文件：`%USERPROFILE%\Documents\GameAIStudio\studio-state.json`
+- 应用维护日志：`%USERPROFILE%\Documents\GameAIStudio\logs\app.log`
+- 更新安装包缓存：`%APPDATA%\GameAIStudio\updates\<version>\`
+- 用户更新配置：`%APPDATA%\GameAIStudio\update.env`
 
-Set `GAMEAISTUDIO_HOME` to override the user data folder during development.
-Set `GAMEAISTUDIO_RESOURCE_ROOT` to point at a folder containing `engine/` and `gameaistudio_template/` when testing resource resolution.
+开发时可以设置 `GAMEAISTUDIO_HOME` 覆盖用户数据目录。
+测试资源解析时，可以设置 `GAMEAISTUDIO_RESOURCE_ROOT` 指向包含 `engine/` 和 `gameaistudio_template/` 的目录。
 
-## Release Packaging
+## 软件更新
 
-Desktop packages built with `pnpm dist:win` produce a named NSIS installer at `dist/GameAIStudio-Setup-<version>.exe`, use the generated GameAIStudio app icon, copy `engine/` and a clean `gameaistudio_template/` into Electron `resources/`, and exclude stale `.godot`, `build`, and `dist` output.
-`pnpm smoke:templates` copies the bundled 2D/3D templates with the same clean rules used by the app, validates them with the bundled Godot console, and verifies Web export files.
-`pnpm smoke:webzip` extends that path through export manifest generation and Web zip packaging for both 2D and 3D.
+GameAIStudio 使用自定义 JSON 更新清单。打包后的应用会在 asar 内包含一份内置 `.env`，用于提供首次更新服务器地址。后续版本可以通过服务端返回的 `nextEnv`，把新的更新配置写入 Electron `userData` 目录中的 `update.env`。
 
-## Current App Capabilities
+### 更新配置读取优先级
 
-- Creates 2D or 3D Godot projects from the bundled templates, with an optional default-on flow that immediately starts the team workflow.
-- Copies clean Godot template source into new projects while excluding generated `.godot`, `build`, and `dist` artifacts from previous template runs.
-- Validates the selected template's `project.godot` and Web export preset before copying it into a user project.
-- Shows create-and-generate preflight checks for local AI CLI availability, selected Godot template availability, and Web preview/export readiness.
-- Shows system environment health for Git and Node.js, with refreshable diagnostics and clear missing-tool actions.
-- Shows bundled Godot runtime health for the engine directory, GUI/console executables, version probe, and 2D/3D templates including their Web export presets.
-- Opens the current project in the bundled Godot GUI executable from the desktop UI.
-- Detects Codex, Claude, KSCC, and Kimi from the system PATH.
-- Shows local CLI health diagnostics for command discovery, install manager availability, npm global PATH hints, and common credential environment variables, and uses the discovered install-manager executable for one-click CLI installs.
-- Runs a selected local CLI as a role-based Agent inside the project folder.
-- Prepares `.gameaistudio/agent-context.md` before each Agent turn with the project file map, recent conversation, role context, delivery status, and response contract; Agent CLI prompts reference this file instead of inlining the full context into command-line arguments.
-- Appends `.gameaistudio/agent-journal.md` after Agent turns and injects its recent tail into the next Agent context so producer, designer, programmer, artist, and QA can hand off through project-local state.
-- Initializes `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md` when a project is created, with desktop quick actions that preview them inside a second modal from the active project status panel.
-- Supports in-app preview for text files, images, changed files, and Agent image attachments while keeping preview paths confined to the selected project directory.
-- Reports desktop open-path failures in the UI instead of silently ignoring missing zip, manifest, Agent context, or journal files.
-- Keeps `.gameaistudio/project.json` in the generated Godot project synchronized with the latest preview/export metadata without overwriting `GAMEAISTUDIO.md` Agent notes.
-- Runs a five-role team workflow: producer, designer, programmer, artist, and QA, routing each role to its default local CLI when available, previewing that routing before creation/build actions, falling back to installed tools when needed, then exporting Web, inspecting the Web build artifacts, packaging Web zip, and refreshing preview.
-- Appends a persistent system summary after each team workflow so the conversation shows export, artifact inspection, zip, preview, and next-step status.
-- Persists Agent run records, streams run state/output changes into the desktop UI, and can cancel active local CLI runs.
-- Provides a Codex-style project chat with image attachments; attached images are saved into the project and referenced in the local AI CLI prompt so vision-capable CLIs can use them as part of the request.
-- Captures per-Agent Godot project file changes and shows them in both the conversation and run timeline.
-- Uses Git for project version management when available: new projects are initialized with a project `.gitignore` and initial commit, existing projects can enable Git, inspect branch/head/changed files, view up to five recent commits, commit versions, and restore any valid commit hash from the right-side Git panel.
-- Deletes created game projects from the desktop UI with a confirmation warning that the generated local Godot directory is removed too.
-- Watches Godot project files and refreshes the Web preview after source or asset changes.
-- Reloads the embedded preview frame after preview events and serves preview files with no-cache headers to reduce stale Web builds during iteration.
-- Keeps local preview HTTP requests confined to the generated Web build directory.
-- Fails preview startup with a clear message when the Web build folder or `index.html` is missing.
-- Can automatically start or refresh the Web preview after a single Agent turn changes preview-relevant Godot files.
-- Reports initial auto-preview export failures instead of starting a stale or missing preview build.
-- Exports Web zip through a validation -> Godot Web export -> Web artifact inspection -> zip pipeline with visible run steps.
-- Uses Windows-safe sanitized filenames for exported Web zip files so ordinary project names with punctuation can still be packaged.
-- Shows the latest Web zip as a build deliverable with quick actions to open the zip, export folder, or `gameaistudio-export.json` manifest included in each zip.
-- Persists and displays the latest Web build artifact inspection so users can see whether the export has the required HTML, wasm, and pck files.
-- Serves `build/web/index.html` through a local preview server.
-- Runs Godot Web export and packages `build/web` into a zip.
+应用按以下顺序读取更新配置：
+
+```text
+1. %APPDATA%\GameAIStudio\update.env
+2. 打包应用内置的 .env
+3. 进程环境变量或默认值
+```
+
+内置 `.env` 示例：
+
+```env
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_CHANNEL=stable
+```
+
+`project/.env` 会被包含进安装包。正式发布前，需要把 `GAMEAISTUDIO_UPDATE_MANIFEST_URL` 填成真实可访问的更新清单地址。
+
+### 版本策略
+
+版本号格式：
+
+```text
+major.minor.patch
+大版本.小版本.迭代版本
+```
+
+更新策略：
+
+- `1.4.3 -> 1.4.4`：迭代版本更新，用户可以在关于弹层里手动更新。
+- `1.4.3 -> 1.5.0`：小版本更新，强制更新。
+- `1.4.3 -> 2.0.0`：大版本更新，强制更新。
+- `force: true` 或 `minSupportedVersion` 高于当前版本时，也会强制更新。
+
+当存在强制更新时，应用会打开关于弹层，并阻止继续创建游戏、运行团队工作流和发送 Agent 对话，直到用户完成更新。
+
+### 更新清单
+
+服务器返回 JSON：
+
+```json
+{
+  "appId": "com.gameaistudio.desktop",
+  "channel": "stable",
+  "latestVersion": "1.5.0",
+  "minSupportedVersion": "1.4.0",
+  "releaseDate": "2026-06-10T12:00:00+08:00",
+  "releaseNotes": "修复本地 CLI 调用，增强项目日志。",
+  "packages": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "url": "https://cdn.example.com/GameAIStudio-Setup-1.5.0.exe",
+      "sha256": "<installer-sha256>",
+      "size": 180000000
+    }
+  ],
+  "nextEnv": {
+    "content": "GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json\nGAMEAISTUDIO_UPDATE_CHANNEL=stable\n",
+    "sha256": "<next-env-sha256>",
+    "effective": "nextLaunch"
+  }
+}
+```
+
+必填字段：
+
+- `latestVersion`
+- `packages[].platform`
+- `packages[].arch`
+- `packages[].url`
+- `packages[].sha256`
+
+打包后的正式应用只接受 HTTPS 更新清单地址和 HTTPS 安装包地址。开发模式下允许使用 localhost HTTP，方便本地测试。
+
+### 发布更新步骤
+
+1. 更新 `package.json` 中的 `version`。
+2. 设置或确认 `project/.env` 中的 `GAMEAISTUDIO_UPDATE_MANIFEST_URL`。
+3. 运行发布检查：
+
+```powershell
+pnpm verify:release
+```
+
+4. 把 `dist/GameAIStudio-Setup-<version>.exe` 上传到资源服务器或 CDN。
+5. 计算安装包 SHA-256：
+
+```powershell
+Get-FileHash .\dist\GameAIStudio-Setup-<version>.exe -Algorithm SHA256
+```
+
+6. 更新服务器上的 `update.json`，填写 `latestVersion`、安装包 `url`、`sha256`、`size` 和更新说明。
+7. 打开应用关于弹层，点击 `检查更新`。
+
+如果服务器返回 `nextEnv`，应用会校验它的 SHA-256，并写入 `%APPDATA%\GameAIStudio\update.env`。下次启动时，应用会优先读取用户目录里的更新配置，再读取内置 `.env`。
+
+所有更新检查、清单下载、`nextEnv` 写入、安装包下载、哈希校验和安装器启动都会记录到 `logs/app.log`。
+
+## 发布打包
+
+`pnpm dist:win` 会生成命名清晰的 NSIS 安装包，路径为 `dist/GameAIStudio-Setup-<version>.exe`。打包流程会使用生成好的 GameAIStudio 应用图标，把 `engine/` 和干净的 `gameaistudio_template/` 复制进 Electron `resources/`，并排除旧的 `.godot`、`build`、`dist` 输出目录。
+
+`pnpm smoke:templates` 会使用与应用相同的清理规则复制内置 2D/3D 模板，通过内置 Godot 控制台校验模板，并验证 Web 导出文件。
+
+`pnpm smoke:webzip` 会继续执行导出清单生成和 Web zip 打包流程，覆盖 2D 和 3D 模板。
+
+## 当前应用能力
+
+- 可从内置模板创建 2D 或 3D Godot 项目，并可默认在创建后立即启动团队工作流。
+- 复制干净的 Godot 模板源码到新项目，排除历史模板运行产生的 `.godot`、`build`、`dist` 产物。
+- 在复制模板前校验所选模板的 `project.godot` 和 Web 导出预设。
+- 创建并生成游戏前，会检查本地 AI CLI 可用性、所选 Godot 模板可用性，以及 Web 预览和导出准备状态。
+- 展示 Git 和 Node.js 的系统环境健康状态，支持刷新诊断，并提供清晰的缺失工具提示。
+- 展示内置 Godot 运行时健康状态，包括引擎目录、GUI/控制台可执行文件、版本探测，以及 2D/3D 模板的 Web 导出预设。
+- 可从桌面 UI 使用内置 Godot GUI 可执行文件打开当前项目。
+- 可从系统 PATH 发现 Codex、Claude、KSCC、Kimi。
+- 展示本地 CLI 健康诊断，包括命令发现、安装管理器可用性、npm 全局 PATH 提示和常见凭据环境变量，并使用发现到的安装管理器执行一键安装。
+- 可在项目目录内以指定角色运行选中的本地 CLI Agent。
+- 每次 Agent 回合前都会准备 `.gameaistudio/agent-context.md`，内容包含项目文件图谱、最近对话、角色上下文、交付状态和响应契约。Agent CLI 提示词会引用该文件，不再把完整上下文塞进命令行参数。
+- Agent 回合结束后会追加 `.gameaistudio/agent-journal.md`，并把最近日志尾部注入下一次 Agent 上下文，让制作人、策划、程序、美术、QA 能通过项目本地状态交接。
+- 创建项目时会初始化 `GAMEAISTUDIO.md`、`.gameaistudio/agent-context.md` 和 `.gameaistudio/agent-journal.md`，并在项目状态面板提供快捷入口，可在二级弹层中预览这些文件。
+- 支持在应用内预览文本文件、图片、变更文件和 Agent 图片附件，同时把预览路径限制在所选项目目录内。
+- 桌面打开路径失败时会在 UI 中提示，不会静默忽略缺失的 zip、清单、Agent 上下文或日志文件。
+- 保持生成的 Godot 项目中的 `.gameaistudio/project.json` 与最新预览和导出元数据同步，同时不覆盖 `GAMEAISTUDIO.md` Agent 笔记。
+- 运行五角色团队工作流：制作人、策划、程序、美术、QA。每个角色会优先使用默认本地 CLI，创建和构建前会预览路由，必要时回退到已安装工具，然后执行 Web 导出、Web 构建产物检查、Web zip 打包和预览刷新。
+- 每次团队工作流后都会追加系统摘要，让对话区展示导出、产物检查、zip、预览和后续状态。
+- 持久化 Agent 运行记录，把运行状态和输出流式推送到桌面 UI，并支持取消正在运行的本地 CLI。
+- 提供 Codex 风格的项目对话区，支持图片附件。附件图片会保存到项目中，并在本地 AI CLI 提示词中引用，方便具备视觉能力的 CLI 使用。
+- 捕获每个 Agent 对 Godot 项目文件的变更，并在对话和运行时间线中展示。
+- 使用 Git 管理项目版本：新项目会初始化 `.gitignore` 和初始提交，已有项目可以启用 Git、查看分支和 HEAD、查看变更文件、查看最多五次最近提交、提交版本，以及从右侧 Git 面板还原任意有效提交。
+- 可从桌面 UI 删除已创建的游戏项目，删除前会提示生成的本地 Godot 目录也会一起删除。
+- 监听 Godot 项目文件变化，并在源码或资源变更后刷新 Web 预览。
+- 预览事件后会重新加载内嵌预览页面，并使用 no-cache 响应头减少迭代时的旧 Web 构建缓存。
+- 本地预览 HTTP 请求会被限制在生成的 Web 构建目录内。
+- 如果 Web 构建目录或 `index.html` 缺失，预览启动会给出清晰错误。
+- 单个 Agent 回合修改了预览相关 Godot 文件后，可以自动启动或刷新 Web 预览。
+- 初始自动预览导出失败时会明确提示，不会启动陈旧或缺失的预览构建。
+- Web zip 导出经过校验、Godot Web 导出、Web 产物检查和 zip 打包流程，并在 UI 中展示运行步骤。
+- 使用 Windows 安全的文件名导出 Web zip，普通项目名即使包含标点也能正常打包。
+- 把最新 Web zip 展示为构建交付物，并提供快捷操作打开 zip、导出目录或每个 zip 内包含的 `gameaistudio-export.json` 清单。
+- 持久化并展示最新 Web 构建产物检查结果，让用户看到导出是否包含必需的 HTML、wasm 和 pck 文件。
+- 通过本地预览服务器提供 `build/web/index.html`。
+- 使用 Godot Web 导出并把 `build/web` 打包成 zip。
+- 可在关于弹层检查软件更新，读取内置 `.env` 或用户目录 `update.env`，下载 JSON 更新清单，校验安装包 SHA-256，支持可选迭代更新，并在小版本或大版本更新时强制用户先更新再继续创建游戏。

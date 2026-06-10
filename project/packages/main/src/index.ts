@@ -24,6 +24,7 @@ import {
   installProcessErrorLogging,
 } from "./services/logger";
 import { StudioStore } from "./services/store";
+import { UpdateService } from "./services/update-service";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
 import { registerIpcHandlers } from "./ipc";
@@ -124,6 +125,13 @@ app.whenReady().then(async () => {
   const filePreviewService = new ProjectFilePreviewService(projectService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
   const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService);
+  const updateService = new UpdateService({
+    onEvent: (event) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send("update:event", event);
+      }
+    }
+  });
 
   registerIpcHandlers({
     paths,
@@ -141,7 +149,8 @@ app.whenReady().then(async () => {
     exportService,
     webExportPipelineService,
     runService,
-    processRegistry
+    processRegistry,
+    updateService
   });
 
   log.info("app", "服务装配完成，IPC 已注册");

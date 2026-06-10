@@ -16,6 +16,7 @@ import { ProcessRegistry } from "./services/process-runner";
 import { ProjectFilePreviewService } from "./services/project-file-preview-service";
 import { ProjectService } from "./services/project-service";
 import { RunService } from "./services/run-service";
+import { UpdateService } from "./services/update-service";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
 import type { StudioPaths } from "./services/resource-paths";
@@ -39,6 +40,7 @@ interface IpcDependencies {
   webExportPipelineService: WebExportPipelineService;
   runService: RunService;
   processRegistry: ProcessRegistry;
+  updateService: UpdateService;
 }
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
@@ -99,8 +101,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     environment: await deps.environmentService.inspect(),
     projects: await deps.projectService.listProjects(),
     agents: AGENT_PROFILES,
-    cliTools: await deps.cliService.discover()
+    cliTools: await deps.cliService.discover(),
+    update: await deps.updateService.getStatus()
   }));
+
+  handle("updates:status", async () => deps.updateService.getStatus());
+  handle("updates:check", async () => deps.updateService.checkForUpdates());
+  handle("updates:download-install", async () => deps.updateService.downloadAndInstall());
 
   handle("environment:refresh", async () => deps.environmentService.inspect());
   handle("cli:refresh", async () => deps.cliService.discover());

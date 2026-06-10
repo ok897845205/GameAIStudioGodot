@@ -70,7 +70,8 @@
     },
     "files": [
       "out/**",
-      "package.json"
+      "package.json",
+      ".env"
     ],
     "asar": true,
     "extraResources": [

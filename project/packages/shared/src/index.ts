@@ -533,6 +533,74 @@ export interface DeleteProjectResult {
   selectedProject?: ProjectDetails;
 }
 
+export type UpdateConfigSource = "userData" | "bundled" | "default" | "missing";
+
+export type UpdatePolicy = "none" | "optional" | "required";
+
+export type UpdateStatus =
+  | "not-configured"
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "error";
+
+export type UpdateRequirementReason =
+  | "none"
+  | "patch"
+  | "minor"
+  | "major"
+  | "force"
+  | "unsupported";
+
+export interface UpdatePackageInfo {
+  platform: string;
+  arch: string;
+  url: string;
+  sha256: string;
+  size?: number;
+  fileName?: string;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion?: string;
+  status: UpdateStatus;
+  policy: UpdatePolicy;
+  reason: UpdateRequirementReason;
+  configured: boolean;
+  configSource: UpdateConfigSource;
+  configPath?: string;
+  userConfigPath: string;
+  manifestUrl?: string;
+  channel?: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  package?: UpdatePackageInfo;
+  checkedAt?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  error?: string;
+}
+
+export interface UpdateEvent {
+  status: UpdateStatus;
+  message: string;
+  updatedAt: string;
+  info?: UpdateInfo;
+  receivedBytes?: number;
+  totalBytes?: number;
+  percent?: number;
+}
+
+export interface UpdateInstallResult {
+  launched: boolean;
+  installerPath?: string;
+  message: string;
+  info: UpdateInfo;
+}
+
 export interface StudioBootstrap {
   dataRoot: string;
   templatesRoot: string;
@@ -542,10 +610,15 @@ export interface StudioBootstrap {
   projects: StudioProject[];
   agents: AgentProfile[];
   cliTools: CliTool[];
+  update: UpdateInfo;
 }
 
 export interface StudioApi {
   bootstrap(): Promise<StudioBootstrap>;
+  getUpdateStatus(): Promise<UpdateInfo>;
+  checkForUpdates(): Promise<UpdateInfo>;
+  downloadAndInstallUpdate(): Promise<UpdateInstallResult>;
+  onUpdateEvent(callback: (event: UpdateEvent) => void): () => void;
   refreshEnvironment(): Promise<SystemEnvironment>;
   refreshCliTools(): Promise<CliTool[]>;
   testCliTool(toolId: CliToolId): Promise<CliTool>;

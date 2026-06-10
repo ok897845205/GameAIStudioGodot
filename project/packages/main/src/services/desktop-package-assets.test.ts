@@ -45,6 +45,7 @@ describe("desktop package assets", () => {
   it("configures an explicit Windows installer target for ordinary users", async () => {
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       build?: {
+        files?: string[];
         win?: { artifactName?: string; target?: Array<{ target?: string; arch?: string[] }> };
         nsis?: {
           oneClick?: boolean;
@@ -58,6 +59,7 @@ describe("desktop package assets", () => {
     };
 
     expect(packageJson.build?.win?.artifactName).toBe("${productName}-Setup-${version}.${ext}");
+    expect(packageJson.build?.files).toContain(".env");
     expect(packageJson.build?.win?.target).toEqual([{ target: "nsis", arch: ["x64"] }]);
     expect(packageJson.build?.nsis).toMatchObject({
       oneClick: false,
@@ -80,7 +82,7 @@ describe("desktop package assets", () => {
     }
 
     expect(projectReadme).toContain("pnpm smoke:webzip");
-    expect(projectReadme).toContain("Current App Capabilities");
-    expect(workspaceReadme).toContain("Reference Projects");
+    expect(projectReadme).toContain("当前应用能力");
+    expect(workspaceReadme).toContain("参考项目");
   });
 });

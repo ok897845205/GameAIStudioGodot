@@ -9,6 +9,7 @@ import {
   Gamepad2,
   GitBranch,
   Hammer,
+  Info,
   Loader2,
   Moon,
   PanelRightClose,
@@ -40,7 +41,10 @@ import {
   type ProjectFilePreview,
   type StudioBootstrap,
   type StudioProject,
+  type UpdateEvent,
+  type UpdateInfo,
 } from "@gameaistudio/shared";
+import appPackage from "../../../package.json";
 import { AgentChat, type AgentSendInput } from "./chat";
 import { RunActivityPanel } from "./components/run-activity";
 import { Button } from "./components/ui/button";
@@ -60,12 +64,14 @@ type BusyAction =
   | "git"
   | "delete"
   | "cli"
+  | "update"
   | undefined;
 
 type RightTab = "build" | "activity" | "git" | "status";
 type AgentCliToolIds = Partial<Record<string, CliToolId>>;
 
 const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
+const APP_VERSION = appPackage.version;
 
 const initialForm = {
   name: "黄金矿工",
@@ -144,6 +150,46 @@ function cliToolStatusTone(tool?: CliTool): "danger" | "success" | "warning" {
   return tool.status === "available" ? "success" : "warning";
 }
 
+function updatePolicyLabel(info?: UpdateInfo): string {
+  if (!info) return "未检查";
+  if (!info.configured) return "未配置";
+  if (info.status === "error") return "检查失败";
+  if (info.policy === "required") return "必须更新";
+  if (info.policy === "optional") return "可更新";
+  return "已是最新";
+}
+
+function updatePolicyTone(info?: UpdateInfo): "danger" | "muted" | "success" | "warning" {
+  if (!info || !info.configured) return "muted";
+  if (info.status === "error") return "danger";
+  if (info.policy === "required") return "danger";
+  if (info.policy === "optional") return "warning";
+  return "success";
+}
+
+function updateReasonText(info?: UpdateInfo): string {
+  if (!info) return "尚未检查更新。";
+  if (!info.configured) return info.error ?? "尚未配置更新服务器地址。";
+  if (info.status === "checking") return "正在从服务器获取更新信息。";
+  if (info.status === "downloading") return "正在下载更新安装包。";
+  if (info.status === "installing") return "安装器已启动，软件即将退出。";
+  if (info.status === "error") return info.error ?? "更新检查失败。";
+  if (info.policy === "required") {
+    if (info.reason === "major") return "发现大版本更新，需要更新后继续使用。";
+    if (info.reason === "minor") return "发现小版本更新，需要更新后继续使用。";
+    if (info.reason === "unsupported") return "当前版本已不再受支持，需要强制更新。";
+    if (info.reason === "force") return "服务器要求当前版本必须更新。";
+  }
+  if (info.policy === "optional") return "发现迭代版本更新，可手动下载并安装。";
+  return "当前已是最新版本。";
+}
+
+function formatBytes(value?: number): string {
+  if (!value) return "未知";
+  const mb = value / 1024 / 1024;
+  return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+}
+
 function joinFsPath(rootPath: string | undefined, relativePath: string): string | undefined {
   if (!rootPath) return undefined;
   const sep = rootPath.includes("\\") ? "\\" : "/";
@@ -164,6 +210,7 @@ export function StudioApp() {
   const [previewNotice, setPreviewNotice] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [form, setForm] = useState(initialForm);
   const [rightTab, setRightTab] = useState<RightTab>("build");
   const [rightCollapsed, setRightCollapsed] = useState(false);
@@ -171,6 +218,8 @@ export function StudioApp() {
   const [gitRestoreHash, setGitRestoreHash] = useState("");
   const [filePreview, setFilePreview] = useState<ProjectFilePreview>();
   const [chatSearch, setChatSearch] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo>();
+  const [updateMessage, setUpdateMessage] = useState("");
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -185,6 +234,8 @@ export function StudioApp() {
       ? activeTool.health.detail ?? `${activeTool.label} 当前不可用。`
       : undefined;
   const isBusy = Boolean(busy);
+  const currentUpdateInfo = updateInfo ?? bootstrap?.update;
+  const updateRequired = currentUpdateInfo?.policy === "required";
   const workflowAgents = useMemo(
     () =>
       DEFAULT_WORKFLOW_AGENT_IDS.map((id) => agents.find((agent) => agent.id === id)).filter(
@@ -207,8 +258,10 @@ export function StudioApp() {
     const tool = tools.find((candidate) => candidate.id === toolId);
     return !tool?.installed || tool.status !== "available";
   });
-  const createProjectDisabled = isBusy || !form.prompt.trim() || createCliIssues.length > 0;
-  const createProjectTitle = !form.prompt.trim()
+  const createProjectDisabled = isBusy || updateRequired || !form.prompt.trim() || createCliIssues.length > 0;
+  const createProjectTitle = updateRequired
+    ? "发现必须更新版本，请先在关于弹窗中完成更新。"
+    : !form.prompt.trim()
     ? "请输入一句话需求。"
     : createCliIssues.length > 0
       ? `请先修复这些 Agent 的 CLI：${createCliIssues.map((agent) => agent.title).join("、")}`
@@ -261,7 +314,22 @@ export function StudioApp() {
     try {
       const data = await window.studio.bootstrap();
       setBootstrap(data);
+      setUpdateInfo(data.update);
       setProjects(data.projects);
+      if (data.update.configured) {
+        void window.studio
+          .checkForUpdates()
+          .then((info) => {
+            setUpdateInfo(info);
+            setBootstrap((cur) => (cur ? { ...cur, update: info } : cur));
+            setUpdateMessage(updateReasonText(info));
+            if (info.policy === "required") {
+              setAboutOpen(true);
+              setNotice("发现必须更新版本，请先完成软件更新。");
+            }
+          })
+          .catch((e) => setUpdateMessage(errText(e)));
+      }
       const target =
         selectId ?? selectedProject?.id ?? data.projects[0]?.id;
       if (target) {
@@ -311,6 +379,22 @@ export function StudioApp() {
         };
       });
       setPreviewNotice(event.message ?? "");
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.studio.onUpdateEvent((event: UpdateEvent) => {
+      if (event.info) {
+        setUpdateInfo(event.info);
+        setBootstrap((cur) => (cur ? { ...cur, update: event.info! } : cur));
+      }
+      const progress =
+        event.percent !== undefined
+          ? ` · ${event.percent}%`
+          : event.receivedBytes
+            ? ` · ${formatBytes(event.receivedBytes)}`
+            : "";
+      setUpdateMessage(`${event.message}${progress}`);
     });
   }, []);
 
@@ -367,7 +451,15 @@ export function StudioApp() {
     setSelectedCli(chooseAgentCli(nextAgent, tools, selectedProject?.agentCliToolIds?.[nextAgent.id]));
   }
 
+  function ensureUpdateAllowsWork(): boolean {
+    if (!updateRequired) return true;
+    setAboutOpen(true);
+    setNotice("发现必须更新版本，请先完成软件更新。");
+    return false;
+  }
+
   async function startStudioWorkflow(project: ProjectDetails, message: string, agentCliToolIds?: AgentCliToolIds) {
+    if (!ensureUpdateAllowsWork()) return;
     const result = await window.studio.runStudioWorkflow({
       projectId: project.id,
       message,
@@ -383,6 +475,7 @@ export function StudioApp() {
   }
 
   async function createProject() {
+    if (!ensureUpdateAllowsWork()) return;
     if (createProjectDisabled) {
       setNotice(createProjectTitle);
       return;
@@ -423,6 +516,7 @@ export function StudioApp() {
     regenerate?: boolean;
   }) {
     if (!selectedProject) return;
+    if (!ensureUpdateAllowsWork()) return;
     const projectId = selectedProject.id;
     setBusy("send");
     setNotice("");
@@ -830,6 +924,54 @@ export function StudioApp() {
     }
   }
 
+  async function checkForUpdates() {
+    setBusy("update");
+    setUpdateMessage("正在检查更新…");
+    try {
+      const info = await window.studio.checkForUpdates();
+      setUpdateInfo(info);
+      setBootstrap((cur) => (cur ? { ...cur, update: info } : cur));
+      setUpdateMessage(updateReasonText(info));
+      setNotice(
+        info.policy === "none"
+          ? "当前已是最新版本。"
+          : `发现 ${info.latestVersion ? `v${info.latestVersion}` : "新版本"}：${updatePolicyLabel(info)}。`,
+      );
+    } catch (e) {
+      const message = errText(e);
+      setUpdateMessage(message);
+      setNotice(message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function downloadAndInstallUpdate() {
+    const info = currentUpdateInfo;
+    if (!info || info.policy === "none") return;
+    if (
+      info.policy === "optional" &&
+      !window.confirm(`确认下载并安装 GameAI Studio v${info.latestVersion ?? ""}？安装过程中软件会重启。`)
+    ) {
+      return;
+    }
+    setBusy("update");
+    setUpdateMessage("准备下载更新…");
+    try {
+      const result = await window.studio.downloadAndInstallUpdate();
+      setUpdateInfo(result.info);
+      setBootstrap((cur) => (cur ? { ...cur, update: result.info } : cur));
+      setNotice(result.message);
+      setUpdateMessage(result.message);
+    } catch (e) {
+      const message = errText(e);
+      setUpdateMessage(message);
+      setNotice(message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   // Persist a per-Agent CLI choice on the project (used by the team workflow
   // and as the default when switching to that Agent's tab).
   async function updateAgentCli(agentId: string, cliToolId: CliToolId) {
@@ -950,22 +1092,32 @@ export function StudioApp() {
           ))}
         </div>
 
-        <div className="flex items-center gap-1 border-t border-border p-2">
+        <div className="space-y-1 border-t border-border p-2">
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 justify-start"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings /> 设置
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              title="切换主题"
+            >
+              {theme === "dark" ? <Sun /> : <Moon />}
+            </Button>
+          </div>
           <Button
             variant="ghost"
             size="sm"
-            className="flex-1 justify-start"
-            onClick={() => setSettingsOpen(true)}
+            className="w-full justify-start"
+            onClick={() => setAboutOpen(true)}
           >
-            <Settings /> 设置
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleTheme}
-            title="切换主题"
-          >
-            {theme === "dark" ? <Sun /> : <Moon />}
+            <Info /> 关于
           </Button>
         </div>
       </aside>
@@ -1677,6 +1829,107 @@ export function StudioApp() {
             {busy === "create" ? <Loader2 className="animate-spin" /> : <Plus />}
             创建并启动团队工作流
           </Button>
+        </div>
+      </Dialog>
+
+      {/* ── About dialog ───────────────────────────────────────────── */}
+      <Dialog
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        title={
+          <span className="inline-flex items-center gap-2">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Gamepad2 className="size-4" />
+            </span>
+            GameAI Studio
+          </span>
+        }
+        description={`版本 v${APP_VERSION}`}
+        className="max-w-md"
+      >
+        <div className="space-y-4 text-sm">
+          <p className="leading-6 text-muted-foreground">
+            AI 驱动的游戏创作平台。通过自然语言描述快速创建 2D/3D
+            游戏，支持本地 AI CLI、多 Agent 协作、实时预览与 Web 导出。
+          </p>
+
+          <section className="rounded-lg border border-border bg-accent/50 px-4 py-3">
+            <div className="flex items-center gap-2 font-medium">
+              <Info className="size-4 text-primary" />
+              联系与协作
+            </div>
+            <p className="mt-2 text-muted-foreground">有问题请协作联系：</p>
+            <p className="mt-1 font-semibold">李宗尚</p>
+          </section>
+
+          <section className="rounded-lg border border-border px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-medium">软件更新</div>
+              <Badge tone={updatePolicyTone(currentUpdateInfo)}>
+                {updatePolicyLabel(currentUpdateInfo)}
+              </Badge>
+            </div>
+            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <dt className="text-muted-foreground">当前</dt>
+              <dd>v{APP_VERSION}</dd>
+              <dt className="text-muted-foreground">最新</dt>
+              <dd>{currentUpdateInfo?.latestVersion ? `v${currentUpdateInfo.latestVersion}` : "未获取"}</dd>
+              <dt className="text-muted-foreground">配置</dt>
+              <dd>
+                {currentUpdateInfo?.configSource ?? "未知"}
+                {currentUpdateInfo?.channel ? ` · ${currentUpdateInfo.channel}` : ""}
+              </dd>
+              <dt className="text-muted-foreground">安装包</dt>
+              <dd>{formatBytes(currentUpdateInfo?.package?.size)}</dd>
+            </dl>
+            {currentUpdateInfo?.manifestUrl && (
+              <p className="mt-2 truncate text-xs text-muted-foreground" title={currentUpdateInfo.manifestUrl}>
+                {currentUpdateInfo.manifestUrl}
+              </p>
+            )}
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">
+              {updateMessage || updateReasonText(currentUpdateInfo)}
+            </p>
+            {currentUpdateInfo?.releaseNotes && (
+              <p className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-xs">
+                {currentUpdateInfo.releaseNotes}
+              </p>
+            )}
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Button
+                variant="outline"
+                onClick={checkForUpdates}
+                disabled={busy === "update"}
+              >
+                {busy === "update" && currentUpdateInfo?.status !== "downloading" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <RefreshCw />
+                )}
+                检查更新
+              </Button>
+              <Button
+                onClick={downloadAndInstallUpdate}
+                disabled={
+                  busy === "update" ||
+                  currentUpdateInfo?.policy === "none" ||
+                  !currentUpdateInfo?.package
+                }
+                title={updateReasonText(currentUpdateInfo)}
+              >
+                {busy === "update" && currentUpdateInfo?.status === "downloading" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Download />
+                )}
+                {currentUpdateInfo?.policy === "required" ? "立即强制更新" : "下载并安装"}
+              </Button>
+            </div>
+          </section>
+
+          <p className="pt-1 text-center text-xs text-muted-foreground">
+            © 2026-2027 AI Entertainment · 内部工具，仅限授权使用
+          </p>
         </div>
       </Dialog>
 

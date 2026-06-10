@@ -1,10 +1,10 @@
 # GameAIStudio
 
-GameAIStudio is a newly written desktop AI game creation platform for ordinary users. A user chooses 2D or 3D, describes a game idea in one sentence, and the app creates a Godot project from bundled templates, coordinates local AI CLI agents, previews the Web build, and packages the result as a Web zip.
+GameAIStudio 是一个重新编写的桌面端 AI 游戏创造平台，面向普通用户使用。用户选择 2D 或 3D 后，用一句话描述游戏想法，软件会从内置模板创建 Godot 项目，调度本机 AI CLI Agent 协作生成内容，预览 Web 构建结果，并导出可运行的 Web zip。
 
-The desktop application lives in `project/`.
+桌面应用代码位于 `project/` 目录。
 
-## Quick Start
+## 快速开始
 
 ```powershell
 cd project
@@ -12,29 +12,80 @@ pnpm install
 pnpm dev
 ```
 
-## Current MVP
+常用开发命令：
 
-- Electron, Vite, and React desktop shell for Windows.
-- Built-in Godot 2D and 3D templates copied into the user's GameAIStudio workspace.
-- Bundled Godot runtime diagnostics, project opening, Web export, preview, and zip packaging.
-- Git and Node.js environment diagnostics surfaced in the desktop UI.
-- Local CLI discovery and install diagnostics for Codex, Claude, KSCC, and Kimi.
-- Producer, designer, programmer, artist, and QA agent workflow with Codex-style chat, image attachments, streaming output, cancellation, and file change summaries.
-- Project Git version management: new projects try to initialize a repository automatically, the UI shows up to five recent commits, and users can commit or restore any valid commit hash.
-- In-app file preview for project notes, Agent context, Agent logs, changed files, and image attachments.
-- Project deletion with confirmation that also removes the local generated Godot directory.
-- Project-local AI context files: `GAMEAISTUDIO.md`, `.gameaistudio/agent-context.md`, and `.gameaistudio/agent-journal.md`.
-- Web export inspection, `gameaistudio-export.json` manifest generation, and Windows-safe Web zip names.
+```powershell
+cd project
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm dist:win
+```
 
-## Release Gate
+`pnpm dev` 会以开发模式启动 Electron 桌面应用。`pnpm build` 会把应用编译输出到 `project/out/`。`pnpm dist:win` 会生成 Windows NSIS 安装包，路径为 `project/dist/GameAIStudio-Setup-<version>.exe`。
+
+## 软件更新流程
+
+GameAIStudio 使用自定义更新清单，不在应用代码里写死安装包下载地址。
+
+1. 打包后的应用首次启动时，会读取随 asar 一起打包的 `project/.env`。
+2. 如果 `%APPDATA%\GameAIStudio\update.env` 存在，则优先使用用户目录里的配置。
+3. 应用会下载 `GAMEAISTUDIO_UPDATE_MANIFEST_URL` 指向的 JSON 更新清单。
+4. 更新清单会告诉应用最新版本号、更新说明、安装包地址、SHA-256，以及可选的下一份 `nextEnv`。
+5. 迭代版本更新，例如 `1.4.3 -> 1.4.4`，由用户在关于弹层里手动更新。
+6. 小版本或大版本更新，例如 `1.4.3 -> 1.5.0` 或 `2.0.0`，会被视为强制更新。
+7. 应用下载安装包后会校验 SHA-256，校验通过后启动安装程序，并在安装结束后重启应用。
+
+内置 `.env` 示例：
+
+```env
+GAMEAISTUDIO_UPDATE_MANIFEST_URL=https://updates.example.com/gameaistudio/update.json
+GAMEAISTUDIO_UPDATE_CHANNEL=stable
+```
+
+更新清单示例：
+
+```json
+{
+  "latestVersion": "1.5.0",
+  "minSupportedVersion": "1.4.0",
+  "releaseNotes": "修复本地 CLI 调用，增强项目日志。",
+  "packages": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "url": "https://cdn.example.com/GameAIStudio-Setup-1.5.0.exe",
+      "sha256": "<installer-sha256>",
+      "size": 180000000
+    }
+  ]
+}
+```
+
+## 当前 MVP
+
+- 使用 Electron、Vite、React 构建 Windows 桌面端外壳。
+- 内置 Godot 2D 和 3D 模板，可复制到用户的 GameAIStudio 工作目录。
+- 内置 Godot 运行时诊断、项目打开、Web 导出、预览和 zip 打包能力。
+- 在桌面 UI 中展示 Git 和 Node.js 环境诊断。
+- 支持 Codex、Claude、KSCC、Kimi 的本地 CLI 发现和安装诊断。
+- 提供制作人、策划、程序、美术、QA 的 Agent 工作流，支持 Codex 风格对话、图片附件、流式输出、取消运行和文件变更摘要。
+- 使用 Git 管理项目版本：新项目会尝试自动初始化仓库，UI 最多显示最近五次提交，用户可以提交版本，也可以还原到任意有效提交。
+- 支持在应用内预览项目说明、Agent 上下文、Agent 日志、变更文件和图片附件。
+- 支持删除已创建游戏项目，删除前会二次确认，并同时删除本地生成的 Godot 项目目录。
+- 每个项目会维护本地 AI 上下文文件：`GAMEAISTUDIO.md`、`.gameaistudio/agent-context.md`、`.gameaistudio/agent-journal.md`。
+- 支持 Web 导出检查、`gameaistudio-export.json` 清单生成，以及 Windows 安全的 Web zip 文件名。
+- 关于弹层支持应用内检查更新，读取内置 `.env` 和用户目录 `update.env`，下载 JSON 更新清单，校验 SHA-256，支持可选迭代更新和强制小版本、大版本更新。
+
+## 发布检查
 
 ```powershell
 cd project
 pnpm verify:release
 ```
 
-The release gate runs type checks, tests, 2D/3D Web zip smoke tests, and Windows installer packaging. A successful Windows build produces `project/dist/GameAIStudio-Setup-<version>.exe`.
+发布检查会运行类型检查、测试、2D/3D Web zip 冒烟测试和 Windows 安装包打包。Windows 打包成功后会生成 `project/dist/GameAIStudio-Setup-<version>.exe`。
 
-## Reference Projects
+## 参考项目
 
-Older experiments at `E:\AIProject\GameAIStudio` and `E:\AIProject\GameAIStudioCLI` are reference material only. This repository is being implemented as a fresh codebase rather than copying those projects wholesale.
+旧实验项目位于 `E:\AIProject\GameAIStudio` 和 `E:\AIProject\GameAIStudioCLI`，仅作为参考材料。本仓库会重新实现，不会整体复制旧项目代码。

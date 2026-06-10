@@ -310,7 +310,7 @@ async function run(command, args, cwd) {
     const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
-      shell: false,
+      shell: process.platform === "win32",
     });
     child.on("error", reject);
     child.on("exit", (code) => {
@@ -422,8 +422,7 @@ async function main() {
 
   try {
     if (!options.skipBuild) {
-      const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-      await run(pnpm, ["dist:win"], projectRoot);
+      await run("pnpm", ["dist:win"], projectRoot);
     }
 
     const installerStat = await stat(distInstallerPath);

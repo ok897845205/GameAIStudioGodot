@@ -468,6 +468,7 @@ export function StudioApp() {
       autoExportWeb: true,
       autoPackageWebZip: true,
       autoStartPreview: true,
+      withQualityLoop: true,
     });
     setSelectedProject(result.project);
     setProjects(await window.studio.listProjects());
@@ -752,6 +753,14 @@ export function StudioApp() {
 
   async function buildAction(kind: "validate" | "export" | "zip") {
     if (!selectedProject) return;
+    if (
+      kind === "zip" &&
+      !window.confirm(
+        `导出 Web 发布包（zip）？\n\n会重新执行 Godot Web 导出并打包 build/web。\n项目：${selectedProject.name}`,
+      )
+    ) {
+      return;
+    }
     setBusy("build");
     try {
       if (kind === "validate") {
@@ -1471,6 +1480,12 @@ export function StudioApp() {
                 onOpenLog={() =>
                   previewProjectFile(".gameaistudio/logs/project.log")
                 }
+                onRetryStep={(step) => {
+                  if (step.agentId && step.message) {
+                    void sendToAgent(step.agentId, step.message);
+                    setRightTab("activity");
+                  }
+                }}
               />
             )}
 

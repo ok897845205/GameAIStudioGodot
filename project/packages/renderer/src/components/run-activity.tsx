@@ -7,6 +7,7 @@ import {
   ClipboardCopy,
   Loader2,
   MinusCircle,
+  RotateCcw,
   Terminal,
   XCircle,
 } from "lucide-react";
@@ -32,6 +33,7 @@ function statusLabel(status: StudioRunStatus): string {
     completed: "已完成",
     failed: "失败",
     cancelled: "已取消",
+    skipped: "已跳过",
   };
   return map[status];
 }
@@ -61,6 +63,7 @@ function StatusIcon({ status }: { status: StudioRunStatus }) {
     case "failed":
       return <XCircle className={cls} />;
     case "cancelled":
+    case "skipped":
       return <MinusCircle className={cls} />;
     default:
       return <CircleDashed className={cls} />;
@@ -98,11 +101,13 @@ function StepRow({
   step,
   defaultOpen,
   onOpenLog,
+  onRetryStep,
 }: {
   run: StudioRun;
   step: StudioRunStep;
   defaultOpen: boolean;
   onOpenLog?: () => void;
+  onRetryStep?: (step: StudioRunStep) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [copied, setCopied] = useState(false);
@@ -179,6 +184,17 @@ function StepRow({
           )}
           {(step.status === "failed" || step.status === "cancelled") && (
             <div className="mt-1.5 flex items-center gap-3 text-[11px]">
+              {onRetryStep && step.agentId && step.message && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  title="按这一步的任务重新执行该 Agent"
+                  onClick={() => onRetryStep(step)}
+                >
+                  <RotateCcw className="size-3" />
+                  重试
+                </button>
+              )}
               <button
                 type="button"
                 className="inline-flex items-center gap-1 text-primary hover:underline"
@@ -217,9 +233,11 @@ function StepRow({
 export function RunActivityPanel({
   runs,
   onOpenLog,
+  onRetryStep,
 }: {
   runs: StudioRun[];
   onOpenLog?: () => void;
+  onRetryStep?: (step: StudioRunStep) => void;
 }) {
   const ordered = useMemo(
     () =>
@@ -251,7 +269,11 @@ export function RunActivityPanel({
   }
 
   const done = run.steps.filter(
-    (s) => s.status === "completed" || s.status === "failed" || s.status === "cancelled",
+    (s) =>
+      s.status === "completed" ||
+      s.status === "failed" ||
+      s.status === "cancelled" ||
+      s.status === "skipped",
   ).length;
 
   return (
@@ -295,6 +317,7 @@ export function RunActivityPanel({
           step={step}
           defaultOpen={step.status === "running"}
           onOpenLog={onOpenLog}
+          onRetryStep={onRetryStep}
         />
       ))}
 

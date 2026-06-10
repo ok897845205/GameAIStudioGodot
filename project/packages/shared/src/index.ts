@@ -158,7 +158,7 @@ export interface AgentMessage {
 
 export type StudioRunKind = "agent-turn" | "studio-workflow" | "godot-export" | "preview";
 
-export type StudioRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type StudioRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "skipped";
 
 export type ProjectFileChangeKind = "added" | "modified" | "deleted";
 
@@ -321,6 +321,11 @@ export interface RunStudioWorkflowInput {
   autoExportWeb: boolean;
   autoPackageWebZip: boolean;
   autoStartPreview: boolean;
+  /**
+   * Adds the quality phases after the Agent rounds: Godot runnable validation,
+   * a QA-driven fix round (修复与打磨) and a visible Git save step.
+   */
+  withQualityLoop?: boolean;
 }
 
 export interface RunStudioWorkflowResult {

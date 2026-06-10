@@ -37,7 +37,7 @@ function buildWorkflowMessage(agent: AgentProfile, userMessage: string, index: n
     designer: "基于制作人目标补齐玩法规则、关卡节奏、数值和用户反馈。",
     programmer: "把设计转成 Godot 可执行改动，优先修改脚本和场景，让 Web 预览能体现玩法。",
     artist: "整理视觉方向和可落地资源清单，必要时创建占位素材说明。",
-    qa: "检查当前版本是否满足原始需求，指出缺陷、风险和下一轮修复建议。"
+    qa: "检查当前版本是否满足原始需求，指出缺陷、风险和下一轮修复建议。回复的第一行必须是「QA结论：通过」或「QA结论：发现问题」，然后再给出测试细节。"
   };
 
   return [
@@ -51,6 +51,53 @@ function buildWorkflowMessage(agent: AgentProfile, userMessage: string, index: n
 
 function chooseWorkflowCli(agent: AgentProfile, tools: CliTool[], input: RunStudioWorkflowInput): CliToolId {
   return input.agentCliToolIds?.[agent.id] ?? chooseAgentCli(agent, tools, input.preferredCliToolId);
+}
+
+export type QaVerdict = "pass" | "issues" | "unknown";
+
+/**
+ * Reads the QA Agent's verdict from the head of its reply. The QA workflow
+ * prompt asks for an explicit first line（QA结论：通过 / 发现问题）; free-form
+ * replies fall back to a conservative "unknown", which still triggers the fix
+ * round — a missed fix is worse than a redundant one.
+ */
+export function parseQaVerdict(content: string): QaVerdict {
+  const head = content.trimStart().slice(0, 400);
+  if (/QA\s*结论\s*[:：]\s*通过/.test(head)) return "pass";
+  if (/QA\s*结论\s*[:：]\s*发现问题/.test(head)) return "issues";
+  if (/未发现(?:明显)?问题|没有发现(?:明显)?问题|全部通过/.test(head)) return "pass";
+  return "unknown";
+}
+
+function tailOf(value: string | undefined, maxLength: number): string {
+  const text = value?.trim() ?? "";
+  return text.length > maxLength ? `…${text.slice(-maxLength)}` : text;
+}
+
+export function buildFixRoundMessage(input: {
+  userMessage: string;
+  qaVerdict: QaVerdict;
+  qaFindings?: string;
+  validationFailed: boolean;
+  validationOutput?: string;
+}): string {
+  return [
+    "这是团队工作流的「修复与打磨」阶段。你作为程序 Agent，根据下面的反馈直接修改项目文件完成修复：",
+    ...(input.qaVerdict !== "pass" && input.qaFindings
+      ? ["", "QA 反馈：", tailOf(input.qaFindings, 2400)]
+      : []),
+    ...(input.validationFailed
+      ? ["", "Godot 可运行校验失败输出：", tailOf(input.validationOutput, 1600)]
+      : []),
+    "",
+    "要求：",
+    "- 优先修复导致游戏无法启动、无法导出或核心玩法缺失的问题。",
+    "- 修复后保持 Web 导出兼容。",
+    "- 回复末尾列出修改的文件和剩余风险。",
+    "",
+    "用户的总目标：",
+    input.userMessage
+  ].join("\n");
 }
 
 function inspectionOutput(result: WebBuildInspection): string {
@@ -154,6 +201,7 @@ export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], 
   cliToolId?: CliToolId;
   message?: string;
 }> {
+  const programmer = agentById("programmer");
   return [
     ...agents.map((agent, index) => ({
       title: `${index + 1}. ${agent.title}：${agent.specialty}`,
@@ -161,6 +209,26 @@ export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], 
       cliToolId: chooseWorkflowCli(agent, tools, input),
       message: buildWorkflowMessage(agent, input.message, index)
     })),
+    // Quality loop phases (验收闭环): validate → fix round → git save. The fix
+    // round's real message is built at runtime from the QA / validation output.
+    ...(input.withQualityLoop
+      ? [
+          {
+            title: "Godot 可运行校验",
+            message: "headless 校验项目能否正常加载与启动。"
+          },
+          {
+            title: "修复与打磨",
+            agentId: programmer.id,
+            cliToolId: chooseWorkflowCli(programmer, tools, input),
+            message: "根据 QA 反馈与校验结果修复问题（具体任务在运行时生成）。"
+          },
+          {
+            title: "Git 保存版本",
+            message: "提交本轮文件变更为一个 Git 版本。"
+          }
+        ]
+      : []),
     ...(input.autoExportWeb
       ? [
           {
@@ -289,6 +357,11 @@ export class WorkflowService {
     let previewResult: PreviewResult | undefined;
     let failedSteps = 0;
     let failedAgentSteps = 0;
+    // Quality-loop state: the QA Agent's verdict drives the fix round.
+    let qaVerdict: QaVerdict = "unknown";
+    let qaFindings = "";
+    let qaCompleted = false;
+    let fixFileChangeCount = 0;
 
     for (const [index, agent] of agents.entries()) {
       const step = latestRun.steps[index];
@@ -324,6 +397,11 @@ export class WorkflowService {
       if (stepFailed) {
         failedSteps += 1;
         failedAgentSteps += 1;
+      }
+      if (agent.id === "qa" && lastAgentMessage && !stepFailed) {
+        qaCompleted = true;
+        qaVerdict = parseQaVerdict(lastAgentMessage.content);
+        qaFindings = lastAgentMessage.content;
       }
       latestRun = await this.runService.updateStep(run.id, step.id, {
         status: stepFailed ? "failed" : "completed",
@@ -457,6 +535,143 @@ export class WorkflowService {
         zipResult,
         previewResult
       };
+    }
+
+    if (input.withQualityLoop) {
+      if (await this.runService.isCancelled(run.id)) {
+        return {
+          project: await this.projectService.getProject(project.id),
+          run: (await this.runService.getRun(run.id)) ?? latestRun
+        };
+      }
+
+      // ── Godot 可运行校验 ──────────────────────────────────────────────
+      // Informational gate: a failure feeds the fix round instead of failing
+      // the workflow outright (the fix round re-validates).
+      let validationResult: GodotRunResult | undefined;
+      const validateStep = latestRun.steps[stepCursor++];
+      if (validateStep) {
+        await this.runService.updateStep(run.id, validateStep.id, { status: "running" });
+        validationResult = await this.godotService.validate(project.id);
+        latestRun = await this.runService.updateStep(run.id, validateStep.id, {
+          status: validationResult.ok ? "completed" : "failed",
+          exitCode: validationResult.exitCode ?? undefined,
+          message: validationResult.ok
+            ? "Godot 校验通过，项目可正常加载。"
+            : "Godot 校验失败，错误已交给「修复与打磨」处理。",
+          output: tailOf(validationResult.stderr || validationResult.stdout, 2000) || undefined
+        });
+      }
+      const validationFailed = Boolean(validationResult && !validationResult.ok);
+
+      // ── 修复与打磨（QA 反馈循环）──────────────────────────────────────
+      const fixStep = latestRun.steps[stepCursor++];
+      if (fixStep) {
+        const needsFix = (qaCompleted && qaVerdict !== "pass") || validationFailed;
+        if (!needsFix) {
+          latestRun = await this.runService.updateStep(run.id, fixStep.id, {
+            status: "skipped",
+            message: qaCompleted
+              ? "QA 结论为通过且校验正常，跳过修复轮。"
+              : "没有 QA 反馈且校验正常，跳过修复轮。"
+          });
+        } else if (await this.runService.isCancelled(run.id)) {
+          return {
+            project: await this.projectService.getProject(project.id),
+            run: (await this.runService.getRun(run.id)) ?? latestRun
+          };
+        } else {
+          await this.runService.updateStep(run.id, fixStep.id, { status: "running" });
+          const fixCli = fixStep.cliToolId ?? chooseWorkflowCli(agentById("programmer"), tools, input);
+          const fixResult = await this.agentService.runTurn(
+            {
+              projectId: project.id,
+              agentId: "programmer",
+              cliToolId: fixCli,
+              message: buildFixRoundMessage({
+                userMessage: input.message,
+                qaVerdict,
+                qaFindings,
+                validationFailed,
+                validationOutput: validationResult
+                  ? `${validationResult.stderr}\n${validationResult.stdout}`
+                  : undefined
+              }),
+              autoStartPreview: false
+            },
+            { recordRun: false, parentRunId: run.id, parentStepId: fixStep.id }
+          );
+          const fixMessage = [...fixResult.messages]
+            .reverse()
+            .find((message) => message.agentId === "programmer" && (message.role === "agent" || message.role === "system"));
+          const fixTurnFailed = isAgentWorkflowStepFailed({ cliToolId: fixCli, tools, message: fixMessage });
+          fixFileChangeCount = fixMessage?.fileChanges?.length ?? 0;
+          // Close the loop: when validation triggered the fix, re-validate.
+          let revalidated: GodotRunResult | undefined;
+          if (!fixTurnFailed && validationFailed) {
+            revalidated = await this.godotService.validate(project.id);
+          }
+          const fixOk = !fixTurnFailed && (!validationFailed || revalidated?.ok === true);
+          if (!fixOk) {
+            failedSteps += 1;
+          }
+          latestRun = await this.runService.updateStep(run.id, fixStep.id, {
+            status: fixOk ? "completed" : "failed",
+            cliToolId: fixCli,
+            exitCode: fixMessage?.exitCode,
+            message: fixOk
+              ? `修复完成${revalidated ? "，Godot 复检通过" : ""}（${fixFileChangeCount} 个文件变更）。`
+              : fixTurnFailed
+                ? fixMessage?.content ?? "修复轮执行失败。"
+                : "修复后 Godot 复检仍失败，请展开校验输出查看错误。",
+            ...(fixMessage?.fileChanges ? { fileChanges: fixMessage.fileChanges } : {})
+          });
+        }
+      }
+
+      // ── Git 保存版本 ─────────────────────────────────────────────────
+      const gitStep = latestRun.steps[stepCursor++];
+      if (gitStep) {
+        const totalChanges = agentFileChangeCount + fixFileChangeCount;
+        if (!this.gitService) {
+          latestRun = await this.runService.updateStep(run.id, gitStep.id, {
+            status: "skipped",
+            message: "未配置 Git 服务，跳过版本保存。"
+          });
+        } else if (totalChanges === 0) {
+          latestRun = await this.runService.updateStep(run.id, gitStep.id, {
+            status: "skipped",
+            message: "本轮没有项目文件变更，跳过 Git 保存。"
+          });
+        } else {
+          await this.runService.updateStep(run.id, gitStep.id, { status: "running" });
+          try {
+            const commitMessage = `自动保存：团队工作流 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+            await this.gitService.commit({ projectId: project.id, message: commitMessage });
+            await this.projectService.appendMessages(project.id, [
+              {
+                id: createMessageId(),
+                projectId: project.id,
+                agentId: "producer",
+                role: "system",
+                kind: "git",
+                content: `已自动保存 Git 版本（${totalChanges} 个文件变更）：${commitMessage}`,
+                createdAt: new Date().toISOString()
+              }
+            ]);
+            latestRun = await this.runService.updateStep(run.id, gitStep.id, {
+              status: "completed",
+              message: `已保存 Git 版本（${totalChanges} 个文件变更）。`
+            });
+          } catch (error) {
+            failedSteps += 1;
+            latestRun = await this.runService.updateStep(run.id, gitStep.id, {
+              status: "failed",
+              message: `Git 保存失败：${error instanceof Error ? error.message : String(error)}`
+            });
+          }
+        }
+      }
     }
 
     if (input.autoExportWeb) {
@@ -605,7 +820,9 @@ export class WorkflowService {
         previewResult
       })
     ]);
-    if (latestRun.status === "completed" && agentFileChangeCount > 0 && this.gitService) {
+    // Legacy auto-commit path; with the quality loop the visible "Git 保存版本"
+    // step has already committed.
+    if (!input.withQualityLoop && latestRun.status === "completed" && agentFileChangeCount > 0 && this.gitService) {
       try {
         const commitMessage = `自动保存：团队工作流 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
         await this.gitService.commit({

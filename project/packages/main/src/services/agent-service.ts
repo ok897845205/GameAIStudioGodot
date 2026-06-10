@@ -19,7 +19,7 @@ import {
   processOutput
 } from "./cli-diagnostics";
 import { summarizeGitState } from "./git-service";
-import { getProjectLogger } from "./logger";
+import { getAgentLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
 import { ProjectFileChangeService } from "./project-file-change-service";
@@ -296,7 +296,8 @@ export class AgentService {
   ): Promise<RunAgentTurnResult> {
     const project = await this.projectService.requireProject(input.projectId);
     const agent = AGENT_PROFILES.find((profile) => profile.id === input.agentId) ?? AGENT_PROFILES[0];
-    const plog = getProjectLogger(project.rootPath);
+    // Turn logs go to the per-agent log and cascade into project/app logs.
+    const plog = getAgentLogger(project.rootPath, agent.id);
     const turnStartedAt = Date.now();
     plog.info("agent-turn", "开始", {
       project: project.name,

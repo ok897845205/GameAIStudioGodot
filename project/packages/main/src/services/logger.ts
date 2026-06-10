@@ -146,6 +146,8 @@ export class FileLogger {
     if (this.filePath) {
       this.enqueue(this.filePath, line);
     }
+    // Cascade so chains work: agent log → project log → app log.
+    this.tee?.ingest(level, line);
   }
 
   private enqueue(filePath: string, line: string): void {
@@ -237,6 +239,28 @@ export function getProjectLogger(projectRoot: string): FileLogger {
       maxFiles: 3,
       minLevel: "debug",
       tee: getAppLogger(),
+    });
+    projectLoggers.set(filePath, logger);
+  }
+  return logger;
+}
+
+/**
+ * Per-agent log under `<projectRoot>/.gameaistudio/logs/agents/<agentId>.log`.
+ * Lines cascade into the project log (and from there into app.log), so each
+ * layer keeps its own focused file without losing the unified timeline.
+ */
+export function getAgentLogger(projectRoot: string, agentId: string): FileLogger {
+  const safeAgentId = agentId.replace(/[^\w-]/g, "_") || "agent";
+  const filePath = path.join(projectRoot, ".gameaistudio", "logs", "agents", `${safeAgentId}.log`);
+  let logger = projectLoggers.get(filePath);
+  if (!logger) {
+    logger = new FileLogger({
+      filePath,
+      maxBytes: 1 * 1024 * 1024,
+      maxFiles: 2,
+      minLevel: "debug",
+      tee: getProjectLogger(projectRoot),
     });
     projectLoggers.set(filePath, logger);
   }

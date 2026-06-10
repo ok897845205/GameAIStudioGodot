@@ -33,6 +33,12 @@ interface BuildMarkdownInput {
   now: string;
   /** Compact git state line, e.g. "main@abc1234, 3 uncommitted change(s)". */
   gitSummary?: string;
+  /** This agent's own recent turns (private memory). */
+  ownMessages?: string[];
+  /** Latest QA findings shared as the known-issues board. */
+  knownIssues?: string;
+  /** This agent's most recent failure, if any. */
+  lastError?: string;
 }
 
 const DEFAULT_MAX_FILES = 140;
@@ -120,6 +126,42 @@ function formatMessage(message: AgentMessage): string {
 
 export function summarizeRecentMessages(messages: AgentMessage[], maxMessages = DEFAULT_MAX_MESSAGES): string[] {
   return messages.slice(-maxMessages).map(formatMessage);
+}
+
+/** The agent's own thread tail — its private working memory across rounds. */
+export function summarizeAgentOwnMessages(
+  messages: AgentMessage[],
+  agentId: string,
+  maxMessages = 6
+): string[] {
+  return messages
+    .filter((message) => message.agentId === agentId)
+    .slice(-maxMessages)
+    .map(formatMessage);
+}
+
+/** Latest QA findings — shared with every agent as the "known issues" board. */
+export function latestQaFindings(messages: AgentMessage[], maxLength = 700): string | undefined {
+  const finding = [...messages]
+    .reverse()
+    .find((message) => message.agentId === "qa" && message.role === "agent" && message.kind !== "error");
+  if (!finding) return undefined;
+  const text = finding.content.trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+/** The agent's most recent failed turn, so it can avoid repeating the mistake. */
+export function latestAgentError(
+  messages: AgentMessage[],
+  agentId: string,
+  maxLength = 400
+): string | undefined {
+  const failure = [...messages]
+    .reverse()
+    .find((message) => message.agentId === agentId && message.kind === "error");
+  if (!failure) return undefined;
+  const text = failure.content.trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
 async function walkFiles(rootPath: string, directory: string, files: AgentContextFile[]): Promise<void> {
@@ -231,6 +273,15 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     "",
     ...recentMessages,
     "",
+    ...(input.ownMessages && input.ownMessages.length > 0
+      ? ["## Your Recent Turns (this agent)", "", ...input.ownMessages, ""]
+      : []),
+    ...(input.knownIssues
+      ? ["## Known Issues (latest QA findings)", "", input.knownIssues, ""]
+      : []),
+    ...(input.lastError
+      ? ["## Your Last Error", "", input.lastError, "", "Avoid repeating the failure above; fix its root cause first if it blocks you.", ""]
+      : []),
     "## Recent Agent Journal",
     "",
     agentJournal,
@@ -267,7 +318,11 @@ export class AgentContextService {
       files,
       recentMessages,
       agentJournal,
-      now: new Date().toISOString()
+      now: new Date().toISOString(),
+      gitSummary: input.gitSummary,
+      ownMessages: summarizeAgentOwnMessages(input.project.messages, input.agentId),
+      knownIssues: latestQaFindings(input.project.messages),
+      lastError: latestAgentError(input.project.messages, input.agentId)
     });
 
     await mkdir(path.dirname(contextPath), { recursive: true });

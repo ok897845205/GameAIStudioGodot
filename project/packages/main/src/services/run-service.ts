@@ -314,7 +314,8 @@ export class RunService {
       running: "运行中",
       completed: "完成",
       failed: "失败",
-      cancelled: "取消"
+      cancelled: "取消",
+      skipped: "跳过"
     };
     return labels[status];
   }

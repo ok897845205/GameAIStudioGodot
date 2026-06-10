@@ -192,7 +192,8 @@ function runStatusLabel(status: StudioRun["status"]): string {
     running: "运行中",
     completed: "完成",
     failed: "失败",
-    cancelled: "已取消"
+    cancelled: "已取消",
+    skipped: "已跳过"
   };
   return labels[status];
 }

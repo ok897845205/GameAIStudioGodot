@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 export function Dialog({
   open,
   onClose,
+  closable = true,
   title,
   description,
   children,
@@ -12,6 +13,7 @@ export function Dialog({
 }: {
   open: boolean;
   onClose: () => void;
+  closable?: boolean;
   title?: ReactNode;
   description?: ReactNode;
   children: ReactNode;
@@ -20,18 +22,18 @@ export function Dialog({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && closable) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [closable, open, onClose]);
 
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={closable ? onClose : undefined}
       role="dialog"
       aria-modal="true"
     >
@@ -54,8 +56,9 @@ export function Dialog({
             </div>
             <button
               onClick={onClose}
-              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              title="关闭"
+              disabled={!closable}
+              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              title={closable ? "关闭" : "正在下载或安装更新，暂不能关闭"}
             >
               <X className="size-4" />
             </button>

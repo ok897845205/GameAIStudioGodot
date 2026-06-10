@@ -1,6 +1,6 @@
 {
   "name": "gameaistudio-godot",
-  "version": "0.1.0",
+  "version": "0.1.9",
   "description": "GameAIStudio desktop app for creating Godot games with local AI CLI agents.",
   "author": "GameAIStudio",
   "private": true,
@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "assets:icon": "node scripts/generate-app-icon.mjs",
-    "build": "pnpm run assets:icon && electron-vite build",
+    "prepare:update-config": "node scripts/generate-app-update-config.mjs",
+    "build": "pnpm run assets:icon && pnpm run prepare:update-config && electron-vite build",
     "dist": "pnpm build && electron-builder",
     "dist:win": "node scripts/build-windows-installer.mjs",
     "dist:win:online": "node scripts/build-windows-installer.mjs --online",
@@ -29,21 +30,22 @@
     "verify:release": "pnpm typecheck && pnpm test && pnpm smoke:webzip && pnpm dist:win"
   },
   "dependencies": {
-    "@uiw/react-textarea-code-editor": "^3.1.1"
+    "@uiw/react-textarea-code-editor": "^3.1.1",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.0",
-    "@tailwindcss/vite": "^4.1.0",
-    "tailwindcss": "^4.1.0",
     "electron": "^35.2.1",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^3.1.4"
@@ -83,6 +85,10 @@
     ],
     "asar": true,
     "extraResources": [
+      {
+        "from": "build/app-update.yml",
+        "to": "app-update.yml"
+      },
       {
         "from": "engine",
         "to": "engine",

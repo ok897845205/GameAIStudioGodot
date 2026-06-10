@@ -104,9 +104,9 @@ function formatDateTime(value?: string): string {
   }).format(date);
 }
 
-function updateReleaseNotesText(info?: UpdateInfo): string {
-  if (!info?.configured) return "配置更新服务器后，这里会显示服务器返回的更新日志。";
-  if (!info.latestVersion) return "检查更新后，这里会显示服务器返回的更新日志。";
+function updateReleaseNotesText(info?: UpdateInfo): string | undefined {
+  if (!info?.configured || !info.latestVersion) return undefined;
+  if (info.policy !== "optional" && info.policy !== "required") return undefined;
   return info.releaseNotes?.trim() || "本次更新暂无说明。";
 }
 
@@ -186,13 +186,23 @@ function updatePolicyTone(info?: UpdateInfo): "danger" | "muted" | "success" | "
   return "success";
 }
 
+function footerUpdateBadge(info?: UpdateInfo): { label: string; tone: "danger" | "warning" } | undefined {
+  if (info?.policy === "required") return { label: "必须更新", tone: "danger" };
+  if (info?.policy === "optional") return { label: "可更新", tone: "warning" };
+  return undefined;
+}
+
+function isUpdateInstallStatus(status?: UpdateInfo["status"]): boolean {
+  return status === "downloading" || status === "installing";
+}
+
 function updateReasonText(info?: UpdateInfo): string {
   if (!info) return "尚未检查更新。";
-  if (!info.configured) return info.error ?? "尚未配置更新服务器地址。";
+  if (!info.configured) return "暂未配置更新服务。";
   if (info.status === "checking") return "正在从服务器获取更新信息。";
   if (info.status === "downloading") return "正在下载更新安装包。";
   if (info.status === "installing") return "安装器已启动，软件即将退出。";
-  if (info.status === "error") return info.error ?? "更新检查失败。";
+  if (info.status === "error") return "更新检查失败，请稍后重试；详细原因已记录到应用日志。";
   if (info.policy === "required") {
     if (info.reason === "major") return "发现大版本更新，需要更新后继续使用。";
     if (info.reason === "minor") return "发现小版本更新，需要更新后继续使用。";
@@ -201,6 +211,10 @@ function updateReasonText(info?: UpdateInfo): string {
   }
   if (info.policy === "optional") return "发现迭代版本更新，可手动下载并安装。";
   return "当前已是最新版本。";
+}
+
+function updateOperationErrorText(): string {
+  return "更新操作失败，请稍后重试；详细原因已记录到应用日志。";
 }
 
 function formatBytes(value?: number): string {
@@ -239,6 +253,7 @@ export function StudioApp() {
   const [chatSearch, setChatSearch] = useState("");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>();
   const [updateMessage, setUpdateMessage] = useState("");
+  const [updateInstallLocked, setUpdateInstallLocked] = useState(false);
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -254,6 +269,9 @@ export function StudioApp() {
       : undefined;
   const isBusy = Boolean(busy);
   const currentUpdateInfo = updateInfo ?? bootstrap?.update;
+  const visibleUpdateNotes = updateReleaseNotesText(currentUpdateInfo);
+  const footerUpdate = footerUpdateBadge(currentUpdateInfo);
+  const aboutUpdateLocked = updateInstallLocked || isUpdateInstallStatus(currentUpdateInfo?.status);
   const updateRequired = currentUpdateInfo?.policy === "required";
   const workflowAgents = useMemo(
     () =>
@@ -347,7 +365,7 @@ export function StudioApp() {
               setNotice("发现必须更新版本，请先完成软件更新。");
             }
           })
-          .catch((e) => setUpdateMessage(errText(e)));
+          .catch(() => setUpdateMessage(updateOperationErrorText()));
       }
       const target =
         selectId ?? selectedProject?.id ?? data.projects[0]?.id;
@@ -406,6 +424,11 @@ export function StudioApp() {
       if (event.info) {
         setUpdateInfo(event.info);
         setBootstrap((cur) => (cur ? { ...cur, update: event.info! } : cur));
+      }
+      if (isUpdateInstallStatus(event.status)) {
+        setUpdateInstallLocked(true);
+      } else if (event.status === "error" || event.status === "available" || event.status === "idle" || event.status === "not-configured") {
+        setUpdateInstallLocked(false);
       }
       const progress =
         event.percent !== undefined
@@ -965,8 +988,8 @@ export function StudioApp() {
           ? "当前已是最新版本。"
           : `发现 ${info.latestVersion ? `v${info.latestVersion}` : "新版本"}：${updatePolicyLabel(info)}。`,
       );
-    } catch (e) {
-      const message = errText(e);
+    } catch {
+      const message = updateOperationErrorText();
       setUpdateMessage(message);
       setNotice(message);
     } finally {
@@ -984,6 +1007,7 @@ export function StudioApp() {
       return;
     }
     setBusy("update");
+    setUpdateInstallLocked(true);
     setUpdateMessage("准备下载更新…");
     try {
       const result = await window.studio.downloadAndInstallUpdate();
@@ -991,8 +1015,9 @@ export function StudioApp() {
       setBootstrap((cur) => (cur ? { ...cur, update: result.info } : cur));
       setNotice(result.message);
       setUpdateMessage(result.message);
-    } catch (e) {
-      const message = errText(e);
+    } catch {
+      const message = updateOperationErrorText();
+      setUpdateInstallLocked(false);
       setUpdateMessage(message);
       setNotice(message);
     } finally {
@@ -1148,7 +1173,19 @@ export function StudioApp() {
             >
               <Info /> 关于
             </Button>
-            <span className="shrink-0 text-xs text-muted-foreground">v{APP_VERSION}</span>
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
+              onClick={() => setAboutOpen(true)}
+              title={footerUpdate ? `${footerUpdate.label}，点击查看软件更新` : `当前版本 v${APP_VERSION}`}
+            >
+              <span>v{APP_VERSION}</span>
+              {footerUpdate && (
+                <Badge tone={footerUpdate.tone} className="px-1.5 py-0 text-[10px] leading-4">
+                  {footerUpdate.label}
+                </Badge>
+              )}
+            </button>
           </div>
         </div>
       </aside>
@@ -1872,7 +1909,14 @@ export function StudioApp() {
       {/* ── About dialog ───────────────────────────────────────────── */}
       <Dialog
         open={aboutOpen}
-        onClose={() => setAboutOpen(false)}
+        onClose={() => {
+          if (aboutUpdateLocked) {
+            setUpdateMessage("更新正在下载或安装，请等待完成。");
+            return;
+          }
+          setAboutOpen(false);
+        }}
+        closable={!aboutUpdateLocked}
         title={
           <span className="inline-flex items-center gap-2">
             <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -1911,38 +1955,28 @@ export function StudioApp() {
               <dd>v{APP_VERSION}</dd>
               <dt className="text-muted-foreground">最新</dt>
               <dd>{currentUpdateInfo?.latestVersion ? `v${currentUpdateInfo.latestVersion}` : "未获取"}</dd>
-              <dt className="text-muted-foreground">配置</dt>
-              <dd>
-                {currentUpdateInfo?.configSource ?? "未知"}
-                {currentUpdateInfo?.channel ? ` · ${currentUpdateInfo.channel}` : ""}
-              </dd>
               <dt className="text-muted-foreground">安装包</dt>
               <dd>{formatBytes(currentUpdateInfo?.package?.size)}</dd>
               <dt className="text-muted-foreground">发布</dt>
               <dd>{formatDateTime(currentUpdateInfo?.releaseDate)}</dd>
             </dl>
-            {currentUpdateInfo?.manifestUrl && (
-              <p className="mt-2 truncate text-xs text-muted-foreground" title={currentUpdateInfo.manifestUrl}>
-                {currentUpdateInfo.manifestUrl}
-              </p>
-            )}
             <p className="mt-3 break-words text-xs leading-5 text-muted-foreground">
               {updateMessage || updateReasonText(currentUpdateInfo)}
             </p>
-            <div className="mt-3 border-t border-border pt-3">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="inline-flex items-center gap-1.5 font-medium">
-                  <Info className="size-3.5 text-primary" />
-                  更新日志
-                </span>
-                <span className="text-muted-foreground">
-                  {currentUpdateInfo?.latestVersion ? `v${currentUpdateInfo.latestVersion}` : "未获取版本"}
-                </span>
+            {visibleUpdateNotes && (
+              <div className="mt-3 border-t border-border pt-3">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    <Info className="size-3.5 text-primary" />
+                    更新日志
+                  </span>
+                  <span className="text-muted-foreground">v{currentUpdateInfo?.latestVersion}</span>
+                </div>
+                <div className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                  {visibleUpdateNotes}
+                </div>
               </div>
-              <div className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-                {updateReleaseNotesText(currentUpdateInfo)}
-              </div>
-            </div>
+            )}
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Button
                 variant="outline"

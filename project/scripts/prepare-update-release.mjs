@@ -32,6 +32,7 @@ function printUsage() {
   --dry-run                 只打印计划，不写文件、不打包
   --skip-build              跳过 pnpm dist:win，复用 dist 中已有安装包
   --upload                  生成后上传到服务器
+  --upload-retries <n>      上传失败重试次数，默认读取 release.env，未配置则为 3
   --no-upload               只生成本地 server 目录，不上传
   --ssh-host <host>         SSH 主机，默认读取 release.env 的 GAMEAISTUDIO_RELEASE_SSH_HOST
   --remote-dir <path>       服务器目录，默认读取 release.env 的 GAMEAISTUDIO_RELEASE_REMOTE_DIR
@@ -64,6 +65,7 @@ function parseArgs(argv) {
     minSupportedVersion: undefined,
     nextEnvPath: envPath,
     includeNextEnv: true,
+    uploadRetries: undefined,
   };
 
   const positionals = [];
@@ -83,6 +85,14 @@ function parseArgs(argv) {
     }
     if (arg === "--upload") {
       options.upload = true;
+      continue;
+    }
+    if (arg.startsWith("--upload-retries=")) {
+      options.uploadRetries = arg.slice("--upload-retries=".length);
+      continue;
+    }
+    if (arg === "--upload-retries") {
+      options.uploadRetries = argv[++index];
       continue;
     }
     if (arg === "--no-upload") {
@@ -254,6 +264,22 @@ function firstConfigured(...values) {
   return undefined;
 }
 
+function parsePositiveInteger(value, fallback, label) {
+  const text = firstConfigured(value);
+  if (!text) return fallback;
+  const parsed = Number(text);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} 必须是大于 0 的整数，当前收到：${text}`);
+  }
+  return parsed;
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function inferServerUrl(manifestUrl) {
   if (!manifestUrl) return undefined;
   try {
@@ -288,6 +314,16 @@ async function sha256File(filePath) {
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function sha512File(filePath) {
+  return await new Promise((resolve, reject) => {
+    const hash = createHash("sha512");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("base64")));
   });
 }
 
@@ -349,6 +385,30 @@ async function run(command, args, cwd) {
   });
 }
 
+async function runWithRetry(label, attempts, task) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await task();
+      if (attempt > 1) {
+        console.log(`${label} 第 ${attempt}/${attempts} 次成功。`);
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) {
+        break;
+      }
+      const delayMs = Math.min(10_000, 2_000 * attempt);
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`${label} 第 ${attempt}/${attempts} 次失败：${message}`);
+      console.warn(`${Math.round(delayMs / 1000)} 秒后重试...`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 function packageInstallerName(packageJson, version) {
   const productName = packageJson.build?.productName ?? packageJson.productName ?? "GameAIStudio";
   return `${productName}-Setup-${version}.exe`;
@@ -357,6 +417,31 @@ function packageInstallerName(packageJson, version) {
 function fixedInstallerName(packageJson) {
   const productName = packageJson.build?.productName ?? packageJson.productName ?? "GameAIStudio";
   return `${productName}-Setup.exe`;
+}
+
+function updaterChannelFileName(channel) {
+  const normalized = String(channel ?? "").trim();
+  if (!normalized || normalized === "stable") return "latest.yml";
+  return `${normalized}.yml`;
+}
+
+function yamlSingleQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function buildElectronUpdaterYml({ version, installerName, sha512, size, releaseDate }) {
+  const installerPath = `releases/${installerName}`;
+  return [
+    `version: ${version}`,
+    "files:",
+    `  - url: ${installerPath}`,
+    `    sha512: ${sha512}`,
+    `    size: ${size}`,
+    `path: ${installerPath}`,
+    `sha512: ${sha512}`,
+    `releaseDate: ${yamlSingleQuote(releaseDate)}`,
+    "",
+  ].join("\n");
 }
 
 async function uploadArtifacts(options, artifacts) {
@@ -368,16 +453,43 @@ async function uploadArtifacts(options, artifacts) {
   }
   const remoteDir = options.remoteDir.replace(/\/+$/, "");
   const remoteReleasesDir = `${remoteDir}/releases`;
-  await run("ssh", [options.sshHost, `mkdir -p ${remoteReleasesDir}`], projectRoot);
-  await run("scp", [artifacts.updateJsonPath, `${options.sshHost}:${remoteDir}/update.json`], projectRoot);
-  await run(
-    "scp",
-    [
-      artifacts.versionedInstallerPath,
-      artifacts.fixedInstallerPath,
-      `${options.sshHost}:${remoteReleasesDir}/`,
-    ],
-    projectRoot,
+  const networkArgs = [
+    "-o",
+    "ConnectTimeout=20",
+    "-o",
+    "ServerAliveInterval=10",
+    "-o",
+    "ServerAliveCountMax=3",
+  ];
+  await runWithRetry("创建远程发布目录", options.uploadRetries, () =>
+    run("ssh", [...networkArgs, options.sshHost, `mkdir -p ${remoteReleasesDir}`], projectRoot),
+  );
+  await runWithRetry("上传安装包", options.uploadRetries, () =>
+    run(
+      "scp",
+      [
+        ...networkArgs,
+        artifacts.versionedInstallerPath,
+        artifacts.fixedInstallerPath,
+        artifacts.versionedBlockmapPath,
+        `${options.sshHost}:${remoteReleasesDir}/`,
+      ],
+      projectRoot,
+    ),
+  );
+  await runWithRetry("发布标准更新清单", options.uploadRetries, () =>
+    run(
+      "scp",
+      [...networkArgs, artifacts.updateYmlPath, `${options.sshHost}:${remoteDir}/${artifacts.updateYmlName}`],
+      projectRoot,
+    ),
+  );
+  await runWithRetry("发布产品更新清单", options.uploadRetries, () =>
+    run(
+      "scp",
+      [...networkArgs, artifacts.updateJsonPath, `${options.sshHost}:${remoteDir}/update.json`],
+      projectRoot,
+    ),
   );
 }
 
@@ -408,6 +520,16 @@ async function main() {
     releaseEnv.GAMEAISTUDIO_RELEASE_REMOTE_DIR,
     env.GAMEAISTUDIO_RELEASE_REMOTE_DIR,
   );
+  options.uploadRetries = parsePositiveInteger(
+    firstConfigured(
+      options.uploadRetries,
+      process.env.GAMEAISTUDIO_RELEASE_UPLOAD_RETRIES,
+      releaseEnv.GAMEAISTUDIO_RELEASE_UPLOAD_RETRIES,
+      env.GAMEAISTUDIO_RELEASE_UPLOAD_RETRIES,
+    ),
+    3,
+    "上传重试次数",
+  );
 
   if (compareVersions(target.version, currentVersion) < 0) {
     throw new Error(`目标版本 ${target.version} 不能低于当前版本 ${currentVersion}`);
@@ -430,8 +552,12 @@ async function main() {
   const installerName = packageInstallerName(packageJson, target.version);
   const stableInstallerName = fixedInstallerName(packageJson);
   const distInstallerPath = path.join(projectRoot, "dist", installerName);
+  const distBlockmapPath = `${distInstallerPath}.blockmap`;
   const releaseInstallerPath = path.join(releasesDir, installerName);
+  const releaseBlockmapPath = `${releaseInstallerPath}.blockmap`;
   const fixedReleaseInstallerPath = path.join(releasesDir, stableInstallerName);
+  const updateYmlName = updaterChannelFileName(channel);
+  const updateYmlPath = path.join(serverRoot, updateYmlName);
   const installerUrl = `${serverUrl}/releases/${toUrlPathSegment(installerName)}`;
   const fixedInstallerUrl = `${serverUrl}/releases/${toUrlPathSegment(stableInstallerName)}`;
   const releaseNotes = await readReleaseNotes(options, target.version);
@@ -444,14 +570,18 @@ async function main() {
     channel,
     serverUrl,
     installerName,
+    updateYmlName,
+    updateYmlPath,
     updateJsonPath,
     releaseInstallerPath,
+    releaseBlockmapPath,
     fixedReleaseInstallerPath,
     fixedInstallerUrl,
     releaseNotesSource: releaseNotes.source,
     dryRun: options.dryRun,
     skipBuild: options.skipBuild,
     upload: options.upload,
+    uploadRetries: options.upload ? options.uploadRetries : undefined,
     sshHost: options.upload ? options.sshHost : undefined,
     remoteDir: options.upload ? options.remoteDir : undefined,
   };
@@ -473,17 +603,20 @@ async function main() {
     }
 
     const installerStat = await stat(distInstallerPath);
+    await stat(distBlockmapPath);
     const installerSha256 = await sha256File(distInstallerPath);
+    const installerSha512 = await sha512File(distInstallerPath);
     await mkdir(releasesDir, { recursive: true });
     await copyFile(distInstallerPath, releaseInstallerPath);
+    await copyFile(distBlockmapPath, releaseBlockmapPath);
     await copyFile(distInstallerPath, fixedReleaseInstallerPath);
+    const releaseDate = new Date().toISOString();
 
     const manifest = {
       appId: packageJson.build?.appId ?? "com.gameaistudio.desktop",
       channel,
       latestVersion: target.version,
-      downloadUrl: fixedInstallerUrl,
-      releaseDate: new Date().toISOString(),
+      releaseDate,
       releaseNotes: releaseNotes.text,
       packages: [
         {
@@ -491,6 +624,7 @@ async function main() {
           arch: "x64",
           url: installerUrl,
           sha256: installerSha256,
+          sha512: installerSha512,
           size: installerStat.size,
         },
       ],
@@ -512,19 +646,35 @@ async function main() {
     }
 
     await mkdir(serverRoot, { recursive: true });
+    await writeFile(
+      updateYmlPath,
+      buildElectronUpdaterYml({
+        version: target.version,
+        installerName,
+        sha512: installerSha512,
+        size: installerStat.size,
+        releaseDate,
+      }),
+      "utf8",
+    );
     await writeFile(updateJsonPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
     console.log("更新发布资源已生成：");
     console.log(`- 安装包：${releaseInstallerPath}`);
+    console.log(`- 标准更新 blockmap：${releaseBlockmapPath}`);
     console.log(`- 固定下载包：${fixedReleaseInstallerPath}`);
-    console.log(`- 更新清单：${updateJsonPath}`);
+    console.log(`- 标准更新清单：${updateYmlPath}`);
+    console.log(`- 产品更新清单：${updateJsonPath}`);
     console.log(`- 安装包 URL：${installerUrl}`);
     console.log(`- 固定下载 URL：${fixedInstallerUrl}`);
 
     if (options.upload) {
       await uploadArtifacts(options, {
         updateJsonPath,
+        updateYmlName,
+        updateYmlPath,
         versionedInstallerPath: releaseInstallerPath,
+        versionedBlockmapPath: releaseBlockmapPath,
         fixedInstallerPath: fixedReleaseInstallerPath,
       });
       console.log(`已上传到服务器：${options.sshHost}:${options.remoteDir}`);

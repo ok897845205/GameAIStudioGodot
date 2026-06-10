@@ -563,7 +563,8 @@ export interface UpdatePackageInfo {
   platform: string;
   arch: string;
   url: string;
-  sha256: string;
+  sha256?: string;
+  sha512?: string;
   size?: number;
   fileName?: string;
 }

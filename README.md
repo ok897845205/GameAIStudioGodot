@@ -154,7 +154,3 @@ ${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
 ```
 
 固定下载包不带版本号，便于对外传播；更新清单里的安装包仍使用带版本号的文件名，便于定位和回滚。
-
-## 参考项目
-
-旧实验项目位于 `E:\AIProject\GameAIStudio` 和 `E:\AIProject\GameAIStudioCLI`，仅作为参考材料。本仓库会重新实现，不会整体复制旧项目代码。

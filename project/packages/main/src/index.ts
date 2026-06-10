@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { BrowserWindow, app } from "electron";
+import { BrowserWindow, app, dialog, type MessageBoxSyncOptions } from "electron";
 import { AgentContextService } from "./services/agent-context-service";
 import { AgentService } from "./services/agent-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
@@ -31,7 +31,9 @@ import { registerIpcHandlers } from "./ipc";
 
 let previewServer: PreviewServer | undefined;
 let autoPreviewService: AutoPreviewService | undefined;
+let updateService: UpdateService | undefined;
 let quitCleanupStarted = false;
+let allowQuitWithoutUpdateConfirm = false;
 
 async function createWindow(): Promise<void> {
   const preloadPath = path.join(__dirname, "../preload/index.mjs");
@@ -50,11 +52,40 @@ async function createWindow(): Promise<void> {
     }
   });
 
+  win.on("close", (event) => {
+    if (quitCleanupStarted || allowQuitWithoutUpdateConfirm || !updateService?.isDownloadOrInstallInProgress()) {
+      return;
+    }
+    if (confirmQuitDuringUpdate(win)) {
+      allowQuitWithoutUpdateConfirm = true;
+      return;
+    }
+    event.preventDefault();
+  });
+
   if (process.env.ELECTRON_RENDERER_URL) {
     await win.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
     await win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+}
+
+function confirmQuitDuringUpdate(owner?: BrowserWindow): boolean {
+  const options: MessageBoxSyncOptions = {
+    type: "warning",
+    title: "更新正在进行",
+    message: "软件正在下载或安装更新。",
+    detail: "现在关闭软件可能导致更新中断。确定要退出吗？",
+    buttons: ["继续更新", "退出软件"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const target = owner ?? BrowserWindow.getFocusedWindow();
+  const choice = target ? dialog.showMessageBoxSync(target, options) : dialog.showMessageBoxSync(options);
+  const confirmed = choice === 1;
+  getAppLogger().warn("update", confirmed ? "用户确认在更新过程中退出软件" : "用户取消在更新过程中退出软件");
+  return confirmed;
 }
 
 app.whenReady().then(async () => {
@@ -125,13 +156,17 @@ app.whenReady().then(async () => {
   const filePreviewService = new ProjectFilePreviewService(projectService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
   const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService);
-  const updateService = new UpdateService({
+  const appUpdateService = new UpdateService({
+    prepareQuitAndInstall: () => {
+      allowQuitWithoutUpdateConfirm = true;
+    },
     onEvent: (event) => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("update:event", event);
       }
     }
   });
+  updateService = appUpdateService;
 
   registerIpcHandlers({
     paths,
@@ -150,7 +185,7 @@ app.whenReady().then(async () => {
     webExportPipelineService,
     runService,
     processRegistry,
-    updateService
+    updateService: appUpdateService
   });
 
   log.info("app", "服务装配完成，IPC 已注册");
@@ -167,6 +202,17 @@ app.whenReady().then(async () => {
 app.on("before-quit", (event) => {
   if (quitCleanupStarted) {
     return;
+  }
+  if (allowQuitWithoutUpdateConfirm) {
+    return;
+  }
+  if (!allowQuitWithoutUpdateConfirm && updateService?.isDownloadOrInstallInProgress()) {
+    if (confirmQuitDuringUpdate()) {
+      allowQuitWithoutUpdateConfirm = true;
+    } else {
+      event.preventDefault();
+      return;
+    }
   }
   event.preventDefault();
   quitCleanupStarted = true;

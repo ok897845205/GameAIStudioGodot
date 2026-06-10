@@ -66,7 +66,7 @@ pnpm release:update
 - 用户游戏项目：`%USERPROFILE%\Documents\GameAIStudio\projects`
 - 工作室状态文件：`%USERPROFILE%\Documents\GameAIStudio\studio-state.json`
 - 应用维护日志：`%USERPROFILE%\Documents\GameAIStudio\logs\app.log`
-- 更新安装包缓存：`%APPDATA%\GameAIStudio\updates\<version>\`
+- 更新安装包缓存：由 `electron-updater` 管理，通常位于 Electron `userData` 下的更新缓存目录
 - 用户更新配置：`%APPDATA%\GameAIStudio\update.env`
 
 开发时可以设置 `GAMEAISTUDIO_HOME` 覆盖用户数据目录。
@@ -74,7 +74,9 @@ pnpm release:update
 
 ## 软件更新
 
-GameAIStudio 使用自定义 JSON 更新清单。打包后的应用会在 asar 内包含一份内置 `.env`，用于提供首次更新服务器地址。后续版本可以通过服务端返回的 `nextEnv`，把新的更新配置写入 Electron `userData` 目录中的 `update.env`。
+GameAIStudio 使用桌面应用标准更新方案：`electron-updater + NSIS`。服务器必须提供 `electron-updater` 标准清单 `latest.yml`、版本安装包和 `.blockmap`；同时建议保留一份 `update.json` 给应用 UI 展示更新日志、强制/可选策略和下发下一次启动使用的 `update.env`。
+
+打包后的应用会在 asar 内包含一份内置 `.env`，用于提供首次更新服务器地址。后续版本可以通过服务端返回的 `nextEnv`，把新的更新配置写入 Electron `userData` 目录中的 `update.env`。
 
 ### 更新配置读取优先级
 
@@ -124,7 +126,22 @@ major.minor.patch
 
 ### 更新清单
 
-服务器返回 JSON：
+标准更新安装由 `latest.yml` 驱动，示例：
+
+```yaml
+version: 1.5.0
+files:
+  - url: releases/GameAIStudio-Setup-1.5.0.exe
+    sha512: <installer-sha512-base64>
+    size: 180000000
+path: releases/GameAIStudio-Setup-1.5.0.exe
+sha512: <installer-sha512-base64>
+releaseDate: '2026-06-10T12:00:00.000Z'
+```
+
+应用关于弹层和强制更新策略会读取 `update.json`。这份文件是增强元数据：如果打包应用读取失败，标准更新检查仍会继续使用 `latest.yml`。
+
+服务器返回 JSON 示例：
 
 ```json
 {
@@ -140,6 +157,7 @@ major.minor.patch
       "arch": "x64",
       "url": "https://cdn.example.com/GameAIStudio-Setup-1.5.0.exe",
       "sha256": "<installer-sha256>",
+      "sha512": "<installer-sha512-base64>",
       "size": 180000000
     }
   ],
@@ -153,11 +171,12 @@ major.minor.patch
 
 必填字段：
 
-- `latestVersion`
-- `packages[].platform`
-- `packages[].arch`
-- `packages[].url`
-- `packages[].sha256`
+- `latest.yml.version`
+- `latest.yml.files[].url`
+- `latest.yml.files[].sha512`
+- `update.json.latestVersion`
+
+`update.json.packages` 建议保留，方便 UI 显示安装包大小；实际下载、校验、安装和重启交给 `electron-updater`。
 
 打包后的正式应用默认只接受 HTTPS 更新清单地址和 HTTPS 安装包地址。内测阶段如需 IP/端口直连 HTTP，必须在 `.env` 或服务器下发的 `nextEnv.content` 中显式设置 `GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true`。开发模式下仍允许使用 localhost HTTP，方便本地测试。
 
@@ -206,7 +225,7 @@ pnpm release:update -- --notes-file release-notes.md
 
 脚本会把更新日志写入 `update.json` 的 `releaseNotes`，软件关于弹层里的“更新日志”区域会展示这段内容。示例文件见 `release-notes.example.md`。
 
-4. 命令会自动更新 `package.json` 中的 `version`，执行 Windows 打包，复制安装包到 `../server/gameaistudio/releases/`，生成 `../server/gameaistudio/update.json`，并上传到 `GAMEAISTUDIO_RELEASE_SSH_HOST:GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
+4. 命令会自动更新 `package.json` 中的 `version`，执行 Windows 打包，复制安装包和 `.blockmap` 到 `../server/gameaistudio/releases/`，生成 `../server/gameaistudio/latest.yml` 与 `../server/gameaistudio/update.json`，并上传到 `GAMEAISTUDIO_RELEASE_SSH_HOST:GAMEAISTUDIO_RELEASE_REMOTE_DIR`。
 5. 如果只想检查发布计划，不写文件也不打包，可以执行：
 
 ```powershell
@@ -223,16 +242,18 @@ pnpm verify:release
 
 ```text
 ${GAMEAISTUDIO_RELEASE_BASE_URL}/update.json
+${GAMEAISTUDIO_RELEASE_BASE_URL}/latest.yml
 ${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
+${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup-x.x.x.exe.blockmap
 ```
 
 8. 打开旧版本应用的关于弹层，点击 `检查更新`。
 
-固定下载包 `GameAIStudio-Setup.exe` 不带版本号，便于对外传播；更新清单里的安装包可以继续使用 `GameAIStudio-Setup-x.x.x.exe`，便于定位和回滚。
+固定下载包 `GameAIStudio-Setup.exe` 不带版本号，便于对外传播；标准更新清单里的安装包继续使用 `GameAIStudio-Setup-x.x.x.exe`，便于定位和回滚。
 
 如果服务器返回 `nextEnv`，应用会校验它的 SHA-256，并写入 `%APPDATA%\GameAIStudio\update.env`。下次启动时，应用会优先读取用户目录里的更新配置，再读取内置 `.env`。
 
-所有更新检查、清单下载、`nextEnv` 写入、安装包下载、哈希校验和安装器启动都会记录到 `logs/app.log`。
+所有更新检查、标准 updater 事件、`nextEnv` 写入、安装包下载进度和 `quitAndInstall` 调用都会记录到 `logs/app.log`。
 
 ## 发布打包
 
@@ -279,4 +300,4 @@ ${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup.exe
 - 持久化并展示最新 Web 构建产物检查结果，让用户看到导出是否包含必需的 HTML、wasm 和 pck 文件。
 - 通过本地预览服务器提供 `build/web/index.html`。
 - 使用 Godot Web 导出并把 `build/web` 打包成 zip。
-- 可在关于弹层检查软件更新，读取内置 `.env` 或用户目录 `update.env`，下载 JSON 更新清单，校验安装包 SHA-256，支持可选迭代更新，并在小版本或大版本更新时强制用户先更新再继续创建游戏。
+- 可在关于弹层检查软件更新，读取内置 `.env` 或用户目录 `update.env`，通过 `electron-updater` 读取标准 `latest.yml` 并执行 NSIS 静默更新，支持可选迭代更新，并在小版本或大版本更新时强制用户先更新再继续创建游戏。

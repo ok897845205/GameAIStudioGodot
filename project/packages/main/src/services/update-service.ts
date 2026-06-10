@@ -1,8 +1,14 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { app } from "electron";
+import type {
+  ProgressInfo,
+  UpdateCheckResult,
+  UpdateDownloadedEvent,
+  UpdateInfo as ElectronUpdateInfo,
+} from "electron-updater";
 import type {
   UpdateConfigSource,
   UpdateEvent,
@@ -14,20 +20,24 @@ import type {
 } from "@gameaistudio/shared";
 import { flushAllLogs, getAppLogger } from "./logger";
 
+const electronUpdaterRequire = createRequire(import.meta.url);
+
 const MANIFEST_URL_KEY = "GAMEAISTUDIO_UPDATE_MANIFEST_URL";
 const CHANNEL_KEY = "GAMEAISTUDIO_UPDATE_CHANNEL";
 const ALLOW_INSECURE_KEY = "GAMEAISTUDIO_UPDATE_ALLOW_INSECURE";
 const ALLOWED_ENV_KEYS = new Set([MANIFEST_URL_KEY, CHANNEL_KEY, ALLOW_INSECURE_KEY]);
 const DEFAULT_CHANNEL = "stable";
 const MANIFEST_TIMEOUT_MS = 20_000;
-const NETWORK_ERROR_HINT = "请确认域名 DNS 指向更新服务器、服务器 443/HTTPS 证书可用，或检查 userData/update.env 中的更新地址。";
+const NETWORK_ERROR_HINT = "请确认更新服务器可访问，或检查 userData/update.env 中的更新地址。";
 
 interface UpdateConfig {
   source: UpdateConfigSource;
   path?: string;
   userConfigPath: string;
   manifestUrl?: string;
+  feedUrl?: string;
   channel?: string;
+  updaterChannel: string;
   allowInsecureHttp: boolean;
   configured: boolean;
   error?: string;
@@ -37,10 +47,10 @@ interface UpdateManifestPackage {
   platform: string;
   arch: string;
   url: string;
-  sha256: string;
+  sha256?: string;
+  sha512?: string;
   size?: number;
   fileName?: string;
-  installerArgs?: string[];
 }
 
 interface UpdateManifestNextEnv {
@@ -57,16 +67,24 @@ interface UpdateManifest {
   releaseDate?: string;
   releaseNotes?: string;
   force?: boolean;
-  packages: UpdateManifestPackage[];
+  packages?: UpdateManifestPackage[];
   nextEnv?: UpdateManifestNextEnv;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-interface LaunchInstallerInput {
-  installerPath: string;
-  installerArgs: string[];
-  appExePath: string;
+interface StandardUpdaterLike {
+  autoDownload: boolean;
+  autoInstallOnAppQuit: boolean;
+  autoRunAppAfterInstall?: boolean;
+  allowDowngrade?: boolean;
+  channel: string | null;
+  logger?: { info(message?: unknown): void; warn(message?: unknown): void; error(message?: unknown): void; debug?(message?: string): void } | null;
+  setFeedURL(options: { provider: "generic"; url: string }): void;
+  checkForUpdates(): Promise<UpdateCheckResult | null>;
+  downloadUpdate(): Promise<string[]>;
+  quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
+  on(event: string, listener: (...args: any[]) => void): unknown;
 }
 
 export interface UpdateServiceOptions {
@@ -79,10 +97,10 @@ export interface UpdateServiceOptions {
   fetch?: FetchLike;
   now?: () => Date;
   allowInsecureLocalhost?: boolean;
-  appExePath?: string;
+  isPackaged?: boolean;
+  updater?: StandardUpdaterLike;
   flushLogs?: () => Promise<void>;
-  quit?: () => void | Promise<void>;
-  launchInstaller?: (input: LaunchInstallerInput) => void | Promise<void>;
+  prepareQuitAndInstall?: () => void | Promise<void>;
   onEvent?: (event: UpdateEvent) => void;
 }
 
@@ -142,6 +160,17 @@ export function sha256Hex(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+export function inferUpdateFeedUrl(manifestUrl: string): string {
+  const url = new URL(manifestUrl);
+  if (/\/(?:update\.json|latest\.ya?ml|[\w.-]+\.ya?ml)$/i.test(url.pathname)) {
+    url.pathname = url.pathname.replace(/\/(?:update\.json|latest\.ya?ml|[\w.-]+\.ya?ml)$/i, "");
+  }
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}
+
 function parseVersion(version: string): { major: number; minor: number; patch: number } {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
   if (!match) {
@@ -154,9 +183,40 @@ function parseVersion(version: string): { major: number; minor: number; patch: n
   };
 }
 
+function electronAppIsPackaged(): boolean {
+  return Boolean((app as { isPackaged?: boolean } | undefined)?.isPackaged);
+}
+
+function electronAppVersion(): string {
+  const electronApp = app as { getVersion?: () => string } | undefined;
+  return electronApp?.getVersion ? electronApp.getVersion() : "0.0.0";
+}
+
+function electronAppPath(name: "userData"): string {
+  const electronApp = app as { getPath?: (pathName: "userData") => string } | undefined;
+  if (!electronApp?.getPath) {
+    throw new Error(`Electron app.getPath(${name}) 不可用。`);
+  }
+  return electronApp.getPath(name);
+}
+
+function electronAppRootPath(): string {
+  const electronApp = app as { getAppPath?: () => string } | undefined;
+  if (!electronApp?.getAppPath) {
+    throw new Error("Electron app.getAppPath() 不可用。");
+  }
+  return electronApp.getAppPath();
+}
+
 function parseBooleanEnv(value: string | undefined): boolean {
   if (!value) return false;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function updaterChannelFromConfig(channel: string | undefined): string {
+  const normalized = channel?.trim();
+  if (!normalized || normalized === DEFAULT_CHANNEL) return "latest";
+  return normalized;
 }
 
 function isAllowedUpdateUrl(
@@ -217,6 +277,7 @@ function envToConfig(
 ): UpdateConfig {
   const manifestUrl = values[MANIFEST_URL_KEY]?.trim();
   const channel = values[CHANNEL_KEY]?.trim() || DEFAULT_CHANNEL;
+  const updaterChannel = updaterChannelFromConfig(channel);
   const allowInsecureHttp = parseBooleanEnv(values[ALLOW_INSECURE_KEY]);
   if (!manifestUrl) {
     return {
@@ -224,6 +285,7 @@ function envToConfig(
       path: configPath,
       userConfigPath,
       channel,
+      updaterChannel,
       allowInsecureHttp,
       configured: false,
       error: `${MANIFEST_URL_KEY} 未配置`,
@@ -235,7 +297,9 @@ function envToConfig(
       path: configPath,
       userConfigPath,
       manifestUrl,
+      feedUrl: undefined,
       channel,
+      updaterChannel,
       allowInsecureHttp,
       configured: false,
       error: "更新地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true",
@@ -246,7 +310,9 @@ function envToConfig(
     path: configPath,
     userConfigPath,
     manifestUrl,
+    feedUrl: inferUpdateFeedUrl(manifestUrl),
     channel,
+    updaterChannel,
     allowInsecureHttp,
     configured: true,
   };
@@ -265,57 +331,87 @@ function validateNextEnvContent(content: string, allowInsecureLocalhost: boolean
   }
 }
 
+function releaseNotesToText(releaseNotes: ElectronUpdateInfo["releaseNotes"]): string | undefined {
+  if (!releaseNotes) return undefined;
+  if (typeof releaseNotes === "string") return releaseNotes;
+  return releaseNotes
+    .map((item) => [item.version, item.note].filter(Boolean).join("\n"))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function selectedPackageInfo(pkg: UpdateManifestPackage): UpdatePackageInfo {
   return {
     platform: pkg.platform,
     arch: pkg.arch,
     url: pkg.url,
     sha256: pkg.sha256,
+    sha512: pkg.sha512,
     size: pkg.size,
     fileName: pkg.fileName,
   };
 }
 
-function safeInstallerFileName(rawUrl: string, version: string, platform: NodeJS.Platform): string {
+function electronPackageInfo(
+  info: ElectronUpdateInfo | undefined,
+  feedUrl: string | undefined,
+  platform: NodeJS.Platform,
+  arch: string,
+): UpdatePackageInfo | undefined {
+  const file = info?.files?.[0];
+  const rawUrl = file?.url ?? info?.path;
+  if (!rawUrl) return undefined;
+  const url = feedUrl ? new URL(rawUrl, `${feedUrl.replace(/\/$/, "")}/`).toString() : rawUrl;
+  let fileName: string | undefined;
   try {
-    const parsed = new URL(rawUrl);
-    const base = path.basename(parsed.pathname);
-    if (base && base !== "/" && !base.includes("..")) return base;
+    fileName = path.basename(new URL(url).pathname);
   } catch {
-    // Fall through to deterministic name below.
+    fileName = path.basename(rawUrl);
   }
-  return platform === "win32" ? `GameAIStudio-Setup-${version}.exe` : `GameAIStudio-${version}`;
+  return {
+    platform,
+    arch,
+    url,
+    sha512: file?.sha512 ?? info?.sha512,
+    size: file?.size,
+    fileName,
+  };
 }
 
-function powerShellQuote(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
+function createUpdaterLogger() {
+  const write = (level: "info" | "warn" | "error", message?: unknown): void => {
+    const text = typeof message === "string" ? message : JSON.stringify(message);
+    getAppLogger()[level]("electron-updater", text ?? "");
+  };
+  return {
+    info: (message?: unknown) => write("info", message),
+    warn: (message?: unknown) => write("warn", message),
+    error: (message?: unknown) => write("error", message),
+    debug: (message?: string) => getAppLogger().info("electron-updater", message ?? ""),
+  };
 }
 
-function defaultLaunchInstaller(input: LaunchInstallerInput): void {
-  if (process.platform === "win32") {
-    const argsLiteral = input.installerArgs.map(powerShellQuote).join(", ");
-    const command = [
-      `$installer = ${powerShellQuote(input.installerPath)};`,
-      `$exe = ${powerShellQuote(input.appExePath)};`,
-      `$args = @(${argsLiteral});`,
-      "Start-Process -FilePath $installer -ArgumentList $args -Wait;",
-      "Start-Process -FilePath $exe;",
-    ].join(" ");
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", command],
-      { detached: true, stdio: "ignore", windowsHide: true },
-    );
-    child.unref();
-    return;
-  }
+function createNoopUpdater(): StandardUpdaterLike {
+  return {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    autoRunAppAfterInstall: true,
+    allowDowngrade: false,
+    channel: null,
+    logger: null,
+    setFeedURL: () => undefined,
+    checkForUpdates: async () => null,
+    downloadUpdate: async () => {
+      throw new Error("开发模式不会下载更新。");
+    },
+    quitAndInstall: () => undefined,
+    on: () => undefined,
+  };
+}
 
-  const child = spawn(input.installerPath, input.installerArgs, {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  child.unref();
+function getElectronAutoUpdater(): StandardUpdaterLike {
+  const electronUpdater = electronUpdaterRequire("electron-updater") as typeof import("electron-updater");
+  return electronUpdater.autoUpdater as unknown as StandardUpdaterLike;
 }
 
 export class UpdateService {
@@ -329,22 +425,22 @@ export class UpdateService {
   private readonly fetchImpl: FetchLike;
   private readonly now: () => Date;
   private readonly allowInsecureLocalhost: boolean;
-  private readonly appExePath: string;
+  private readonly isPackaged: boolean;
+  private readonly updater: StandardUpdaterLike;
   private readonly flushLogs: () => Promise<void>;
-  private readonly quit: () => void | Promise<void>;
-  private readonly launchInstaller: (input: LaunchInstallerInput) => void | Promise<void>;
+  private readonly prepareQuitAndInstall: () => void | Promise<void>;
   private readonly onEvent?: (event: UpdateEvent) => void;
 
   private lastInfo?: UpdateInfo;
   private lastConfig?: UpdateConfig;
-  private lastManifestPackage?: UpdateManifestPackage;
-  private downloadedInstallerPath?: string;
+  private lastElectronInfo?: ElectronUpdateInfo;
+  private hasAvailableElectronUpdate = false;
 
   constructor(options: UpdateServiceOptions = {}) {
-    this.currentVersion = options.currentVersion ?? app.getVersion();
-    this.userDataPath = options.userDataPath ?? app.getPath("userData");
+    this.currentVersion = options.currentVersion ?? electronAppVersion();
+    this.userDataPath = options.userDataPath ?? electronAppPath("userData");
     this.userConfigPath = path.join(this.userDataPath, "update.env");
-    this.bundledEnvPath = options.bundledEnvPath ?? path.join(app.getAppPath(), ".env");
+    this.bundledEnvPath = options.bundledEnvPath ?? path.join(electronAppRootPath(), ".env");
     this.defaultEnv = options.defaultEnv ?? {
       [MANIFEST_URL_KEY]: process.env[MANIFEST_URL_KEY],
       [CHANNEL_KEY]: process.env[CHANNEL_KEY] ?? DEFAULT_CHANNEL,
@@ -354,12 +450,15 @@ export class UpdateService {
     this.arch = options.arch ?? process.arch;
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date());
-    this.allowInsecureLocalhost = options.allowInsecureLocalhost ?? !app.isPackaged;
-    this.appExePath = options.appExePath ?? process.execPath;
+    this.isPackaged = options.isPackaged ?? electronAppIsPackaged();
+    this.allowInsecureLocalhost = options.allowInsecureLocalhost ?? !this.isPackaged;
+    this.updater = options.updater ?? (this.isPackaged ? getElectronAutoUpdater() : createNoopUpdater());
     this.flushLogs = options.flushLogs ?? flushAllLogs;
-    this.quit = options.quit ?? (() => app.quit());
-    this.launchInstaller = options.launchInstaller ?? defaultLaunchInstaller;
+    this.prepareQuitAndInstall = options.prepareQuitAndInstall ?? (() => undefined);
     this.onEvent = options.onEvent;
+
+    this.configureUpdaterDefaults();
+    this.bindUpdaterEvents();
   }
 
   async getStatus(): Promise<UpdateInfo> {
@@ -372,6 +471,10 @@ export class UpdateService {
     return info;
   }
 
+  isDownloadOrInstallInProgress(): boolean {
+    return this.lastInfo?.status === "downloading" || this.lastInfo?.status === "installing";
+  }
+
   async checkForUpdates(): Promise<UpdateInfo> {
     const log = getAppLogger();
     const config = await this.loadConfig();
@@ -380,7 +483,7 @@ export class UpdateService {
     this.lastInfo = checking;
     this.emit("checking", "正在检查软件更新", checking);
 
-    if (!config.configured || !config.manifestUrl) {
+    if (!config.configured || !config.manifestUrl || !config.feedUrl) {
       const info = {
         ...checking,
         status: "not-configured" as const,
@@ -443,95 +546,228 @@ export class UpdateService {
     }
   }
 
+  async downloadAndInstall(): Promise<UpdateInstallResult> {
+    let info = this.lastInfo;
+    if (!info || info.policy === "none" || !this.hasAvailableElectronUpdate) {
+      info = await this.checkForUpdates();
+    }
+    if (!this.isPackaged) {
+      throw new Error("开发模式不会执行安装。请在打包后的应用中测试更新。");
+    }
+    if (!info || info.policy === "none" || !this.hasAvailableElectronUpdate) {
+      throw new Error("当前没有可安装的更新。");
+    }
+
+    const downloadingInfo: UpdateInfo = {
+      ...info,
+      status: "downloading",
+      downloadedBytes: 0,
+      totalBytes: info.package?.size,
+    };
+    this.lastInfo = downloadingInfo;
+    this.emit("downloading", "正在下载更新安装包", downloadingInfo, {
+      receivedBytes: 0,
+      totalBytes: info.package?.size,
+    });
+
+    try {
+      getAppLogger().info("update", "开始通过 electron-updater 下载更新", {
+        currentVersion: this.currentVersion,
+        latestVersion: info.latestVersion,
+        feedUrl: this.lastConfig?.feedUrl,
+        channel: this.lastConfig?.updaterChannel,
+      });
+      const downloadedPaths = await this.updater.downloadUpdate();
+      const installerPath = downloadedPaths[0];
+      const installingInfo: UpdateInfo = {
+        ...(this.lastInfo ?? info),
+        status: "installing",
+      };
+      this.lastInfo = installingInfo;
+      this.emit("installing", "更新已下载，正在安装并重启", installingInfo);
+      getAppLogger().info("update", "更新已下载，调用 electron-updater quitAndInstall", {
+        installerPath,
+        downloadedPaths,
+        latestVersion: installingInfo.latestVersion,
+      });
+
+      await this.flushLogs();
+      await this.prepareQuitAndInstall();
+      this.updater.quitAndInstall(true, true);
+
+      return {
+        launched: true,
+        installerPath,
+        message: "更新已下载，正在安装并重启。",
+        info: installingInfo,
+      };
+    } catch (error) {
+      const errorInfo: UpdateInfo = {
+        ...info,
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+        checkedAt: this.now().toISOString(),
+      };
+      this.lastInfo = errorInfo;
+      this.emit("error", "更新安装失败", errorInfo);
+      throw error;
+    }
+  }
+
+  private configureUpdaterDefaults(): void {
+    this.updater.autoDownload = false;
+    this.updater.autoInstallOnAppQuit = false;
+    this.updater.autoRunAppAfterInstall = true;
+    this.updater.allowDowngrade = false;
+    this.updater.logger = createUpdaterLogger();
+  }
+
+  private bindUpdaterEvents(): void {
+    this.updater.on("checking-for-update", () => {
+      const info = this.lastConfig ? this.baseInfo(this.lastConfig, "checking") : this.lastInfo;
+      if (info) {
+        this.lastInfo = info;
+        this.emit("checking", "正在检查软件更新", info);
+      }
+    });
+    this.updater.on("update-available", (electronInfo: ElectronUpdateInfo) => {
+      this.lastElectronInfo = electronInfo;
+      this.hasAvailableElectronUpdate = true;
+      const info = this.infoFromElectronUpdate(electronInfo, "available");
+      this.lastInfo = info;
+      this.emit("available", "发现可用更新", info);
+    });
+    this.updater.on("update-not-available", (electronInfo: ElectronUpdateInfo) => {
+      this.lastElectronInfo = electronInfo;
+      this.hasAvailableElectronUpdate = false;
+      const info = this.infoFromElectronUpdate(electronInfo, "idle");
+      this.lastInfo = info;
+      this.emit("idle", "当前已是最新版本", info);
+    });
+    this.updater.on("download-progress", (progress: ProgressInfo) => {
+      const info: UpdateInfo = {
+        ...(this.lastInfo ?? this.infoFromElectronUpdate(this.lastElectronInfo, "downloading")),
+        status: "downloading",
+        downloadedBytes: progress.transferred,
+        totalBytes: progress.total,
+      };
+      this.lastInfo = info;
+      this.emit("downloading", "正在下载更新安装包", info, {
+        receivedBytes: progress.transferred,
+        totalBytes: progress.total,
+      });
+    });
+    this.updater.on("update-downloaded", (event: UpdateDownloadedEvent) => {
+      this.lastElectronInfo = event;
+      const info: UpdateInfo = {
+        ...this.infoFromElectronUpdate(event, "downloading"),
+        downloadedBytes: event.files?.[0]?.size,
+        totalBytes: event.files?.[0]?.size,
+      };
+      this.lastInfo = info;
+      this.emit("downloading", "更新安装包已下载", info, {
+        receivedBytes: info.downloadedBytes,
+        totalBytes: info.totalBytes,
+      });
+    });
+    this.updater.on("error", (error: Error) => {
+      const base = this.lastInfo ?? (this.lastConfig ? this.baseInfo(this.lastConfig, "error") : undefined);
+      if (!base) return;
+      const info: UpdateInfo = {
+        ...base,
+        status: "error",
+        error: error.message,
+        checkedAt: this.now().toISOString(),
+      };
+      this.lastInfo = info;
+      this.emit("error", "更新失败", info);
+    });
+  }
+
   private async checkConfiguredSource(config: UpdateConfig): Promise<UpdateInfo> {
     const log = getAppLogger();
-    if (!config.manifestUrl) {
+    if (!config.manifestUrl || !config.feedUrl) {
       throw new Error(config.error ?? "未配置更新服务器地址");
     }
 
-    log.info("update", "开始下载更新 manifest", {
+    log.info("update", "开始检查更新", {
       manifestUrl: config.manifestUrl,
+      feedUrl: config.feedUrl,
       source: config.source,
       channel: config.channel,
+      updaterChannel: config.updaterChannel,
+      packaged: this.isPackaged,
     });
-    const manifest = await this.fetchManifest(config.manifestUrl, config.allowInsecureHttp);
-    if (manifest.channel && config.channel && manifest.channel !== config.channel) {
-      log.warn("update", "manifest channel 与本地配置不一致", {
-        localChannel: config.channel,
-        manifestChannel: manifest.channel,
-      });
-    }
-    await this.applyNextEnv(manifest.nextEnv);
-    const selectedPackage = this.selectPackage(manifest);
-    const policy = classifyUpdatePolicy(this.currentVersion, manifest);
-    const info: UpdateInfo = {
-      ...this.baseInfo(config, policy.policy === "none" ? "idle" : "available"),
-      latestVersion: manifest.latestVersion,
-      policy: policy.policy,
-      reason: policy.reason,
-      releaseDate: manifest.releaseDate,
-      releaseNotes: manifest.releaseNotes,
-      package: selectedPackage ? selectedPackageInfo(selectedPackage) : undefined,
-      checkedAt: this.now().toISOString(),
-    };
 
-    this.lastConfig = config;
+    const manifest = await this.fetchOptionalManifest(config);
+    const selectedPackage = manifest ? this.selectPackage(manifest) : undefined;
+    const manifestPolicy = manifest ? classifyUpdatePolicy(this.currentVersion, manifest) : undefined;
+
+    if (!this.isPackaged) {
+      if (!manifest || !manifestPolicy) {
+        throw new Error("开发模式需要可读取的 update.json 元数据；打包后应用会使用 latest.yml 执行标准更新。");
+      }
+      const info = this.infoFromManifest(config, manifest, selectedPackage, manifestPolicy);
+      this.lastInfo = info;
+      this.hasAvailableElectronUpdate = info.policy !== "none";
+      this.emit(info.status, manifestPolicy.policy === "none" ? "当前已是最新版本" : "发现可用更新", info);
+      return info;
+    }
+
+    this.configureFeed(config);
+    const result = await this.updater.checkForUpdates();
+    const electronInfo = result?.updateInfo;
+    this.lastElectronInfo = electronInfo;
+    this.hasAvailableElectronUpdate = Boolean(result?.isUpdateAvailable);
+    const info = manifest && manifestPolicy
+      ? this.infoFromManifestAndElectron(config, manifest, selectedPackage, manifestPolicy, electronInfo, result)
+      : this.infoFromElectronResult(config, electronInfo, result);
     this.lastInfo = info;
-    this.lastManifestPackage = selectedPackage;
-    this.downloadedInstallerPath = undefined;
-    log.info("update", "更新 manifest 解析完成", {
+    log.info("update", "更新检查完成", {
       currentVersion: this.currentVersion,
-      latestVersion: manifest.latestVersion,
+      latestVersion: info.latestVersion,
       policy: info.policy,
       reason: info.reason,
-      packageUrl: selectedPackage?.url,
+      feedUrl: config.feedUrl,
+      electronUpdateAvailable: result?.isUpdateAvailable ?? false,
+      packageUrl: info.package?.url,
     });
-    this.emit(info.status, policy.policy === "none" ? "当前已是最新版本" : "发现可用更新", info);
+    this.emit(info.status, info.policy === "none" ? "当前已是最新版本" : "发现可用更新", info);
     return info;
   }
 
-  async downloadAndInstall(): Promise<UpdateInstallResult> {
-    let info = this.lastInfo;
-    if (!info || info.policy === "none" || !this.lastManifestPackage) {
-      info = await this.checkForUpdates();
+  private async fetchOptionalManifest(config: UpdateConfig): Promise<UpdateManifest | undefined> {
+    if (!config.manifestUrl) return undefined;
+    try {
+      const manifest = await this.fetchManifest(config.manifestUrl, config.allowInsecureHttp);
+      if (manifest.channel && config.channel && manifest.channel !== config.channel) {
+        getAppLogger().warn("update", "update.json channel 与本地配置不一致", {
+          localChannel: config.channel,
+          manifestChannel: manifest.channel,
+        });
+      }
+      await this.applyNextEnv(manifest.nextEnv);
+      return manifest;
+    } catch (error) {
+      if (!this.isPackaged) {
+        throw error;
+      }
+      getAppLogger().warn("update", "update.json 元数据读取失败，继续使用 latest.yml 标准更新清单", {
+        manifestUrl: config.manifestUrl,
+        error,
+      });
+      return undefined;
     }
-    const pkg = this.lastManifestPackage;
-    if (!pkg || !info.package || info.policy === "none") {
-      throw new Error("当前没有可安装的更新。");
-    }
-    if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost, this.lastConfig?.allowInsecureHttp)) {
-      throw new Error("安装包下载地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true。");
-    }
+  }
 
-    const installerPath = this.downloadedInstallerPath ?? (await this.downloadPackage(pkg, info));
-    this.downloadedInstallerPath = installerPath;
-    const installerArgs = pkg.installerArgs ?? (this.platform === "win32" ? ["/S"] : []);
-    const installingInfo: UpdateInfo = {
-      ...info,
-      status: "installing",
-    };
-    this.lastInfo = installingInfo;
-    this.emit("installing", "安装器已启动，应用即将退出", installingInfo);
-    getAppLogger().info("update", "启动更新安装器", {
-      installerPath,
-      installerArgs,
-      appExePath: this.appExePath,
+  private configureFeed(config: UpdateConfig): void {
+    if (!config.feedUrl) return;
+    this.updater.channel = config.updaterChannel;
+    this.updater.allowDowngrade = false;
+    this.updater.setFeedURL({
+      provider: "generic",
+      url: config.feedUrl,
     });
-
-    await this.launchInstaller({
-      installerPath,
-      installerArgs,
-      appExePath: this.appExePath,
-    });
-    await this.flushLogs();
-    await this.quit();
-
-    return {
-      launched: true,
-      installerPath,
-      message: "安装器已启动，应用即将退出并在安装完成后重启。",
-      info: installingInfo,
-    };
   }
 
   private async loadConfig(options: { skipUserData?: boolean } = {}): Promise<UpdateConfig> {
@@ -588,6 +824,98 @@ export class UpdateService {
     };
   }
 
+  private infoFromManifest(
+    config: UpdateConfig,
+    manifest: UpdateManifest,
+    selectedPackage: UpdateManifestPackage | undefined,
+    policy: { policy: UpdatePolicy; reason: UpdateRequirementReason },
+  ): UpdateInfo {
+    return {
+      ...this.baseInfo(config, policy.policy === "none" ? "idle" : "available"),
+      latestVersion: manifest.latestVersion,
+      policy: policy.policy,
+      reason: policy.reason,
+      releaseDate: manifest.releaseDate,
+      releaseNotes: manifest.releaseNotes,
+      package: selectedPackage ? selectedPackageInfo(selectedPackage) : undefined,
+      checkedAt: this.now().toISOString(),
+    };
+  }
+
+  private infoFromManifestAndElectron(
+    config: UpdateConfig,
+    manifest: UpdateManifest,
+    selectedPackage: UpdateManifestPackage | undefined,
+    manifestPolicy: { policy: UpdatePolicy; reason: UpdateRequirementReason },
+    electronInfo: ElectronUpdateInfo | undefined,
+    result: UpdateCheckResult | null,
+  ): UpdateInfo {
+    const latestVersion = electronInfo?.version ?? manifest.latestVersion;
+    const policy =
+      latestVersion === manifest.latestVersion
+        ? manifestPolicy
+        : classifyUpdatePolicy(this.currentVersion, { latestVersion });
+    const effectivePolicy =
+      result?.isUpdateAvailable === false
+        ? ({ policy: "none", reason: "none" } as const)
+        : policy;
+    return {
+      ...this.baseInfo(config, effectivePolicy.policy === "none" ? "idle" : "available"),
+      latestVersion,
+      policy: effectivePolicy.policy,
+      reason: effectivePolicy.reason,
+      releaseDate: electronInfo?.releaseDate ?? manifest.releaseDate,
+      releaseNotes: manifest.releaseNotes ?? releaseNotesToText(electronInfo?.releaseNotes),
+      package:
+        selectedPackage
+          ? selectedPackageInfo(selectedPackage)
+          : electronPackageInfo(electronInfo, config.feedUrl, this.platform, this.arch),
+      checkedAt: this.now().toISOString(),
+    };
+  }
+
+  private infoFromElectronResult(
+    config: UpdateConfig,
+    electronInfo: ElectronUpdateInfo | undefined,
+    result: UpdateCheckResult | null,
+  ): UpdateInfo {
+    const latestVersion = electronInfo?.version ?? this.currentVersion;
+    const policy = result?.isUpdateAvailable
+      ? classifyUpdatePolicy(this.currentVersion, { latestVersion })
+      : ({ policy: "none", reason: "none" } as const);
+    return {
+      ...this.baseInfo(config, policy.policy === "none" ? "idle" : "available"),
+      latestVersion,
+      policy: policy.policy,
+      reason: policy.reason,
+      releaseDate: electronInfo?.releaseDate,
+      releaseNotes: releaseNotesToText(electronInfo?.releaseNotes),
+      package: electronPackageInfo(electronInfo, config.feedUrl, this.platform, this.arch),
+      checkedAt: this.now().toISOString(),
+    };
+  }
+
+  private infoFromElectronUpdate(
+    electronInfo: ElectronUpdateInfo | undefined,
+    status: UpdateInfo["status"],
+  ): UpdateInfo {
+    const config =
+      this.lastConfig ??
+      envToConfig(this.defaultEnv, "default", this.userConfigPath, undefined, this.allowInsecureLocalhost);
+    const latestVersion = electronInfo?.version ?? this.currentVersion;
+    const policy = classifyUpdatePolicy(this.currentVersion, { latestVersion });
+    return {
+      ...this.baseInfo(config, status),
+      latestVersion,
+      policy: status === "idle" ? "none" : policy.policy,
+      reason: status === "idle" ? "none" : policy.reason,
+      releaseDate: electronInfo?.releaseDate,
+      releaseNotes: releaseNotesToText(electronInfo?.releaseNotes),
+      package: electronPackageInfo(electronInfo, config.feedUrl, this.platform, this.arch),
+      checkedAt: this.now().toISOString(),
+    };
+  }
+
   private async fetchManifest(manifestUrl: string, allowInsecureHttp: boolean): Promise<UpdateManifest> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
@@ -621,12 +949,12 @@ export class UpdateService {
     }
     parseVersion(manifest.latestVersion);
     if (manifest.minSupportedVersion) parseVersion(manifest.minSupportedVersion);
-    if (!Array.isArray(manifest.packages)) {
-      throw new Error("更新 manifest 缺少 packages。");
+    if (manifest.packages !== undefined && !Array.isArray(manifest.packages)) {
+      throw new Error("更新 manifest 的 packages 必须是数组。");
     }
-    for (const pkg of manifest.packages) {
-      if (!pkg.platform || !pkg.arch || !pkg.url || !pkg.sha256) {
-        throw new Error("更新安装包信息缺少 platform/arch/url/sha256。");
+    for (const pkg of manifest.packages ?? []) {
+      if (!pkg.platform || !pkg.arch || !pkg.url || (!pkg.sha256 && !pkg.sha512)) {
+        throw new Error("更新安装包信息缺少 platform/arch/url/sha256 或 sha512。");
       }
       if (!isAllowedUpdateUrl(pkg.url, this.allowInsecureLocalhost, allowInsecureHttp)) {
         throw new Error("更新安装包地址必须使用 HTTPS；如需 IP/端口直连 HTTP，请显式设置 GAMEAISTUDIO_UPDATE_ALLOW_INSECURE=true。");
@@ -637,14 +965,17 @@ export class UpdateService {
         throw new Error("nextEnv 缺少 content 或 sha256。");
       }
     }
-    return manifest as UpdateManifest;
+    return {
+      ...manifest,
+      packages: manifest.packages ?? [],
+    } as UpdateManifest;
   }
 
   private selectPackage(manifest: UpdateManifest): UpdateManifestPackage | undefined {
-    const pkg = manifest.packages.find(
+    const pkg = (manifest.packages ?? []).find(
       (candidate) => candidate.platform === this.platform && candidate.arch === this.arch,
     );
-    if (!pkg && compareVersions(manifest.latestVersion, this.currentVersion) > 0) {
+    if (!pkg && (manifest.packages?.length ?? 0) > 0 && compareVersions(manifest.latestVersion, this.currentVersion) > 0) {
       throw new Error(`没有适用于 ${this.platform}/${this.arch} 的更新安装包。`);
     }
     return pkg;
@@ -666,107 +997,6 @@ export class UpdateService {
       path: this.userConfigPath,
       effective: nextEnv.effective ?? "nextLaunch",
     });
-  }
-
-  private async downloadPackage(pkg: UpdateManifestPackage, info: UpdateInfo): Promise<string> {
-    const version = info.latestVersion ?? this.currentVersion;
-    const downloadDir = path.join(this.userDataPath, "updates", version);
-    await mkdir(downloadDir, { recursive: true });
-    const fileName = pkg.fileName ?? safeInstallerFileName(pkg.url, version, this.platform);
-    const installerPath = path.join(downloadDir, fileName);
-    const tempPath = `${installerPath}.download`;
-
-    const existing = await this.verifyExistingDownload(installerPath, pkg.sha256);
-    if (existing) {
-      getAppLogger().info("update", "复用已下载并校验通过的安装包", { installerPath });
-      return installerPath;
-    }
-
-    const downloadingInfo: UpdateInfo = {
-      ...info,
-      status: "downloading",
-      downloadedBytes: 0,
-      totalBytes: pkg.size,
-    };
-    this.lastInfo = downloadingInfo;
-    this.emit("downloading", "正在下载更新安装包", downloadingInfo, {
-      receivedBytes: 0,
-      totalBytes: pkg.size,
-    });
-    getAppLogger().info("update", "开始下载安装包", {
-      url: pkg.url,
-      installerPath,
-      expectedSha256: pkg.sha256,
-      size: pkg.size,
-    });
-
-    await unlink(tempPath).catch(() => undefined);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(pkg.url);
-    } catch (error) {
-      throw new Error(formatNetworkFetchError("安装包下载", pkg.url, error));
-    }
-    if (!response.ok) {
-      throw new Error(`安装包下载失败：HTTP ${response.status}`);
-    }
-    const totalBytes = Number(response.headers.get("content-length") ?? pkg.size ?? 0) || undefined;
-    const hash = createHash("sha256");
-    let receivedBytes = 0;
-    const file = await open(tempPath, "w");
-    try {
-      if (!response.body) {
-        const buffer = Buffer.from(await response.arrayBuffer());
-        hash.update(buffer);
-        await file.write(buffer);
-        receivedBytes = buffer.length;
-      } else {
-        const reader = response.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const buffer = Buffer.from(value);
-          hash.update(buffer);
-          await file.write(buffer);
-          receivedBytes += buffer.length;
-          this.emit("downloading", "正在下载更新安装包", {
-            ...downloadingInfo,
-            downloadedBytes: receivedBytes,
-            totalBytes,
-          }, {
-            receivedBytes,
-            totalBytes,
-          });
-        }
-      }
-    } finally {
-      await file.close();
-    }
-
-    const actual = hash.digest("hex");
-    if (actual.toLowerCase() !== pkg.sha256.toLowerCase()) {
-      await unlink(tempPath).catch(() => undefined);
-      throw new Error("安装包 sha256 校验失败。");
-    }
-    await unlink(installerPath).catch(() => undefined);
-    await rename(tempPath, installerPath);
-    getAppLogger().info("update", "安装包下载并校验完成", {
-      installerPath,
-      bytes: receivedBytes,
-      sha256: actual,
-    });
-    return installerPath;
-  }
-
-  private async verifyExistingDownload(filePath: string, expectedSha256: string): Promise<boolean> {
-    try {
-      const file = await stat(filePath);
-      if (!file.isFile()) return false;
-      const content = await readFile(filePath);
-      return sha256Hex(content).toLowerCase() === expectedSha256.toLowerCase();
-    } catch {
-      return false;
-    }
   }
 
   private emit(

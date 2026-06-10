@@ -82,7 +82,11 @@ describe("runAgentTurnWithOptionalPreview", () => {
             ...baseProject,
             previewUrl: "http://127.0.0.1:3123?v=1",
             previewStatus: "ready"
-          })
+          }),
+          appendMessages: async (_projectId: string, appended: typeof runResult.messages) => [
+            ...runResult.messages,
+            ...appended
+          ]
         }
       },
       input()
@@ -110,7 +114,13 @@ describe("runAgentTurnWithOptionalPreview", () => {
             throw new Error("Godot Web export failed");
           }
         },
-        projectService: { getProject: async () => baseProject }
+        projectService: {
+          getProject: async () => baseProject,
+          appendMessages: async (_projectId: string, appended: typeof runResult.messages) => [
+            ...runResult.messages,
+            ...appended
+          ]
+        }
       },
       input()
     );
@@ -139,7 +149,13 @@ describe("runAgentTurnWithOptionalPreview", () => {
             throw new Error("unexpected");
           }
         },
-        projectService: { getProject: async () => baseProject }
+        projectService: {
+          getProject: async () => baseProject,
+          appendMessages: async (_projectId: string, appended: typeof runResult.messages) => [
+            ...runResult.messages,
+            ...appended
+          ]
+        }
       },
       input()
     );
@@ -175,7 +191,13 @@ describe("runAgentTurnWithOptionalPreview", () => {
             return {} as never;
           }
         },
-        projectService: { getProject: async () => baseProject }
+        projectService: {
+          getProject: async () => baseProject,
+          appendMessages: async (_projectId: string, appended: typeof runResult.messages) => [
+            ...runResult.messages,
+            ...appended
+          ]
+        }
       },
       input(false)
     );
@@ -215,7 +237,13 @@ describe("runAgentTurnWithOptionalPreview", () => {
             return {} as never;
           }
         },
-        projectService: { getProject: async () => baseProject }
+        projectService: {
+          getProject: async () => baseProject,
+          appendMessages: async (_projectId: string, appended: typeof runResult.messages) => [
+            ...runResult.messages,
+            ...appended
+          ]
+        }
       },
       input(false)
     );

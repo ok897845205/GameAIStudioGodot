@@ -106,6 +106,22 @@ export interface AgentProfile {
 
 export type AgentAttachmentKind = "image";
 
+/**
+ * Visual/semantic category of a chat message. `text` (default) is a normal
+ * conversation turn; the rest are milestone/system events that render with
+ * their own icon and accent in the chat thread.
+ */
+export type AgentMessageKind =
+  | "text"
+  | "tool"
+  | "error"
+  | "file-change"
+  | "git"
+  | "preview"
+  | "export"
+  | "workflow"
+  | "log";
+
 export interface AgentAttachment {
   id: string;
   kind: AgentAttachmentKind;
@@ -129,6 +145,10 @@ export interface AgentMessage {
   role: "user" | "agent" | "system";
   content: string;
   createdAt: string;
+  /** Semantic category — defaults to "text" when absent. */
+  kind?: AgentMessageKind;
+  /** Groups the user message and the agent reply of one conversation turn. */
+  turnId?: string;
   cliToolId?: CliToolId;
   exitCode?: number;
   durationMs?: number;
@@ -199,6 +219,8 @@ export interface AgentStreamEvent {
   messageId: string;
   delta: string;
   done: boolean;
+  /** CLI executing this turn, so the streaming bubble can show it live. */
+  cliToolId?: CliToolId;
 }
 
 export type PreviewStatus = "watching" | "exporting" | "ready" | "failed" | "stopped";
@@ -250,6 +272,24 @@ export interface UpdateProjectAgentClisInput {
   agentCliToolIds: Partial<Record<string, CliToolId>>;
 }
 
+export interface DeleteProjectMessageInput {
+  projectId: string;
+  messageId: string;
+}
+
+export interface ClearProjectMessagesInput {
+  projectId: string;
+  /** When set, only this Agent's thread is cleared; otherwise the whole project chat. */
+  agentId?: string;
+}
+
+export interface ExportChatResult {
+  projectId: string;
+  /** Absolute path of the exported markdown file. */
+  path: string;
+  messageCount: number;
+}
+
 export interface RunAgentTurnInput {
   projectId: string;
   agentId: string;
@@ -257,6 +297,11 @@ export interface RunAgentTurnInput {
   message: string;
   autoStartPreview: boolean;
   attachments?: AgentAttachmentInput[];
+  /**
+   * Re-run of an earlier user message ("重新生成"): the turn executes normally
+   * but no new user message is appended to the history.
+   */
+  regenerate?: boolean;
 }
 
 export interface RunAgentTurnResult {
@@ -511,6 +556,9 @@ export interface StudioApi {
   listProjects(): Promise<StudioProject[]>;
   getProject(projectId: string): Promise<ProjectDetails>;
   runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTurnResult>;
+  deleteProjectMessage(input: DeleteProjectMessageInput): Promise<AgentMessage[]>;
+  clearProjectMessages(input: ClearProjectMessagesInput): Promise<AgentMessage[]>;
+  exportProjectChat(projectId: string): Promise<ExportChatResult>;
   runStudioWorkflow(input: RunStudioWorkflowInput): Promise<RunStudioWorkflowResult>;
   listRuns(projectId: string): Promise<StudioRun[]>;
   cancelRun(runId: string): Promise<StudioRun>;

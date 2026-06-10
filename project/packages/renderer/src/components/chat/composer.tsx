@@ -18,6 +18,9 @@ import {
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 
+/** Hard cap on images per message — keeps prompts and CLI argv sane. */
+const MAX_IMAGES_PER_MESSAGE = 4;
+
 export function Composer({
   placeholder = "给 AI 发消息…",
 }: {
@@ -39,6 +42,14 @@ export function Composer({
     const timer = setTimeout(() => setAttachNotice(""), 2500);
     return () => clearTimeout(timer);
   }, [attachNotice]);
+
+  // Grow with the content up to the CSS max-height, then scroll inside.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [composer.text]);
 
   // Create one object URL per pending attachment (not per render) and revoke
   // them when the attachment set changes or the composer unmounts.
@@ -83,10 +94,19 @@ export function Composer({
       setAttachNotice("当前 CLI 不支持图片输入，请切换到支持图片的 CLI。");
       return 0;
     }
-    for (const file of images) {
+    const room = MAX_IMAGES_PER_MESSAGE - composer.attachments.length;
+    if (room <= 0) {
+      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片。`);
+      return 0;
+    }
+    const accepted = images.slice(0, room);
+    if (accepted.length < images.length) {
+      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片，已保留前 ${accepted.length} 张。`);
+    }
+    for (const file of accepted) {
       void composerRuntime.addAttachment(file);
     }
-    return images.length;
+    return accepted.length;
   };
 
   // Clipboard images (screenshots) paste straight into the composer.

@@ -31,6 +31,8 @@ interface BuildMarkdownInput {
   recentMessages: string[];
   agentJournal: string;
   now: string;
+  /** Compact git state line, e.g. "main@abc1234, 3 uncommitted change(s)". */
+  gitSummary?: string;
 }
 
 const DEFAULT_MAX_FILES = 140;
@@ -175,7 +177,7 @@ function previewStatusLabel(status?: PreviewStatus): string {
   return labels[status];
 }
 
-function formatDeliveryStatus(project: ProjectDetails): string[] {
+function formatDeliveryStatus(project: ProjectDetails, gitSummary?: string): string[] {
   const inspection = project.latestWebBuildInspection;
   const inspectionLine = inspection
     ? inspection.ok
@@ -185,6 +187,7 @@ function formatDeliveryStatus(project: ProjectDetails): string[] {
 
   return [
     `- Web build path: ${project.webBuildPath}`,
+    ...(gitSummary ? [`- Git: ${gitSummary}`] : []),
     `- Preview: ${previewStatusLabel(project.previewStatus)}${project.previewUrl ? ` (${project.previewUrl})` : ""}`,
     `- Web zip: ${project.exportZipPath ?? "not exported yet"}`,
     `- Export manifest: ${project.latestExportManifestPath ?? "not exported yet"}`,
@@ -218,7 +221,7 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     "",
     "## Delivery Status",
     "",
-    ...formatDeliveryStatus(input.project),
+    ...formatDeliveryStatus(input.project, input.gitSummary),
     "",
     "## Current User Message",
     "",
@@ -247,7 +250,12 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
 export class AgentContextService {
   constructor(private readonly options: AgentContextServiceOptions = {}) {}
 
-  async prepare(input: { project: ProjectDetails; agentId: string; userMessage: string }): Promise<AgentContextBundle> {
+  async prepare(input: {
+    project: ProjectDetails;
+    agentId: string;
+    userMessage: string;
+    gitSummary?: string;
+  }): Promise<AgentContextBundle> {
     const files = await listAgentContextFiles(input.project.rootPath, this.options.maxFiles ?? DEFAULT_MAX_FILES);
     const recentMessages = summarizeRecentMessages(input.project.messages, this.options.maxMessages ?? DEFAULT_MAX_MESSAGES);
     const agentJournal = await readAgentJournalTail(input.project.rootPath);

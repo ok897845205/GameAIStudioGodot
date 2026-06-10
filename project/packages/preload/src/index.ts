@@ -1,8 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AgentStreamEvent,
+  ClearProjectMessagesInput,
   CliToolId,
   CreateProjectInput,
+  DeleteProjectMessageInput,
   GitCommitInput,
   GitRestoreInput,
   ProjectFilePreviewInput,
@@ -30,6 +32,9 @@ const api: StudioApi = {
   restoreProjectGit: (input: GitRestoreInput) => ipcRenderer.invoke("projects:git-restore", input),
   readProjectFile: (input: ProjectFilePreviewInput) => ipcRenderer.invoke("projects:file-preview", input),
   runAgentTurn: (input: RunAgentTurnInput) => ipcRenderer.invoke("agents:run-turn", input),
+  deleteProjectMessage: (input: DeleteProjectMessageInput) => ipcRenderer.invoke("projects:delete-message", input),
+  clearProjectMessages: (input: ClearProjectMessagesInput) => ipcRenderer.invoke("projects:clear-messages", input),
+  exportProjectChat: (projectId: string) => ipcRenderer.invoke("projects:export-chat", projectId),
   runStudioWorkflow: (input: RunStudioWorkflowInput) => ipcRenderer.invoke("agents:run-workflow", input),
   listRuns: (projectId: string) => ipcRenderer.invoke("runs:list", projectId),
   cancelRun: (runId: string) => ipcRenderer.invoke("runs:cancel", runId),

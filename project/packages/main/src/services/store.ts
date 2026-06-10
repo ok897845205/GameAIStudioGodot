@@ -89,6 +89,34 @@ export class StudioStore {
     await this.save();
   }
 
+  async deleteMessage(projectId: string, messageId: string): Promise<boolean> {
+    const state = await this.load();
+    const before = state.messages.length;
+    state.messages = state.messages.filter(
+      (message) => !(message.projectId === projectId && message.id === messageId)
+    );
+    const deleted = state.messages.length < before;
+    if (deleted) {
+      await this.save();
+    }
+    return deleted;
+  }
+
+  /** Clears one Agent's thread (or the whole project chat when agentId is omitted). */
+  async clearMessages(projectId: string, agentId?: string): Promise<number> {
+    const state = await this.load();
+    const before = state.messages.length;
+    state.messages = state.messages.filter((message) => {
+      if (message.projectId !== projectId) return true;
+      return agentId !== undefined && message.agentId !== agentId;
+    });
+    const removed = before - state.messages.length;
+    if (removed > 0) {
+      await this.save();
+    }
+    return removed;
+  }
+
   async listRuns(projectId: string): Promise<StudioRun[]> {
     const state = await this.load();
     return state.runs

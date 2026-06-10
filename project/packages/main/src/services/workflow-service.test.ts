@@ -280,10 +280,14 @@ describe("buildWorkflowRunSteps", () => {
       expect(result.inspectionResult?.missingRequiredFiles).toEqual(["*.wasm", "*.pck"]);
       expect(zipCalled).toBe(false);
       expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "completed", "failed", "failed"]);
-      expect(result.project.messages).toHaveLength(1);
-      expect(result.project.messages[0]?.role).toBe("system");
-      expect(result.project.messages[0]?.content).toContain("Web 构建产物检查");
-      expect(result.project.messages[0]?.content).toContain("*.wasm, *.pck");
+      // Kickoff announcement + final summary, both system messages.
+      expect(result.project.messages).toHaveLength(2);
+      expect(result.project.messages[0]?.kind).toBe("workflow");
+      expect(result.project.messages[0]?.content).toContain("团队工作流已启动");
+      const summary = result.project.messages.at(-1);
+      expect(summary?.role).toBe("system");
+      expect(summary?.content).toContain("Web 构建产物检查");
+      expect(summary?.content).toContain("*.wasm, *.pck");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -411,10 +415,11 @@ describe("buildWorkflowRunSteps", () => {
       expect(commitCalled).toBe(false);
       expect(result.run.steps.map((step) => step.status)).toEqual(["failed", "failed", "failed", "failed", "failed", "failed"]);
       expect(result.run.steps.slice(2).every((step) => step.message?.includes("所有 Agent 步骤都失败"))).toBe(true);
-      expect(result.project.messages).toHaveLength(1);
-      expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
-      expect(result.project.messages[0]?.content).toContain("Web zip: 未执行");
-      expect(result.project.messages[0]?.content).toContain("所有 2 个 Agent 步骤失败");
+      expect(result.project.messages).toHaveLength(2);
+      const failureSummary = result.project.messages.at(-1);
+      expect(failureSummary?.content).toContain("Godot Web 导出: 未执行");
+      expect(failureSummary?.content).toContain("Web zip: 未执行");
+      expect(failureSummary?.content).toContain("所有 2 个 Agent 步骤失败");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -543,8 +548,8 @@ describe("buildWorkflowRunSteps", () => {
       expect(commitCalled).toBe(false);
       expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "failed", "failed", "failed", "failed", "failed"]);
       expect(result.run.steps.slice(2).every((step) => step.message?.includes("已有 1 个 Agent 步骤失败"))).toBe(true);
-      expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
-      expect(result.project.messages[0]?.content).toContain("失败步骤 5 个");
+      expect(result.project.messages.at(-1)?.content).toContain("Godot Web 导出: 未执行");
+      expect(result.project.messages.at(-1)?.content).toContain("失败步骤 5 个");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -674,8 +679,8 @@ describe("buildWorkflowRunSteps", () => {
       expect(result.run.steps.map((step) => step.status)).toEqual(["completed", "failed", "failed", "failed", "failed"]);
       expect(result.run.summary).toContain("没有产生项目文件变更");
       expect(result.run.steps.slice(1).every((step) => step.message?.includes("没有产生项目文件变更"))).toBe(true);
-      expect(result.project.messages[0]?.content).toContain("Godot Web 导出: 未执行");
-      expect(result.project.messages[0]?.content).toContain("Web zip: 未执行");
+      expect(result.project.messages.at(-1)?.content).toContain("Godot Web 导出: 未执行");
+      expect(result.project.messages.at(-1)?.content).toContain("Web zip: 未执行");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -782,11 +787,17 @@ describe("buildWorkflowRunSteps", () => {
 
       expect(result.run.status).toBe("completed");
       expect(result.zipResult?.manifestPath).toBe(manifestPath);
-      expect(result.project.messages).toHaveLength(1);
-      expect(result.project.messages[0]?.role).toBe("system");
-      expect(result.project.messages[0]?.content).toContain("导出清单");
-      expect(result.project.messages[0]?.content).toContain("gameaistudio-export.json");
-      expect(result.project.messages[0]?.content).toContain(manifestPath);
+      // Kickoff + summary + git auto-save announcement.
+      expect(result.project.messages).toHaveLength(3);
+      expect(result.project.messages[0]?.kind).toBe("workflow");
+      const zipSummary = result.project.messages[1];
+      expect(zipSummary?.role).toBe("system");
+      expect(zipSummary?.content).toContain("导出清单");
+      expect(zipSummary?.content).toContain("gameaistudio-export.json");
+      expect(zipSummary?.content).toContain(manifestPath);
+      const gitNote = result.project.messages.at(-1);
+      expect(gitNote?.kind).toBe("git");
+      expect(gitNote?.content).toContain("已自动保存 Git 版本");
       expect(commits).toHaveLength(1);
       expect(commits[0]?.projectId).toBe(project.id);
       expect(commits[0]?.message).toContain("自动保存：团队工作流");

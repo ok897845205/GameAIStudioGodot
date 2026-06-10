@@ -2,8 +2,10 @@ import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   AGENT_PROFILES,
+  CLI_TOOL_LABELS,
   type AgentMessage,
   type CreateProjectInput,
+  type ExportChatResult,
   type GameDimension,
   type ProjectDetails,
   type StudioProject
@@ -160,6 +162,80 @@ export class ProjectService {
     await this.requireProject(projectId);
     await this.store.appendMessages(messages);
     return this.store.listMessages(projectId);
+  }
+
+  async deleteMessage(projectId: string, messageId: string): Promise<AgentMessage[]> {
+    const project = await this.requireProject(projectId);
+    const deleted = await this.store.deleteMessage(projectId, messageId);
+    getProjectLogger(project.rootPath).info("chat", "删除单条聊天消息", {
+      projectId,
+      messageId,
+      deleted
+    });
+    return this.store.listMessages(projectId);
+  }
+
+  async clearMessages(projectId: string, agentId?: string): Promise<AgentMessage[]> {
+    const project = await this.requireProject(projectId);
+    const removed = await this.store.clearMessages(projectId, agentId);
+    getProjectLogger(project.rootPath).info("chat", "清空聊天会话", {
+      projectId,
+      agentId: agentId ?? "(all)",
+      removed
+    });
+    return this.store.listMessages(projectId);
+  }
+
+  /**
+   * Exports the full project chat (with Agent/CLI/time/attachment/file-change
+   * metadata) as a UTF-8 markdown file inside `.gameaistudio/` — the artifact
+   * users attach when reporting problems.
+   */
+  async exportChatHistory(projectId: string): Promise<ExportChatResult> {
+    const project = await this.requireProject(projectId);
+    const messages = await this.store.listMessages(projectId);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const exportPath = path.join(project.rootPath, ".gameaistudio", `chat-export-${stamp}.md`);
+
+    const lines: string[] = [
+      `# 聊天记录 — ${project.name}`,
+      "",
+      `导出时间：${new Date().toISOString()}`,
+      `项目目录：${project.rootPath}`,
+      `消息数量：${messages.length}`,
+      ""
+    ];
+    for (const message of messages) {
+      const agent = AGENT_PROFILES.find((profile) => profile.id === message.agentId);
+      const who =
+        message.role === "user" ? "用户" : message.role === "system" ? "系统" : agent?.title ?? message.agentId;
+      const meta = [
+        message.createdAt,
+        who,
+        message.cliToolId ? CLI_TOOL_LABELS[message.cliToolId] : undefined,
+        message.kind && message.kind !== "text" ? `kind:${message.kind}` : undefined,
+        typeof message.exitCode === "number" ? `exit:${message.exitCode}` : undefined,
+        message.durationMs ? `${message.durationMs}ms` : undefined
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      lines.push(`## ${meta}`, "", message.content.trim(), "");
+      if (message.attachments?.length) {
+        lines.push(`附件：${message.attachments.map((attachment) => attachment.projectRelativePath).join("、")}`, "");
+      }
+      if (message.fileChanges?.length) {
+        lines.push(`文件变更（${message.fileChanges.length}）：`, ...message.fileChanges.map((change) => `- [${change.kind}] ${change.path}`), "");
+      }
+    }
+
+    await mkdir(path.dirname(exportPath), { recursive: true });
+    await writeUtf8BomFile(exportPath, lines.join("\n"));
+    getProjectLogger(project.rootPath).info("chat", "导出聊天记录", {
+      projectId,
+      path: exportPath,
+      messageCount: messages.length
+    });
+    return { projectId, path: exportPath, messageCount: messages.length };
   }
 
   private async patchGodotProjectName(project: StudioProject): Promise<void> {

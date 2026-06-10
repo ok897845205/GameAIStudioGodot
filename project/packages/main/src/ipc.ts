@@ -1,6 +1,6 @@
 import { ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
-import type { CliToolId, CreateProjectInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, UpdateProjectAgentClisInput } from "@gameaistudio/shared";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, UpdateProjectAgentClisInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -139,6 +139,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   handle("projects:git-commit", async (_event, input: GitCommitInput) => deps.gitService.commit(input));
   handle("projects:git-restore", async (_event, input: GitRestoreInput) => deps.gitService.restore(input));
   handle("projects:file-preview", async (_event, input: ProjectFilePreviewInput) => deps.filePreviewService.read(input));
+  handle("projects:delete-message", async (_event, input: DeleteProjectMessageInput) =>
+    deps.projectService.deleteMessage(input.projectId, input.messageId)
+  );
+  handle("projects:clear-messages", async (_event, input: ClearProjectMessagesInput) =>
+    deps.projectService.clearMessages(input.projectId, input.agentId)
+  );
+  handle("projects:export-chat", async (_event, projectId: string) => deps.projectService.exportChatHistory(projectId));
   handle("runs:list", async (_event, projectId: string) => deps.runService.listRuns(projectId));
   handle("runs:cancel", async (_event, runId: string) => {
     const cancelledProcesses = deps.processRegistry.cancelRun(runId);

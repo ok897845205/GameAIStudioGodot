@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Search,
   Settings,
   StopCircle,
   Sun,
@@ -169,6 +170,7 @@ export function StudioApp() {
   const [gitMessage, setGitMessage] = useState("保存当前游戏版本");
   const [gitRestoreHash, setGitRestoreHash] = useState("");
   const [filePreview, setFilePreview] = useState<ProjectFilePreview>();
+  const [chatSearch, setChatSearch] = useState("");
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -212,13 +214,19 @@ export function StudioApp() {
       ? `请先修复这些 Agent 的 CLI：${createCliIssues.map((agent) => agent.title).join("、")}`
       : "创建项目后立即启动团队工作流。";
 
-  const activeMessages = useMemo(
+  const threadMessages = useMemo(
     () =>
       (selectedProject?.messages ?? []).filter(
         (m) => m.agentId === activeAgentId || m.role === "system",
       ),
     [selectedProject, activeAgentId],
   );
+  // History search filters the visible thread; an empty query shows it all.
+  const activeMessages = useMemo(() => {
+    const query = chatSearch.trim().toLowerCase();
+    if (!query) return threadMessages;
+    return threadMessages.filter((m) => m.content.toLowerCase().includes(query));
+  }, [threadMessages, chatSearch]);
 
   const activeRun = useMemo(
     () =>
@@ -324,6 +332,7 @@ export function StudioApp() {
             role: "agent",
             content: event.delta,
             createdAt: new Date().toISOString(),
+            cliToolId: event.cliToolId,
           });
         } else {
           messages[idx] = {
@@ -404,44 +413,48 @@ export function StudioApp() {
     }
   }
 
-  const handleAgentSend = async ({ text, attachments }: AgentSendInput) => {
-    if (!selectedProject || (!text.trim() && attachments.length === 0)) return;
-    if (!activeCliAvailable) {
-      setNotice(activeCliUnavailableReason ?? "当前 CLI 不可用，请在设置中修复后刷新。");
-      return;
-    }
-    if (attachments.length > 0 && !activeCliSupportsImages) {
-      setNotice("当前 CLI 不支持图片输入，请移除图片或切换到支持图片的 CLI。");
-      return;
-    }
+  // Core chat→turn runner. handleAgentSend / quick actions / regenerate all
+  // funnel through here so optimistic UI and result folding stay identical.
+  async function runTurnFromChat(input: {
+    agentId: string;
+    cliToolId: CliToolId;
+    text: string;
+    attachments: AgentSendInput["attachments"];
+    regenerate?: boolean;
+  }) {
+    if (!selectedProject) return;
     const projectId = selectedProject.id;
     setBusy("send");
     setNotice("");
 
     // Optimistically show the user's message immediately (the canonical
-    // messages from runAgentTurn replace it on completion).
-    const optimistic: AgentMessage = {
-      id: `optimistic-${Date.now()}`,
-      projectId,
-      agentId: activeAgentId,
-      role: "user",
-      content: text.trim(),
-      createdAt: new Date().toISOString(),
-    };
-    setSelectedProject((cur) =>
-      cur && cur.id === projectId
-        ? { ...cur, messages: [...cur.messages, optimistic] }
-        : cur,
-    );
+    // messages from runAgentTurn replace it on completion). Regenerate re-runs
+    // an existing user message, so it adds no new bubble.
+    if (!input.regenerate) {
+      const optimistic: AgentMessage = {
+        id: `optimistic-${Date.now()}`,
+        projectId,
+        agentId: input.agentId,
+        role: "user",
+        content: input.text.trim(),
+        createdAt: new Date().toISOString(),
+      };
+      setSelectedProject((cur) =>
+        cur && cur.id === projectId
+          ? { ...cur, messages: [...cur.messages, optimistic] }
+          : cur,
+      );
+    }
 
     try {
       const result = await window.studio.runAgentTurn({
         projectId,
-        agentId: activeAgentId,
-        cliToolId: selectedCli,
-        message: text.trim(),
+        agentId: input.agentId,
+        cliToolId: input.cliToolId,
+        message: input.text.trim(),
         autoStartPreview: true,
-        attachments,
+        attachments: input.attachments,
+        regenerate: input.regenerate,
       });
       setSelectedProject({
         ...result.project,
@@ -454,7 +467,133 @@ export function StudioApp() {
     } finally {
       setBusy(undefined);
     }
+  }
+
+  const handleAgentSend = async ({ text, attachments }: AgentSendInput) => {
+    if (!selectedProject || (!text.trim() && attachments.length === 0)) return;
+    if (!activeCliAvailable) {
+      setNotice(activeCliUnavailableReason ?? "当前 CLI 不可用，请在设置中修复后刷新。");
+      return;
+    }
+    if (attachments.length > 0 && !activeCliSupportsImages) {
+      setNotice("当前 CLI 不支持图片输入，请移除图片或切换到支持图片的 CLI。");
+      return;
+    }
+    await runTurnFromChat({
+      agentId: activeAgentId,
+      cliToolId: selectedCli,
+      text,
+      attachments,
+    });
   };
+
+  /** Quick-action helper: route a preset request to a specific Agent. */
+  async function sendToAgent(agentId: string, text: string) {
+    if (!selectedProject || isBusy) return;
+    const agent = agents.find((a) => a.id === agentId) ?? agents[0]!;
+    const cli = chooseAgentCli(agent, tools, selectedProject.agentCliToolIds?.[agentId]);
+    setActiveAgentId(agentId);
+    setSelectedCli(cli);
+    await runTurnFromChat({ agentId, cliToolId: cli, text, attachments: [] });
+  }
+
+  /** 重新生成: re-run the latest user message of the active thread. */
+  async function regenerateLastReply() {
+    if (!selectedProject || isBusy) return;
+    const lastUser = [...(selectedProject.messages ?? [])]
+      .reverse()
+      .find((m) => m.role === "user" && m.agentId === activeAgentId);
+    if (!lastUser) {
+      setNotice("当前会话还没有可重新生成的用户消息。");
+      return;
+    }
+    if (!activeCliAvailable) {
+      setNotice(activeCliUnavailableReason ?? "当前 CLI 不可用，请在设置中修复后刷新。");
+      return;
+    }
+    await runTurnFromChat({
+      agentId: activeAgentId,
+      cliToolId: selectedCli,
+      text: lastUser.content,
+      attachments: [],
+      regenerate: true,
+    });
+  }
+
+  async function deleteChatMessage(messageId: string) {
+    if (!selectedProject) return;
+    try {
+      const messages = await window.studio.deleteProjectMessage({
+        projectId: selectedProject.id,
+        messageId,
+      });
+      setSelectedProject((cur) =>
+        cur && cur.id === selectedProject.id ? { ...cur, messages } : cur,
+      );
+    } catch (e) {
+      setNotice(errText(e));
+    }
+  }
+
+  async function clearActiveThread() {
+    if (!selectedProject) return;
+    const count = (selectedProject.messages ?? []).filter(
+      (m) => m.agentId === activeAgentId,
+    ).length;
+    if (count === 0) {
+      setNotice("当前会话没有可清空的消息。");
+      return;
+    }
+    if (
+      !window.confirm(
+        `清空「${activeAgent.title}」的当前会话？\n\n共 ${count} 条消息将被删除，此操作不可撤销。`,
+      )
+    ) {
+      return;
+    }
+    try {
+      const messages = await window.studio.clearProjectMessages({
+        projectId: selectedProject.id,
+        agentId: activeAgentId,
+      });
+      setSelectedProject((cur) =>
+        cur && cur.id === selectedProject.id ? { ...cur, messages } : cur,
+      );
+      setNotice(`已清空 ${activeAgent.title} 的会话。`);
+    } catch (e) {
+      setNotice(errText(e));
+    }
+  }
+
+  async function exportChatHistory() {
+    if (!selectedProject) return;
+    setBusy("git");
+    try {
+      const result = await window.studio.exportProjectChat(selectedProject.id);
+      setNotice(`聊天记录已导出（${result.messageCount} 条）：${result.path}`);
+      await openPath(result.path);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  /** File chips in chat bubbles: project-relative → preview; outside → OS open. */
+  function openMentionedFile(path: string) {
+    if (!selectedProject) return;
+    const forward = path.replace(/\\/g, "/");
+    const root = selectedProject.rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (forward.toLowerCase().startsWith(`${root.toLowerCase()}/`)) {
+      void previewProjectFile(forward.slice(root.length + 1));
+      return;
+    }
+    if (/^[A-Za-z]:\//.test(forward) || forward.startsWith("/")) {
+      void openPath(path);
+      return;
+    }
+    void previewProjectFile(forward);
+  }
 
   async function cancelActiveRun() {
     const run = (selectedProject?.runs ?? []).find(
@@ -892,7 +1031,7 @@ export function StudioApp() {
         </header>
 
         {selectedProject && (
-          <div className="border-b border-border px-4 py-2">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-2">
             <Tabs
               size="sm"
               value={activeAgentId}
@@ -908,6 +1047,67 @@ export function StudioApp() {
                 ),
               }))}
             />
+            <div className="ml-auto flex items-center gap-1">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={chatSearch}
+                  onChange={(e) => setChatSearch(e.target.value)}
+                  placeholder="搜索历史消息"
+                  className="h-7 w-40 rounded-md border border-border bg-background pl-7 pr-6 text-xs"
+                />
+                {chatSearch && (
+                  <button
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                    onClick={() => setChatSearch("")}
+                    title="清除搜索"
+                  >
+                    <X className="size-3" />
+                  </button>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                title="清空当前会话（需确认）"
+                onClick={clearActiveThread}
+                disabled={isBusy}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {selectedProject && chatSearch.trim() && (
+          <div className="border-b border-border bg-muted/30 px-4 py-1 text-[11px] text-muted-foreground">
+            搜索「{chatSearch.trim()}」：{activeMessages.length} 条匹配（共 {threadMessages.length} 条）
+          </div>
+        )}
+
+        {selectedProject && !activeRun && (
+          <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border px-4 py-1.5">
+            {[
+              { label: "继续制作", title: "再跑一轮团队工作流", run: () => void runWorkflow() },
+              { label: "修复错误", title: "让程序 Agent 修复报错与导出问题", run: () => void sendToAgent("programmer", "请检查当前项目的报错、Web 导出失败和明显缺陷，并直接修复。") },
+              { label: "QA 测试", title: "让 QA Agent 验证当前版本", run: () => void sendToAgent("qa", "请对当前版本做一轮 QA：验证核心玩法是否可玩、Web 导出是否正常，列出缺陷和修复建议。") },
+              { label: "美术优化", title: "让美术 Agent 优化画面", run: () => void sendToAgent("artist", "请优化当前游戏的视觉表现：配色、UI 可读性和角色/场景素材，给出可直接落地的改动。") },
+              { label: "运行预览", title: "启动 / 打开 Web 实时预览", run: () => (selectedProject.previewWatching && selectedProject.previewUrl ? window.open(selectedProject.previewUrl) : void togglePreview()) },
+              { label: "导出 Web", title: "导出 Web zip", run: () => void buildAction("zip") },
+              { label: "保存版本", title: "提交当前 Git 变更", run: () => void commitGit() },
+              { label: "查看日志", title: "预览项目日志", run: () => void previewProjectFile(".gameaistudio/logs/project.log") },
+            ].map((action) => (
+              <button
+                key={action.label}
+                type="button"
+                className="shrink-0 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                title={action.title}
+                onClick={action.run}
+                disabled={isBusy}
+              >
+                {action.label}
+              </button>
+            ))}
           </div>
         )}
 
@@ -963,7 +1163,11 @@ export function StudioApp() {
               isRunning={busy === "send" || busy === "workflow"}
               isSendDisabled={!hasInstalledCli || !activeCliAvailable}
               supportsImages={activeCliSupportsImages}
+              projectRoot={selectedProject.rootPath}
               onSend={handleAgentSend}
+              onDeleteMessage={(messageId) => void deleteChatMessage(messageId)}
+              onRegenerate={() => void regenerateLastReply()}
+              onOpenFile={openMentionedFile}
             />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
@@ -1326,12 +1530,22 @@ export function StudioApp() {
                   <Button
                     size="sm"
                     variant="outline"
-                    className="col-span-2 justify-start"
+                    className="justify-start"
                     onClick={() => openPath(appMaintenanceLogPath)}
                     disabled={!appMaintenanceLogPath}
                     title={appMaintenanceLogPath}
                   >
                     <FolderOpen /> 打开 app.log
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="justify-start"
+                    onClick={exportChatHistory}
+                    disabled={isBusy}
+                    title="把项目聊天记录导出为 Markdown，便于排查问题"
+                  >
+                    <Download /> 导出聊天记录
                   </Button>
                 </div>
               </>

@@ -77,6 +77,34 @@ function hasAutoDelivery(input: RunStudioWorkflowInput): boolean {
   return Boolean(input.autoExportWeb || input.autoPackageWebZip || input.autoStartPreview);
 }
 
+export function buildWorkflowStartMessage(input: {
+  projectId: string;
+  userMessage: string;
+  routes: Array<{ agent: AgentProfile; cliToolId: CliToolId }>;
+}): AgentMessage {
+  const goal = input.userMessage.trim().replace(/\s+/g, " ");
+  const content = [
+    "团队工作流已启动，AI 团队开始工作：",
+    ...input.routes.map(
+      ({ agent, cliToolId }, index) =>
+        `${index + 1}. ${agent.title}（${CLI_TOOL_LABELS[cliToolId]}）— ${agent.specialty}`
+    ),
+    "",
+    `目标：${goal.length > 200 ? `${goal.slice(0, 200)}…` : goal}`,
+    "每个 Agent 的实时进度可在右侧「运行」面板查看，期间你可以继续输入新的要求。"
+  ].join("\n");
+
+  return {
+    id: createMessageId(),
+    projectId: input.projectId,
+    agentId: "producer",
+    role: "system",
+    kind: "workflow",
+    content,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function buildWorkflowSummaryMessage(input: {
   projectId: string;
   run: StudioRun;
@@ -114,6 +142,7 @@ function buildWorkflowSummaryMessage(input: {
     projectId,
     agentId: "producer",
     role: "system",
+    kind: "workflow",
     content,
     createdAt: new Date().toISOString()
   };
@@ -243,6 +272,15 @@ export class WorkflowService {
     });
 
     await this.runService.startRun(run.id, run.steps[0]?.id);
+    // The chat is the user's primary view — announce the kickoff there with
+    // the agent→CLI routing, not just in the run panel.
+    await this.projectService.appendMessages(project.id, [
+      buildWorkflowStartMessage({
+        projectId: project.id,
+        userMessage: input.message,
+        routes: agents.map((agent) => ({ agent, cliToolId: chooseWorkflowCli(agent, tools, input) }))
+      })
+    ]);
 
     let latestRun: StudioRun = run;
     let exportResult: GodotRunResult | undefined;
@@ -569,10 +607,22 @@ export class WorkflowService {
     ]);
     if (latestRun.status === "completed" && agentFileChangeCount > 0 && this.gitService) {
       try {
+        const commitMessage = `自动保存：团队工作流 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
         await this.gitService.commit({
           projectId: project.id,
-          message: `自动保存：团队工作流 ${new Date().toLocaleString("zh-CN", { hour12: false })}`
+          message: commitMessage
         });
+        await this.projectService.appendMessages(project.id, [
+          {
+            id: createMessageId(),
+            projectId: project.id,
+            agentId: "producer",
+            role: "system",
+            kind: "git",
+            content: `已自动保存 Git 版本（${agentFileChangeCount} 个文件变更）：${commitMessage}`,
+            createdAt: new Date().toISOString()
+          }
+        ]);
       } catch (error) {
         plog.warn("git", "团队工作流自动保存 Git 版本失败", {
           project: project.name,

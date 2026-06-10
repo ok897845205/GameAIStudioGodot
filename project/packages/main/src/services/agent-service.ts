@@ -167,7 +167,11 @@ export function buildAgentProcessMessage(input: {
 }): string {
   const output = processOutput(input.result);
   if (input.result.cancelled) {
-    return "本轮 Agent 运行已取消。";
+    // Keep whatever streamed before the cancel — losing half a useful answer
+    // is worse than showing a partial one.
+    return output
+      ? `${output}\n\n——— 本轮已被取消，以上为取消前已生成的内容。`
+      : "本轮 Agent 运行已取消。";
   }
 
   if (input.result.exitCode === 0) {
@@ -328,6 +332,9 @@ export class AgentService {
     }
 
     const now = new Date().toISOString();
+    // One turn = the user message plus the agent reply; turnId groups them in
+    // the persisted history (and run records double as the turn anchor).
+    const turnId = run?.id ?? options.parentRunId ?? createMessageId();
     // Preflight: the CLI runs with cwd = project root and must be able to
     // read/write it. Failing here produces a classified, actionable error
     // instead of an opaque CLI crash (and never touches other directories).
@@ -349,9 +356,14 @@ export class AgentService {
       role: "user",
       content: input.message,
       createdAt: now,
+      turnId,
       cliToolId: input.cliToolId,
       attachments
     };
+    // 重新生成 re-runs an earlier user message — the turn executes normally but
+    // the history must not gain a duplicate user bubble.
+    const messagesForTurn = (agentMessage: AgentMessage): AgentMessage[] =>
+      input.regenerate ? [agentMessage] : [userMessage, agentMessage];
 
     let unavailableMessage: string | undefined;
     if (!dirCheck.ok) {
@@ -381,11 +393,13 @@ export class AgentService {
         projectId: project.id,
         agentId: input.agentId,
         role: "system",
+        kind: "error",
+        turnId,
         content: unavailableMessage,
         createdAt: new Date().toISOString(),
         cliToolId: input.cliToolId
       };
-      const messages = await this.projectService.appendMessages(project.id, [userMessage, missingMessage]);
+      const messages = await this.projectService.appendMessages(project.id, messagesForTurn(missingMessage));
       await appendAgentJournal(
         project.rootPath,
         buildAgentJournalEntry({
@@ -415,10 +429,18 @@ export class AgentService {
     const attachmentContext = attachments.length
       ? `${input.message}\n\n图片附件：\n${attachments.map((attachment) => `- ${attachment.name}: ${path.join(project.rootPath, attachment.projectRelativePath)}`).join("\n")}`
       : input.message;
+    // Git snapshot before the CLI runs — written into the Agent context and
+    // paired with the after-summary in the final log line.
+    const gitBefore = await summarizeGitState(project.rootPath);
     const context = await this.contextService.prepare({
       project: await this.projectService.getProject(project.id),
       agentId: input.agentId,
-      userMessage: attachmentContext
+      userMessage: attachmentContext,
+      gitSummary: gitBefore.initialized
+        ? `${gitBefore.branch ?? "?"}@${gitBefore.head ?? "?"}, ${gitBefore.changedCount} uncommitted change(s)`
+        : gitBefore.available
+          ? "not initialized"
+          : "git unavailable"
     });
     const prompt = buildAgentPrompt({
       agentId: input.agentId,
@@ -429,9 +451,6 @@ export class AgentService {
       context,
       attachments
     });
-    // Git snapshot before the CLI runs — paired with the after-summary in the
-    // final log line so every turn shows what it changed in version terms.
-    const gitBefore = await summarizeGitState(project.rootPath);
     const beforeFiles = await this.fileChangeService.createSnapshot(project.rootPath);
     // Stable id for the in-flight assistant message: emitted with each stream
     // delta and reused as the final message id so the streaming bubble and the
@@ -496,7 +515,8 @@ export class AgentService {
               agentId: input.agentId,
               messageId: streamingMessageId,
               delta: chunk.text,
-              done: false
+              done: false,
+              cliToolId: input.cliToolId
             });
             break;
           case "stderr-delta":
@@ -530,7 +550,8 @@ export class AgentService {
         agentId: input.agentId,
         messageId: streamingMessageId,
         delta: "",
-        done: true
+        done: true,
+        cliToolId: input.cliToolId
       });
     }
 
@@ -563,6 +584,8 @@ export class AgentService {
       projectId: project.id,
       agentId: input.agentId,
       role: "agent",
+      ...(result.cancelled || result.exitCode === 0 ? {} : { kind: "error" as const }),
+      turnId,
       content: buildAgentProcessMessage({
         toolLabel: CLI_TOOL_LABELS[input.cliToolId],
         toolId: input.cliToolId,
@@ -580,7 +603,7 @@ export class AgentService {
       ...project,
       activeAgentId: input.agentId
     });
-    const messages = await this.projectService.appendMessages(project.id, [userMessage, agentMessage]);
+    const messages = await this.projectService.appendMessages(project.id, messagesForTurn(agentMessage));
     const succeeded = result.exitCode === 0;
     const turnStatus = result.cancelled ? "cancelled" : succeeded ? "completed" : "failed";
     const gitAfter = await summarizeGitState(project.rootPath);

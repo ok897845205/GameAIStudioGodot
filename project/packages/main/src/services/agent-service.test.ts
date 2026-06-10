@@ -382,3 +382,96 @@ describe("AgentService", () => {
     }
   });
 });
+
+describe("buildAgentProcessMessage cancellation", () => {
+  it("keeps already-streamed content when the turn is cancelled", () => {
+    const message = buildAgentProcessMessage({
+      toolLabel: "Codex",
+      toolId: "codex",
+      result: {
+        exitCode: null,
+        stdout: "已经完成了一半的方案说明",
+        stderr: "",
+        durationMs: 1200,
+        cancelled: true,
+        timedOut: false
+      },
+      fileChangeCount: 0
+    });
+
+    expect(message).toContain("已经完成了一半的方案说明");
+    expect(message).toContain("已被取消");
+  });
+
+  it("falls back to a plain cancel note when nothing streamed", () => {
+    const message = buildAgentProcessMessage({
+      toolLabel: "Codex",
+      toolId: "codex",
+      result: { exitCode: null, stdout: "", stderr: "", durationMs: 5, cancelled: true, timedOut: false },
+      fileChangeCount: 0
+    });
+
+    expect(message).toBe("本轮 Agent 运行已取消。");
+  });
+});
+
+describe("AgentService regenerate", () => {
+  it("re-runs a turn without appending a duplicate user message and groups by turnId", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-agent-regen-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const projectService = new ProjectService(paths, store);
+    const runService = new RunService(store);
+    const processRegistry = new ProcessRegistry();
+    const fileChangeService = new ProjectFileChangeService();
+    const contextService = new AgentContextService();
+
+    try {
+      await writeTemplate(paths);
+      const project = await projectService.createProject({
+        name: "Regen Demo",
+        dimension: "2d",
+        prompt: "重新生成测试"
+      });
+      let reply = 0;
+      const cliService = {
+        discover: async () => [fakeTool("fake-codex")],
+        runTurn: async function* () {
+          reply += 1;
+          yield { type: "final", content: `回复 ${reply}`, exitCode: 0, durationMs: 2 };
+        }
+      } as unknown as CliService;
+      const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+
+      const first = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "producer",
+        cliToolId: "codex",
+        message: "给我一个方案",
+        autoStartPreview: false
+      });
+      const userCountAfterFirst = first.messages.filter((m) => m.role === "user").length;
+      const firstUser = [...first.messages].reverse().find((m) => m.role === "user");
+      const firstAgent = [...first.messages].reverse().find((m) => m.role === "agent");
+      expect(firstUser?.turnId).toBeTruthy();
+      expect(firstUser?.turnId).toBe(firstAgent?.turnId);
+
+      const second = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "producer",
+        cliToolId: "codex",
+        message: "给我一个方案",
+        autoStartPreview: false,
+        regenerate: true
+      });
+
+      const userCountAfterSecond = second.messages.filter((m) => m.role === "user").length;
+      expect(userCountAfterSecond).toBe(userCountAfterFirst); // no duplicate user bubble
+      const agentReplies = second.messages.filter((m) => m.role === "agent" && m.content.startsWith("回复"));
+      expect(agentReplies).toHaveLength(2);
+      expect(agentReplies.at(-1)?.content).toBe("回复 2");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

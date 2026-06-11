@@ -33,6 +33,7 @@ import {
   type AgentMessage,
   type CliTool,
   type CliToolId,
+  type EnvironmentToolId,
   type GameDimension,
   type GitFileChange,
   type GitProjectStatus,
@@ -43,6 +44,7 @@ import {
   type StudioProject,
   type UpdateEvent,
   type UpdateInfo,
+  type UpdateStudioDirectorySettingsInput,
 } from "@gameaistudio/shared";
 import appPackage from "../../../package.json";
 import { AgentChat, type AgentSendInput } from "./chat";
@@ -65,6 +67,7 @@ type BusyAction =
   | "delete"
   | "cli"
   | "update"
+  | "settings"
   | undefined;
 
 type RightTab = "build" | "activity" | "git" | "status";
@@ -237,7 +240,7 @@ export function StudioApp() {
   const [projects, setProjects] = useState<StudioProject[]>([]);
   const [selectedProject, setSelectedProject] = useState<ProjectDetails>();
   const [activeAgentId, setActiveAgentId] = useState("producer");
-  const [selectedCli, setSelectedCli] = useState<CliToolId>("codex");
+  const [selectedCli, setSelectedCli] = useState<CliToolId>("kscc");
   const [busy, setBusy] = useState<BusyAction>("boot");
   const [notice, setNotice] = useState("");
   const [previewNotice, setPreviewNotice] = useState("");
@@ -254,6 +257,10 @@ export function StudioApp() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>();
   const [updateMessage, setUpdateMessage] = useState("");
   const [updateInstallLocked, setUpdateInstallLocked] = useState(false);
+  const [directorySettingsDraft, setDirectorySettingsDraft] = useState({
+    dataRoot: "",
+    projectsRoot: "",
+  });
 
   const tools = bootstrap?.cliTools ?? [];
   const agents = bootstrap?.agents ?? AGENT_PROFILES;
@@ -269,9 +276,11 @@ export function StudioApp() {
       : undefined;
   const isBusy = Boolean(busy);
   const currentUpdateInfo = updateInfo ?? bootstrap?.update;
+  const currentDirectorySettings = bootstrap?.directorySettings;
+  const directorySetupRequired = Boolean(currentDirectorySettings?.setupRequired);
   const visibleUpdateNotes = updateReleaseNotesText(currentUpdateInfo);
   const footerUpdate = footerUpdateBadge(currentUpdateInfo);
-  const aboutUpdateLocked = updateInstallLocked || isUpdateInstallStatus(currentUpdateInfo?.status);
+  const updateDialogLocked = updateInstallLocked || isUpdateInstallStatus(currentUpdateInfo?.status);
   const updateRequired = currentUpdateInfo?.policy === "required";
   const workflowAgents = useMemo(
     () =>
@@ -352,7 +361,15 @@ export function StudioApp() {
       const data = await window.studio.bootstrap();
       setBootstrap(data);
       setUpdateInfo(data.update);
+      setDirectorySettingsDraft({
+        dataRoot: data.directorySettings.dataRoot ?? "",
+        projectsRoot: data.directorySettings.projectsRoot ?? "",
+      });
       setProjects(data.projects);
+      if (data.directorySettings.setupRequired) {
+        setSettingsOpen(true);
+        setNotice("首次使用请确认软件数据目录和游戏项目目录，或使用默认设置。");
+      }
       if (data.update.configured) {
         void window.studio
           .checkForUpdates()
@@ -933,6 +950,75 @@ export function StudioApp() {
     }
   }
 
+  async function previewCurrentProjectLog() {
+    if (!selectedProject) return;
+    setBusy("git");
+    try {
+      const preview = await window.studio.readProjectLog(selectedProject.id);
+      setFilePreview(preview);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function chooseStudioDirectory(kind: "data" | "projects") {
+    const current =
+      kind === "data"
+        ? directorySettingsDraft.dataRoot || currentDirectorySettings?.defaultDataRoot
+        : directorySettingsDraft.projectsRoot || currentDirectorySettings?.defaultProjectsRoot;
+    try {
+      const directory = await window.studio.selectDirectory({
+        title: kind === "data" ? "选择软件数据目录" : "选择游戏项目目录",
+        defaultPath: current,
+      });
+      if (!directory) return;
+      setDirectorySettingsDraft((draft) =>
+        kind === "data" ? { ...draft, dataRoot: directory } : { ...draft, projectsRoot: directory },
+      );
+    } catch (e) {
+      setNotice(errText(e));
+    }
+  }
+
+  async function saveDirectorySettings(input?: UpdateStudioDirectorySettingsInput) {
+    setBusy("settings");
+    try {
+      const payload =
+        input ??
+        ({
+          dataRoot: directorySettingsDraft.dataRoot.trim() || undefined,
+          projectsRoot: directorySettingsDraft.projectsRoot.trim() || undefined,
+          setupCompleted: true,
+        } satisfies UpdateStudioDirectorySettingsInput);
+      const directorySettings = await window.studio.updateDirectorySettings(payload);
+      setBootstrap((cur) =>
+        cur
+          ? {
+              ...cur,
+              directorySettings,
+            }
+          : cur,
+      );
+      setDirectorySettingsDraft({
+        dataRoot: directorySettings.dataRoot ?? "",
+        projectsRoot: directorySettings.projectsRoot ?? "",
+      });
+      if (directorySettings.requiresRestart) {
+        setNotice("目录设置已保存，正在重启软件以应用新目录。");
+        await window.studio.restartApp();
+        return;
+      }
+      setSettingsOpen(false);
+      setNotice("目录设置已保存。");
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function installCli(id: CliToolId) {
     setBusy("cli");
     setNotice(`正在安装 ${CLI_TOOL_LABELS[id]}…`);
@@ -941,6 +1027,50 @@ export function StudioApp() {
       const cliTools = await window.studio.refreshCliTools();
       setBootstrap((cur) => (cur ? { ...cur, cliTools } : cur));
       setNotice(r.ok ? `${CLI_TOOL_LABELS[id]} 安装完成。` : r.stderr || "安装失败。");
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  // One-click base dependency install (git / Node.js via winget). After it
+  // succeeds the main process refreshes its PATH, so a re-scan finds the tool
+  // without restarting the app.
+  async function installEnvironmentTool(id: EnvironmentToolId) {
+    setBusy("cli");
+    setNotice(`正在安装 ${id === "git" ? "Git" : "Node.js"}…（winget，可能需要几分钟）`);
+    try {
+      const r = await window.studio.installEnvironmentTool(id);
+      if (r.ok) {
+        const [environment, cliTools] = await Promise.all([
+          window.studio.refreshEnvironment(),
+          window.studio.refreshCliTools(),
+        ]);
+        setBootstrap((cur) => (cur ? { ...cur, environment, cliTools } : cur));
+        setNotice(`${id === "git" ? "Git" : "Node.js"} 安装完成，已自动刷新检测。`);
+      } else {
+        setNotice(r.stderr || "安装失败。");
+      }
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function installAcp(id: CliToolId) {
+    setBusy("cli");
+    setNotice(`正在为 ${CLI_TOOL_LABELS[id]} 安装 ACP 适配器…`);
+    try {
+      const r = await window.studio.installCliAcp(id);
+      const cliTools = await window.studio.refreshCliTools();
+      setBootstrap((cur) => (cur ? { ...cur, cliTools } : cur));
+      setNotice(
+        r.ok
+          ? `${CLI_TOOL_LABELS[id]} 的 ACP 模式已启用，下个回合自动生效。`
+          : r.stderr || "ACP 适配器安装失败。",
+      );
     } catch (e) {
       setNotice(errText(e));
     } finally {
@@ -1067,31 +1197,31 @@ export function StudioApp() {
       : git.initialized
         ? "提交当前 Git 变更。"
         : "为此项目启用 Git 版本管理并提交当前状态。";
-  const appMaintenanceLogPath = joinFsPath(bootstrap?.dataRoot, "logs/app.log");
-  const projectMaintenanceLogPath = joinFsPath(selectedProject?.rootPath, ".gameaistudio/logs/project.log");
+  const appMaintenanceLogPath = currentDirectorySettings?.appLogPath ?? joinFsPath(bootstrap?.dataRoot, "logs/app.log");
+  const projectMaintenanceLogPath = selectedProject?.projectLogPath;
   const projectPreviewButtons = [
     {
       label: "项目说明",
       title: "预览 GAMEAISTUDIO.md",
-      relativePath: "GAMEAISTUDIO.md",
+      run: () => previewProjectFile("GAMEAISTUDIO.md"),
       icon: <FileText />,
     },
     {
       label: "Agent 上下文",
       title: "预览 .gameaistudio/agent-context.md",
-      relativePath: ".gameaistudio/agent-context.md",
+      run: () => previewProjectFile(".gameaistudio/agent-context.md"),
       icon: <FileText />,
     },
     {
       label: "Agent 日志",
       title: "预览 .gameaistudio/agent-journal.md",
-      relativePath: ".gameaistudio/agent-journal.md",
+      run: () => previewProjectFile(".gameaistudio/agent-journal.md"),
       icon: <Terminal />,
     },
     {
       label: "项目日志",
-      title: "预览 .gameaistudio/logs/project.log",
-      relativePath: ".gameaistudio/logs/project.log",
+      title: "预览项目维护日志",
+      run: () => previewCurrentProjectLog(),
       icon: <Terminal />,
     },
   ];
@@ -1216,6 +1346,14 @@ export function StudioApp() {
                 </option>
               ))}
             </select>
+            {activeTool?.acp?.available && (
+              <Badge
+                tone="success"
+                title="本回合将以 ACP 模式运行：原生流式、工具调用可见、按操作权限审计、会话复用。"
+              >
+                ACP
+              </Badge>
+            )}
             {selectedProject && (
               <>
                 <Button
@@ -1741,11 +1879,11 @@ export function StudioApp() {
                 <div className="grid grid-cols-2 gap-2">
                   {projectPreviewButtons.map((item) => (
                     <Button
-                      key={item.relativePath}
+                      key={item.label}
                       size="sm"
                       variant="outline"
                       className="justify-start"
-                      onClick={() => previewProjectFile(item.relativePath)}
+                      onClick={item.run}
                       disabled={isBusy}
                       title={item.title}
                     >
@@ -1910,13 +2048,13 @@ export function StudioApp() {
       <Dialog
         open={aboutOpen}
         onClose={() => {
-          if (aboutUpdateLocked) {
+          if (updateDialogLocked) {
             setUpdateMessage("更新正在下载或安装，请等待完成。");
             return;
           }
           setAboutOpen(false);
         }}
-        closable={!aboutUpdateLocked}
+        closable={!updateDialogLocked}
         title={
           <span className="inline-flex items-center gap-2">
             <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -2018,10 +2156,196 @@ export function StudioApp() {
       {/* ── Settings dialog (diagnostics) ──────────────────────────── */}
       <Dialog
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        title="设置 · 环境诊断"
+        onClose={() => {
+          if (updateDialogLocked) {
+            setUpdateMessage("更新正在下载或安装，请等待完成。");
+            return;
+          }
+          setSettingsOpen(false);
+        }}
+        closable={!updateDialogLocked}
+        title={directorySetupRequired ? "首次配置 · 设置" : "设置 · 环境诊断"}
+        description={directorySetupRequired ? "请确认软件数据目录和游戏项目目录。热更新后会继续沿用这里的配置。" : undefined}
       >
         <div className="space-y-5 text-sm">
+          {bootstrap && currentDirectorySettings && (
+            <section>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-medium">
+                  <FolderOpen className="size-4" /> 软件目录
+                </div>
+                {directorySetupRequired && <Badge tone="warning">待确认</Badge>}
+              </div>
+              <p className="mb-3 text-xs leading-5 text-muted-foreground">
+                软件数据目录保存状态文件、App 日志等维护数据；游戏项目目录用于新建游戏落地。留空使用默认位置，修改后会重启软件生效，已有项目不会自动搬迁。
+              </p>
+              <div className="space-y-2">
+                <label className="block">
+                  <span className="text-xs text-muted-foreground">软件数据目录</span>
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      value={directorySettingsDraft.dataRoot}
+                      onChange={(event) =>
+                        setDirectorySettingsDraft((draft) => ({ ...draft, dataRoot: event.target.value }))
+                      }
+                      placeholder={currentDirectorySettings.defaultDataRoot}
+                      className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-xs"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => chooseStudioDirectory("data")}
+                      disabled={isBusy}
+                    >
+                      <FolderOpen /> 选择
+                    </Button>
+                  </div>
+                </label>
+                <label className="block">
+                  <span className="text-xs text-muted-foreground">游戏项目目录</span>
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      value={directorySettingsDraft.projectsRoot}
+                      onChange={(event) =>
+                        setDirectorySettingsDraft((draft) => ({ ...draft, projectsRoot: event.target.value }))
+                      }
+                      placeholder={currentDirectorySettings.defaultProjectsRoot}
+                      className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-xs"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => chooseStudioDirectory("projects")}
+                      disabled={isBusy}
+                    >
+                      <FolderOpen /> 选择
+                    </Button>
+                  </div>
+                </label>
+              </div>
+              <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt className="text-muted-foreground">数据</dt>
+                <dd className="truncate" title={currentDirectorySettings.resolvedDataRoot}>
+                  {currentDirectorySettings.resolvedDataRoot}
+                </dd>
+                <dt className="text-muted-foreground">项目</dt>
+                <dd className="truncate" title={currentDirectorySettings.resolvedProjectsRoot}>
+                  {currentDirectorySettings.resolvedProjectsRoot}
+                </dd>
+                <dt className="text-muted-foreground">App 日志</dt>
+                <dd className="truncate" title={appMaintenanceLogPath}>
+                  {appMaintenanceLogPath}
+                </dd>
+                <dt className="text-muted-foreground">项目日志</dt>
+                <dd className="truncate" title={projectMaintenanceLogPath ?? "未选择项目"}>
+                  {projectMaintenanceLogPath ?? "未选择项目"}
+                </dd>
+              </dl>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <Button
+                  onClick={() => saveDirectorySettings()}
+                  disabled={isBusy}
+                >
+                  {busy === "settings" ? <Loader2 className="animate-spin" /> : <Save />}
+                  保存设置
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => saveDirectorySettings({ setupCompleted: true })}
+                  disabled={isBusy}
+                >
+                  使用默认
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => openPath(appMaintenanceLogPath)}
+                  disabled={!appMaintenanceLogPath || isBusy}
+                  title={appMaintenanceLogPath}
+                >
+                  <FolderOpen /> 打开 app.log
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={previewCurrentProjectLog}
+                  disabled={!projectMaintenanceLogPath || isBusy}
+                  title={projectMaintenanceLogPath}
+                >
+                  <Terminal /> 预览项目日志
+                </Button>
+              </div>
+            </section>
+          )}
+
+          <section>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 font-medium">
+                <Download className="size-4" /> 软件更新
+              </div>
+              <Badge tone={updatePolicyTone(currentUpdateInfo)}>
+                {updatePolicyLabel(currentUpdateInfo)}
+              </Badge>
+            </div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <dt className="text-muted-foreground">当前</dt>
+              <dd>v{APP_VERSION}</dd>
+              <dt className="text-muted-foreground">最新</dt>
+              <dd>{currentUpdateInfo?.latestVersion ? `v${currentUpdateInfo.latestVersion}` : "未获取"}</dd>
+              <dt className="text-muted-foreground">安装包</dt>
+              <dd>{formatBytes(currentUpdateInfo?.package?.size)}</dd>
+              <dt className="text-muted-foreground">发布</dt>
+              <dd>{formatDateTime(currentUpdateInfo?.releaseDate)}</dd>
+            </dl>
+            <p className="mt-2 break-words text-xs leading-5 text-muted-foreground">
+              {updateMessage || updateReasonText(currentUpdateInfo)}
+            </p>
+            {visibleUpdateNotes && (
+              <div className="mt-3 rounded-md border border-border px-3 py-2">
+                <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    <Info className="size-3.5 text-primary" />
+                    更新日志
+                  </span>
+                  <span className="text-muted-foreground">v{currentUpdateInfo?.latestVersion}</span>
+                </div>
+                <div className="max-h-28 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                  {visibleUpdateNotes}
+                </div>
+              </div>
+            )}
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Button
+                variant="outline"
+                onClick={checkForUpdates}
+                disabled={busy === "update"}
+              >
+                {busy === "update" && currentUpdateInfo?.status !== "downloading" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <RefreshCw />
+                )}
+                检查更新
+              </Button>
+              <Button
+                onClick={downloadAndInstallUpdate}
+                disabled={
+                  busy === "update" ||
+                  currentUpdateInfo?.policy === "none" ||
+                  !currentUpdateInfo?.package
+                }
+                title={updateReasonText(currentUpdateInfo)}
+              >
+                {busy === "update" && currentUpdateInfo?.status === "downloading" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Download />
+                )}
+                {currentUpdateInfo?.policy === "required" ? "立即强制更新" : "下载并安装"}
+              </Button>
+            </div>
+          </section>
+
           <section>
             <div className="mb-2 flex items-center gap-2 font-medium">
               <Terminal className="size-4" /> 本地 AI CLI
@@ -2069,6 +2393,18 @@ export function StudioApp() {
                       <Badge tone={t.capabilities.supportsImages ? "success" : "muted"}>
                         图片 {t.capabilities.supportsImages ? "可用" : "不支持"}
                       </Badge>
+                      {t.acp?.supported && (
+                        <Badge
+                          tone={t.acp.available ? "success" : "muted"}
+                          title={
+                            t.acp.available
+                              ? `ACP 模式已启用：原生流式、工具调用可见、权限审计、会话复用。\n${t.acp.executablePath ?? t.acp.agentCommand}`
+                              : `${t.acp.installHint}`
+                          }
+                        >
+                          ACP {t.acp.available ? "已启用" : "未启用"}
+                        </Badge>
+                      )}
                     </div>
                     {t.installed && t.status !== "available" && t.health.detail && (
                       <p className="mt-1 break-words text-xs text-danger" title={t.health.detail}>
@@ -2084,6 +2420,17 @@ export function StudioApp() {
                         <Badge tone="danger" title={t.health.detail}>
                           不可用
                         </Badge>
+                      )}
+                      {t.acp?.supported && !t.acp.available && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={isBusy || !t.installManagerAvailable}
+                          onClick={() => installAcp(t.id)}
+                          title={t.acp.installHint}
+                        >
+                          启用 ACP
+                        </Button>
                       )}
                       <Button
                         size="sm"
@@ -2120,12 +2467,33 @@ export function StudioApp() {
                 {bootstrap.environment.tools.map((t) => (
                   <div
                     key={t.id}
-                    className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+                    className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
                   >
-                    <span>{t.label}</span>
-                    <Badge tone={t.installed ? "success" : "danger"}>
-                      {t.installed ? t.version ?? "可用" : "缺失"}
-                    </Badge>
+                    <div className="min-w-0">
+                      <span>{t.label}</span>
+                      {!t.installed && t.installHint && (
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground" title={t.installHint}>
+                          {t.installHint}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Badge tone={t.installed ? "success" : "danger"}>
+                        {t.installed ? t.version ?? "可用" : "缺失"}
+                      </Badge>
+                      {!t.installed && t.installAvailable && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={isBusy}
+                          onClick={() => installEnvironmentTool(t.id)}
+                          title={`通过 winget 一键安装 ${t.label}`}
+                        >
+                          {busy === "cli" ? <Loader2 className="animate-spin" /> : null}
+                          安装
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2147,42 +2515,6 @@ export function StudioApp() {
                       .length
                   }
                   /{bootstrap.godotRuntime.templates.length} 可用
-                </dd>
-              </dl>
-            </section>
-          )}
-
-          {bootstrap && (
-            <section>
-              <div className="mb-2 flex items-center gap-2 font-medium">
-                <Terminal className="size-4" /> 维护日志
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  variant="outline"
-                  onClick={() => openPath(appMaintenanceLogPath)}
-                  disabled={!appMaintenanceLogPath}
-                  title={appMaintenanceLogPath}
-                >
-                  <FolderOpen /> 打开 app.log
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => previewProjectFile(".gameaistudio/logs/project.log")}
-                  disabled={!projectMaintenanceLogPath}
-                  title={projectMaintenanceLogPath}
-                >
-                  <Terminal /> 预览项目日志
-                </Button>
-              </div>
-              <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-                <dt className="text-muted-foreground">App</dt>
-                <dd className="truncate" title={appMaintenanceLogPath}>
-                  {appMaintenanceLogPath}
-                </dd>
-                <dt className="text-muted-foreground">项目</dt>
-                <dd className="truncate" title={projectMaintenanceLogPath}>
-                  {projectMaintenanceLogPath ?? "未选择项目"}
                 </dd>
               </dl>
             </section>

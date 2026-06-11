@@ -7,6 +7,7 @@ export const claudeLocalConfig: LocalCliConfig = {
   versionArgs: ["--version"],
   promptArgs: ["--print", "-", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
   outputFormat: "claude-stream-json",
+  resumeArgs: (sessionId) => ["--resume", sessionId],
   installCommand: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
   installHint: "通过 npm 全局安装 Claude Code，或把已安装的 claude 加入 PATH。",
   credentialEnvVars: ["ANTHROPIC_API_KEY"],
@@ -17,7 +18,7 @@ export const claudeLocalConfig: LocalCliConfig = {
     supportsImages: false,
     imageInputMode: "unsupported",
     supportsStream: true,
-    supportsResume: false,
+    supportsResume: true,
     headless: true,
   },
   // `claude --version` can pass while `claude --print` returns 401 — this probe

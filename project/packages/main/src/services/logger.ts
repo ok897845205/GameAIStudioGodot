@@ -208,10 +208,25 @@ export interface InitAppLoggerOptions {
   minLevel?: LogLevel;
 }
 
+export function resolveAppLogPath(dataRoot: string): string {
+  return path.join(dataRoot, "logs", "app.log");
+}
+
+export function resolveProjectLogPath(projectRoot: string): string {
+  return path.join(projectRoot, ".gameaistudio", "logs", "project.log");
+}
+
+export function resolveAgentLogPath(projectRoot: string, agentId: string): string {
+  const safeAgentId = agentId.replace(/[^\w-]/g, "_") || "agent";
+  const projectLogPath = resolveProjectLogPath(projectRoot);
+  return path.join(path.dirname(projectLogPath), "agents", `${safeAgentId}.log`);
+}
+
 /** Initialise the global app.log. Safe to call once at startup. */
 export function initAppLogger(options: InitAppLoggerOptions): FileLogger {
+  projectLoggers.clear();
   appLogger = new FileLogger({
-    filePath: path.join(options.dataRoot, "logs", "app.log"),
+    filePath: resolveAppLogPath(options.dataRoot),
     maxBytes: 5 * 1024 * 1024,
     maxFiles: 5,
     minLevel: options.minLevel ?? "info",
@@ -230,7 +245,7 @@ export function getAppLogger(): FileLogger {
  * Lines are also teed into app.log so a single timeline exists for support.
  */
 export function getProjectLogger(projectRoot: string): FileLogger {
-  const filePath = path.join(projectRoot, ".gameaistudio", "logs", "project.log");
+  const filePath = resolveProjectLogPath(projectRoot);
   let logger = projectLoggers.get(filePath);
   if (!logger) {
     logger = new FileLogger({
@@ -251,8 +266,7 @@ export function getProjectLogger(projectRoot: string): FileLogger {
  * layer keeps its own focused file without losing the unified timeline.
  */
 export function getAgentLogger(projectRoot: string, agentId: string): FileLogger {
-  const safeAgentId = agentId.replace(/[^\w-]/g, "_") || "agent";
-  const filePath = path.join(projectRoot, ".gameaistudio", "logs", "agents", `${safeAgentId}.log`);
+  const filePath = resolveAgentLogPath(projectRoot, agentId);
   let logger = projectLoggers.get(filePath);
   if (!logger) {
     logger = new FileLogger({

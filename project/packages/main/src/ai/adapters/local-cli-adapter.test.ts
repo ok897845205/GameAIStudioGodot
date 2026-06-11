@@ -5,8 +5,12 @@ import {
 } from "./local-cli-adapter";
 import { claudeLocalConfig } from "./claude-local";
 import { codexLocalConfig } from "./codex-local";
+import { copilotLocalConfig } from "./copilot-local";
+import { cursorLocalConfig } from "./cursor-local";
+import { geminiLocalConfig } from "./gemini-local";
 import { kimiLocalConfig } from "./kimi-local";
 import { ksccLocalConfig } from "./kscc-local";
+import { qwenLocalConfig } from "./qwen-local";
 import type { RuntimeEnvironment } from "../runtime-environment";
 import type {
   ProcessRunOptions,
@@ -104,7 +108,17 @@ describe("codex-local config", () => {
 describe("local CLI capability contracts", () => {
   it("only advertises image upload for local CLIs with a proven file flag", () => {
     expect(codexLocalConfig.capabilities.supportsImages).toBe(true);
-    for (const config of [claudeLocalConfig, ksccLocalConfig, kimiLocalConfig]) {
+    // Headless paths stay conservative; image support arrives dynamically via
+    // the ACP run-mode upgrade for the CLIs that have one.
+    for (const config of [
+      claudeLocalConfig,
+      ksccLocalConfig,
+      kimiLocalConfig,
+      geminiLocalConfig,
+      qwenLocalConfig,
+      cursorLocalConfig,
+      copilotLocalConfig,
+    ]) {
       expect(config.capabilities.supportsImages).toBe(false);
       expect(config.capabilities.imageInputMode).toBe("unsupported");
     }
@@ -575,5 +589,146 @@ describe("local-cli-adapter quota health", () => {
     });
 
     expect((await adapter.health(env)).quota).toBe(true);
+  });
+});
+
+describe("local-cli-adapter broken version detection", () => {
+  it("treats an error-looking --version output as not installed (Copilot stub case)", async () => {
+    const runner = makeRunner({
+      "/usr/bin/copilot --version": {
+        exitCode: 0,
+        stdout: "Cannot find GitHub Copilot CLI (https://docs.github.com/copilot/how-tos/set-up).",
+      },
+    });
+    const adapter = createLocalCliAdapter(
+      { ...config, id: "copilot", label: "Copilot", command: "copilot" },
+      { runner },
+    );
+    const env = fakeEnv({
+      which: async (c) => (c === "copilot" ? "/usr/bin/copilot" : undefined),
+    });
+
+    const health = await adapter.health(env, { probe: false });
+    expect(health.installed).toBe(false);
+    expect(health.headlessOk).toBe(false);
+    expect(health.detail).toContain("无法正常运行");
+  });
+
+  it("keeps a normal version line as installed", async () => {
+    const runner = makeRunner({
+      "/usr/bin/claude --version": { exitCode: 0, stdout: "2.1.170 (Claude Code)" },
+    });
+    const adapter = createLocalCliAdapter(config, { runner });
+    const env = fakeEnv({
+      which: async (c) => (c === "claude" ? "/usr/bin/claude" : undefined),
+    });
+
+    const health = await adapter.health(env, { probe: false });
+    expect(health.installed).toBe(true);
+    expect(health.version).toBe("2.1.170 (Claude Code)");
+  });
+});
+
+describe("local-cli-adapter headless session resume (KSCC flagship path)", () => {
+  const resumeConfig: LocalCliConfig = {
+    ...config,
+    id: "kscc",
+    label: "KSCC",
+    command: "kscc",
+    promptArgs: ["--print", "-", "--output-format", "stream-json"],
+    outputFormat: "claude-stream-json",
+    resumeArgs: (sessionId) => ["--resume", sessionId],
+  };
+  const streamJson = (sessionId: string, text: string) =>
+    [
+      JSON.stringify({ type: "system", subtype: "init", session_id: sessionId }),
+      JSON.stringify({ type: "result", session_id: sessionId, result: text }),
+      "",
+    ].join("\n");
+
+  async function runResumeTurn(
+    dir: string,
+    table: Record<string, Resp>,
+    calls: string[],
+  ): Promise<TurnChunk[]> {
+    const runner = ((command: string, args: string[], options?: ProcessRunOptions) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return makeRunner(table)(command, args, options);
+    }) as typeof runProcess;
+    const adapter = createLocalCliAdapter(resumeConfig, { runner });
+    const env = fakeEnv({ which: async (c) => (c === "kscc" ? "/usr/bin/kscc" : undefined) });
+    const chunks: TurnChunk[] = [];
+    for await (const chunk of adapter.runTurn(
+      {
+        prompt: "继续",
+        workingDir: dir,
+        sessionKey: "p1:producer",
+        images: [],
+        signal: new AbortController().signal,
+      },
+      env,
+    )) {
+      chunks.push(chunk);
+    }
+    return chunks;
+  }
+
+  it("persists the session id and appends --resume on the next turn", async () => {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gas-headless-resume-"));
+    try {
+      const calls: string[] = [];
+      const base = "/usr/bin/kscc --print - --output-format stream-json";
+      const table: Record<string, Resp> = {
+        [base]: { exitCode: 0, stdout: streamJson("sess_abc", "第一轮完成") },
+        [`${base} --resume sess_abc`]: { exitCode: 0, stdout: streamJson("sess_abc", "第二轮完成") },
+      };
+
+      const first = await runResumeTurn(dir, table, calls);
+      expect(first.at(-1)).toMatchObject({ type: "final", content: "第一轮完成", exitCode: 0 });
+      const stored = JSON.parse(
+        await readFile(path.join(dir, ".gameaistudio", "acp-session-ids.json"), "utf8"),
+      ) as Record<string, { sessionId: string }>;
+      expect(stored["cli:kscc:p1:producer"]?.sessionId).toBe("sess_abc");
+
+      const second = await runResumeTurn(dir, table, calls);
+      expect(calls.at(-1)).toContain("--resume sess_abc");
+      expect(second.at(-1)).toMatchObject({ type: "final", content: "第二轮完成", exitCode: 0 });
+      expect(
+        second.some((c) => c.type === "step" && c.title.includes("继续上次会话")),
+      ).toBe(true);
+    } finally {
+      const { flushAllLogs } = await import("../../services/logger");
+      await flushAllLogs();
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("clears the stored session when a resumed turn fails", async () => {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gas-headless-resume-"));
+    try {
+      const calls: string[] = [];
+      const base = "/usr/bin/kscc --print - --output-format stream-json";
+      const table: Record<string, Resp> = {
+        [base]: { exitCode: 0, stdout: streamJson("sess_old", "ok") },
+        [`${base} --resume sess_old`]: { exitCode: 1, stderr: "No conversation found" },
+      };
+
+      await runResumeTurn(dir, table, calls); // seeds sess_old
+      await runResumeTurn(dir, table, calls); // resumed turn fails → cleared
+      const stored = JSON.parse(
+        await readFile(path.join(dir, ".gameaistudio", "acp-session-ids.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(stored["cli:kscc:p1:producer"]).toBeUndefined();
+    } finally {
+      const { flushAllLogs } = await import("../../services/logger");
+      await flushAllLogs();
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 });

@@ -24,6 +24,7 @@ import {
   installProcessErrorLogging,
 } from "./services/logger";
 import { StudioStore } from "./services/store";
+import { StudioSettingsService } from "./services/studio-settings-service";
 import { UpdateService } from "./services/update-service";
 import { WebExportPipelineService } from "./services/web-export-pipeline-service";
 import { WorkflowService } from "./services/workflow-service";
@@ -89,12 +90,44 @@ function confirmQuitDuringUpdate(owner?: BrowserWindow): boolean {
 }
 
 app.whenReady().then(async () => {
-  const paths = resolveStudioPaths();
-  await mkdir(paths.dataRoot, { recursive: true });
-  await mkdir(paths.projectsRoot, { recursive: true });
+  const studioSettingsService = new StudioSettingsService({
+    defaultDataRoot: path.join(app.getPath("documents"), "GameAIStudio"),
+    settingsPath: path.join(app.getPath("userData"), "studio-settings.json"),
+  });
+  await studioSettingsService.load();
+
+  let paths = resolveStudioPaths(studioSettingsService.getPathOverrides());
+  studioSettingsService.setActivePaths(paths);
+  let startupDirectoryError: unknown;
+  let failedStartupPaths: typeof paths | undefined;
+  try {
+    await mkdir(paths.dataRoot, { recursive: true });
+    await mkdir(paths.projectsRoot, { recursive: true });
+  } catch (error) {
+    startupDirectoryError = error;
+    failedStartupPaths = paths;
+    const fallbackDataRoot = studioSettingsService.defaultDataRoot;
+    paths = resolveStudioPaths({
+      dataRoot: fallbackDataRoot,
+      projectsRoot: path.join(fallbackDataRoot, "projects"),
+    });
+    studioSettingsService.setActivePaths(paths);
+    await mkdir(paths.dataRoot, { recursive: true });
+    await mkdir(paths.projectsRoot, { recursive: true });
+    await studioSettingsService.update({ setupCompleted: false }).catch(() => undefined);
+  }
 
   const log = initAppLogger({ dataRoot: paths.dataRoot, mirrorConsole: !app.isPackaged });
   installProcessErrorLogging();
+  if (startupDirectoryError) {
+    log.warn("settings", "已回退到默认软件目录，原目录不可用", {
+      attemptedDataRoot: failedStartupPaths?.dataRoot,
+      attemptedProjectsRoot: failedStartupPaths?.projectsRoot,
+      dataRoot: paths.dataRoot,
+      projectsRoot: paths.projectsRoot,
+      error: startupDirectoryError,
+    });
+  }
   log.info("app", "应用启动", {
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -104,6 +137,9 @@ app.whenReady().then(async () => {
     arch: process.arch,
     packaged: app.isPackaged,
     dataRoot: paths.dataRoot,
+    projectsRoot: paths.projectsRoot,
+    appLogPath: studioSettingsService.getSettings().appLogPath,
+    settingsPath: studioSettingsService.getSettings().settingsPath,
     resourceRoot: paths.resourceRoot,
     godot: paths.godotConsolePath ?? "(missing)",
   });
@@ -185,7 +221,8 @@ app.whenReady().then(async () => {
     webExportPipelineService,
     runService,
     processRegistry,
-    updateService: appUpdateService
+    updateService: appUpdateService,
+    studioSettingsService
   });
 
   log.info("app", "服务装配完成，IPC 已注册");

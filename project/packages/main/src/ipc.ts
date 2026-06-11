@@ -1,6 +1,6 @@
-import { ipcMain, shell } from "electron";
-import type { IpcMainInvokeEvent } from "electron";
-import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, UpdateProjectAgentClisInput } from "@gameaistudio/shared";
+import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
+import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, EnvironmentToolId, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SelectDirectoryInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -22,6 +22,8 @@ import { WorkflowService } from "./services/workflow-service";
 import type { StudioPaths } from "./services/resource-paths";
 import { runAgentTurnWithOptionalPreview } from "./services/agent-turn-orchestrator";
 import { openSystemPath } from "./services/system-open-service";
+import { resolveProjectLogPath } from "./services/logger";
+import { StudioSettingsService } from "./services/studio-settings-service";
 
 interface IpcDependencies {
   paths: StudioPaths;
@@ -41,6 +43,7 @@ interface IpcDependencies {
   runService: RunService;
   processRegistry: ProcessRegistry;
   updateService: UpdateService;
+  studioSettingsService: StudioSettingsService;
 }
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
@@ -87,9 +90,21 @@ function handle(channel: string, handler: IpcHandler): void {
 async function projectDetailsWithGit(deps: IpcDependencies, projectId: string) {
   const [project, gitStatus] = await Promise.all([deps.projectService.getProject(projectId), deps.gitService.getStatus(projectId)]);
   return {
-    ...project,
+    ...projectWithLogPath(project),
     gitStatus
   };
+}
+
+function projectWithLogPath(project: StudioProject): StudioProject {
+  return {
+    ...project,
+    projectLogPath: resolveProjectLogPath(project.rootPath),
+  };
+}
+
+async function listProjectsWithLogPath(deps: IpcDependencies): Promise<StudioProject[]> {
+  const projects = await deps.projectService.listProjects();
+  return projects.map((project) => projectWithLogPath(project));
 }
 
 export function registerIpcHandlers(deps: IpcDependencies): void {
@@ -99,20 +114,36 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     godotExecutablePath: deps.paths.godotConsolePath,
     godotRuntime: await deps.godotRuntimeService.inspect(),
     environment: await deps.environmentService.inspect(),
-    projects: await deps.projectService.listProjects(),
+    projects: await listProjectsWithLogPath(deps),
     agents: AGENT_PROFILES,
     cliTools: await deps.cliService.discover(),
-    update: await deps.updateService.getStatus()
+    update: await deps.updateService.getStatus(),
+    directorySettings: deps.studioSettingsService.getSettings()
   }));
 
   handle("updates:status", async () => deps.updateService.getStatus());
   handle("updates:check", async () => deps.updateService.checkForUpdates());
   handle("updates:download-install", async () => deps.updateService.downloadAndInstall());
+  handle("settings:update-directories", async (_event, input: UpdateStudioDirectorySettingsInput) =>
+    deps.studioSettingsService.update(input)
+  );
+  handle("system:select-directory", async (event, input?: SelectDirectoryInput) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: input?.title ?? "选择目录",
+      defaultPath: input?.defaultPath,
+      properties: ["openDirectory", "createDirectory"],
+    };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? undefined : result.filePaths[0];
+  });
 
   handle("environment:refresh", async () => deps.environmentService.inspect());
+  handle("environment:install", async (_event, toolId: EnvironmentToolId) => deps.environmentService.install(toolId));
   handle("cli:refresh", async () => deps.cliService.discover());
   handle("cli:test", async (_event, toolId: CliToolId) => deps.cliService.testTool(toolId));
   handle("cli:install", async (_event, toolId: CliToolId) => deps.cliService.install(toolId));
+  handle("cli:install-acp", async (_event, toolId: CliToolId) => deps.cliService.installAcp(toolId));
 
   handle("projects:create", async (_event, input: CreateProjectInput) => {
     const project = await deps.projectService.createProject(input);
@@ -131,7 +162,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     await deps.autoPreviewService.stop(projectId).catch(() => undefined);
     await deps.previewServer.stop(projectId).catch(() => undefined);
     const deleted = await deps.projectService.deleteProject(projectId);
-    const projects = await deps.projectService.listProjects();
+    const projects = await listProjectsWithLogPath(deps);
     const selectedProject = projects[0] ? await projectDetailsWithGit(deps, projects[0].id) : undefined;
     return {
       deletedProjectId: deleted.id,
@@ -140,12 +171,13 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       selectedProject
     };
   });
-  handle("projects:list", async () => deps.projectService.listProjects());
+  handle("projects:list", async () => listProjectsWithLogPath(deps));
   handle("projects:get", async (_event, projectId: string) => projectDetailsWithGit(deps, projectId));
   handle("projects:git-status", async (_event, projectId: string) => deps.gitService.getStatus(projectId));
   handle("projects:git-commit", async (_event, input: GitCommitInput) => deps.gitService.commit(input));
   handle("projects:git-restore", async (_event, input: GitRestoreInput) => deps.gitService.restore(input));
   handle("projects:file-preview", async (_event, input: ProjectFilePreviewInput) => deps.filePreviewService.read(input));
+  handle("projects:project-log-preview", async (_event, projectId: string) => deps.filePreviewService.readProjectLog(projectId));
   handle("projects:delete-message", async (_event, input: DeleteProjectMessageInput) =>
     deps.projectService.deleteMessage(input.projectId, input.messageId)
   );
@@ -192,5 +224,10 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
 
   handle("system:open-path", async (_event, targetPath: string) => {
     await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));
+  });
+  handle("system:restart-app", async () => {
+    getAppLogger().info("app", "用户请求重启以应用目录设置");
+    app.relaunch();
+    app.quit();
   });
 }

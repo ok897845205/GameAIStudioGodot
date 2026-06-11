@@ -32,6 +32,11 @@ import {
   parseLocalCliOutput,
   type LocalCliOutputFormat,
 } from "./local-cli-output";
+import {
+  clearAcpSessionId,
+  readAcpSessionId,
+  writeAcpSessionId,
+} from "../acp/acp-session-store";
 
 export type LocalCliConfig = {
   id: string;
@@ -44,6 +49,12 @@ export type LocalCliConfig = {
   outputFormat?: LocalCliOutputFormat;
   /** Optional image argv builder for CLIs that accept real image attachments. */
   imageArgs?: (images: AdapterImageInput[]) => string[];
+  /**
+   * Headless session resume: extra argv continuing a previous session (e.g.
+   * `["--resume", id]`). The session id comes from the parsed output of the
+   * previous turn and is persisted per (project × agent) thread.
+   */
+  resumeArgs?: (sessionId: string) => string[];
   installCommand: string[];
   installHint: string;
   credentialEnvVars: string[];
@@ -62,6 +73,11 @@ export type LocalCliAdapter = AiAdapter & { readonly config: LocalCliConfig };
 type Runner = typeof runProcess;
 
 const AUTH_FAILURE = /\b401\b|unauthor|forbidden|not\s+logged\s*in|please\s+log\s*in|login\s+required|invalid\s+api\s*key/i;
+
+// Some wrappers exit 0 from `--version` while printing an error (e.g. a stub
+// that says "Cannot find GitHub Copilot CLI"). A version line matching this is
+// a broken install, not an available CLI.
+const BROKEN_VERSION_PATTERN = /cannot find|not installed|please (?:re)?install|无法找到|未安装|not configured/i;
 
 const firstLine = (text: string): string | undefined =>
   text
@@ -157,6 +173,7 @@ export function createLocalCliAdapter(
       timeoutMs: 4000,
     });
     const versionText = firstLine(version.stdout || version.stderr);
+    const versionBroken = Boolean(versionText && BROKEN_VERSION_PATTERN.test(versionText));
 
     // Credential presence (cheap, env-based). Not the same as "logged in".
     const hasCredEnv = config.credentialEnvVars.some((name) =>
@@ -207,12 +224,16 @@ export function createLocalCliAdapter(
     }
 
     return {
-      installed: version.exitCode === 0,
+      installed: version.exitCode === 0 && !versionBroken,
       authed,
-      headlessOk,
+      headlessOk: versionBroken ? false : headlessOk,
       quota,
       ...(versionText ? { version: versionText } : {}),
-      ...(detail ? { detail } : {}),
+      ...(versionBroken
+        ? { detail: `命令存在但无法正常运行：${versionText}` }
+        : detail
+          ? { detail }
+          : {}),
       ...(lastErrorKind ? { lastErrorKind } : {}),
     };
   };
@@ -222,6 +243,15 @@ export function createLocalCliAdapter(
   ): Promise<GodotRunResult> => {
     const startedAt = Date.now();
     const manager = config.installCommand[0] ?? "npm";
+    if (manager === "manual") {
+      return {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: config.installHint,
+        durationMs: Date.now() - startedAt,
+      };
+    }
     const managerExecutable = await env.which(manager);
     if (!managerExecutable) {
       return {
@@ -250,8 +280,19 @@ export function createLocalCliAdapter(
     env: RuntimeEnvironment,
   ): AsyncIterable<TurnChunk> {
     const executablePath = (await resolveExecutable(env)) ?? config.command;
-    const promptArgs = buildPromptArgs(config, req);
     const plog = getProjectLogger(req.workingDir);
+
+    // Headless session resume: continue the CLI's own conversation for this
+    // thread (cheaper + better continuity than rebuilding context each turn).
+    const sessionStoreKey =
+      config.resumeArgs && req.sessionKey ? `cli:${config.id}:${req.sessionKey}` : undefined;
+    const storedSessionId = sessionStoreKey
+      ? await readAcpSessionId(req.workingDir, sessionStoreKey)
+      : undefined;
+    const promptArgs = [
+      ...buildPromptArgs(config, req),
+      ...(storedSessionId && config.resumeArgs ? config.resumeArgs(storedSessionId) : []),
+    ];
 
     const registry = new ProcessRegistry();
     const key = "turn:active";
@@ -286,6 +327,9 @@ export function createLocalCliAdapter(
       type: "step",
       title: `${config.label} CLI 启动：${config.command} ${promptArgs.join(" ")}`,
     });
+    if (storedSessionId) {
+      push({ type: "step", title: "继续上次会话（--resume，多轮上下文延续）" });
+    }
 
     const task = runner(executablePath, promptArgs, {
       cwd: req.workingDir,
@@ -318,13 +362,22 @@ export function createLocalCliAdapter(
         if (text) push({ type: "stderr-delta", text });
       },
     })
-      .then((result) => {
+      .then(async (result) => {
         const parsedOutput = parseLocalCliOutput(config.outputFormat, result);
         const normalizedResult = {
           ...result,
           stdout: sanitizeCliText(parsedOutput.content),
           stderr: sanitizeCliText(parsedOutput.stderr),
         };
+        // Persist the session id for the next turn; a failed resume must not
+        // poison future turns, so clear the stored id on failure.
+        if (sessionStoreKey) {
+          if (result.exitCode === 0 && parsedOutput.sessionId) {
+            await writeAcpSessionId(req.workingDir, sessionStoreKey, parsedOutput.sessionId);
+          } else if (result.exitCode !== 0 && storedSessionId) {
+            await clearAcpSessionId(req.workingDir, sessionStoreKey);
+          }
+        }
         const combinedOutput = processOutput(normalizedResult);
         const permissionFailure = hasCliPermissionFailure(combinedOutput);
         plog.log(result.exitCode === 0 && !permissionFailure ? "info" : "warn", "cli-adapter", "本地 CLI 结束", {

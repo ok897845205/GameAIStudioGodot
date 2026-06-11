@@ -3,6 +3,7 @@ import type {
   CliDiagnostic,
   CliDiscoverySource,
   CliTool,
+  CliToolAcpStatus,
   CliToolId,
   CliToolCapabilities,
   CliToolHealth,
@@ -20,6 +21,7 @@ import {
 } from "../ai/adapter-registry";
 import type { AgentTurnRequest, TurnChunk } from "../ai/adapter-contract";
 import type { LocalCliAdapter } from "../ai/adapters/local-cli-adapter";
+import { hasAcpUpgrade } from "../ai/acp/prefer-acp-adapter";
 import { getAppLogger } from "./logger";
 
 // Re-exported from their canonical home (ai/runtime-environment) so existing
@@ -84,6 +86,11 @@ async function getInstallManagerInfo(
   env: RuntimeEnvironment
 ): Promise<{ available: boolean; version?: string; globalBinPath?: string; executablePath?: string }> {
   const manager = installManagerCommand(installCommand);
+  // "manual" marks CLIs installed by their own script (e.g. Cursor) — no
+  // in-app install path exists by design.
+  if (manager === "manual") {
+    return { available: false };
+  }
   const executable = await env.which(manager);
   if (!executable) {
     return { available: false };
@@ -125,6 +132,7 @@ export function buildCliDiagnostics(input: {
   credentialHint: string;
   capabilities?: CliToolCapabilities;
   health?: CliToolHealth;
+  acp?: CliToolAcpStatus;
 }): CliDiagnostic[] {
   const diagnostics: CliDiagnostic[] = [];
 
@@ -143,7 +151,12 @@ export function buildCliDiagnostics(input: {
       severity: "error",
       title: "CLI 未安装或不在 PATH",
       detail: input.installHint,
-      action: input.installManagerAvailable ? "点击安装，或手动安装后刷新。" : `请先安装 ${input.installManager}，再安装该 CLI。`
+      action:
+        input.installManager === "manual"
+          ? "请按安装说明手动安装后刷新。"
+          : input.installManagerAvailable
+            ? "点击安装，或手动安装后刷新。"
+            : `请先安装 ${input.installManager}，再安装该 CLI。`
     });
   }
 
@@ -183,15 +196,25 @@ export function buildCliDiagnostics(input: {
     });
   }
 
-  diagnostics.push({
-    id: "install-manager",
-    severity: input.installManagerAvailable ? "ok" : "warning",
-    title: input.installManagerAvailable ? `${input.installManager} 可用` : `${input.installManager} 不可用`,
-    detail: input.installManagerAvailable
-      ? `${input.installManagerVersion ?? input.installManager} 可用于一键安装 CLI。${input.installManagerPath ? `路径：${input.installManagerPath}` : ""}`
-      : `未检测到 ${input.installManager}，无法从应用内执行安装命令。`,
-    action: input.installManagerAvailable ? undefined : `安装 ${input.installManager} 后点击刷新。`
-  });
+  if (input.installManager === "manual") {
+    diagnostics.push({
+      id: "install-manager",
+      severity: "info",
+      title: "需手动安装",
+      detail: input.installHint,
+      action: "按提示安装后点击刷新。"
+    });
+  } else {
+    diagnostics.push({
+      id: "install-manager",
+      severity: input.installManagerAvailable ? "ok" : "warning",
+      title: input.installManagerAvailable ? `${input.installManager} 可用` : `${input.installManager} 不可用`,
+      detail: input.installManagerAvailable
+        ? `${input.installManagerVersion ?? input.installManager} 可用于一键安装 CLI。${input.installManagerPath ? `路径：${input.installManagerPath}` : ""}`
+        : `未检测到 ${input.installManager}，无法从应用内执行安装命令。`,
+      action: input.installManagerAvailable ? undefined : `安装 ${input.installManager} 后点击刷新。`
+    });
+  }
 
   if (!input.installed && input.installManagerAvailable && input.installGlobalBinPath) {
     diagnostics.push({
@@ -217,6 +240,18 @@ export function buildCliDiagnostics(input: {
       title: "未检测到常见凭据环境变量",
       detail: input.credentialHint,
       action: `可配置：${input.credentialEnvVars.join(" / ")}，或在 CLI 内完成登录。`
+    });
+  }
+
+  if (input.acp) {
+    diagnostics.push({
+      id: "acp-mode",
+      severity: input.acp.available ? "ok" : "info",
+      title: input.acp.available ? "ACP 模式已启用" : "ACP 模式未启用",
+      detail: input.acp.available
+        ? `回合将通过 Agent Client Protocol 运行（${input.acp.executablePath ?? input.acp.agentCommand}）：原生流式、工具调用可见、按操作权限审计、会话复用。`
+        : input.acp.installHint,
+      ...(input.acp.available ? {} : { action: `安装命令：${input.acp.installCommand.join(" ")}` })
     });
   }
 
@@ -272,6 +307,35 @@ export class CliService {
         } satisfies CliToolHealth);
     const credential = evaluateCredentialStatus(config.credentialEnvVars, this.env.env);
 
+    // ACP run-mode status + dynamic capability reporting: when the ACP agent
+    // is present, turns run over ACP, which (for Claude/Codex) accepts images
+    // and resumes sessions — the UI must reflect that, not the headless caps.
+    let acpStatus: CliToolAcpStatus | undefined;
+    let capabilities = adapter.capabilities;
+    if (hasAcpUpgrade(adapter)) {
+      const acpDiscover = await adapter.acp
+        .discover(this.env)
+        .catch(() => ({ found: false }) as const);
+      acpStatus = {
+        supported: true,
+        available: acpDiscover.found,
+        agentCommand: adapter.acp.acpConfig.agentCommand,
+        ...("executablePath" in acpDiscover && acpDiscover.executablePath
+          ? { executablePath: acpDiscover.executablePath }
+          : {}),
+        installCommand: adapter.acp.acpConfig.installCommand,
+        installHint: adapter.acp.acpConfig.installHint,
+      };
+      if (acpDiscover.found) {
+        capabilities = {
+          ...capabilities,
+          supportsImages: adapter.acp.capabilities.supportsImages,
+          imageInputMode: adapter.acp.capabilities.imageInputMode,
+          supportsResume: adapter.acp.capabilities.supportsResume,
+        };
+      }
+    }
+
     const sharedFields = {
       id: config.id as CliToolId,
       label: CLI_TOOL_LABELS[config.id as CliToolId],
@@ -288,8 +352,9 @@ export class CliService {
       credentialEnvVars: config.credentialEnvVars,
       detectedCredentialEnvVars: credential.detectedCredentialEnvVars,
       credentialHint: config.credentialHint,
-      capabilities: adapter.capabilities,
+      capabilities,
       health,
+      ...(acpStatus ? { acp: acpStatus } : {}),
       lastCheckedAt: checkedAt
     };
 
@@ -369,6 +434,44 @@ export class CliService {
       stderr: shortOutput(result.stderr)
     });
     return result;
+  }
+
+  /** Installs a CLI's ACP agent adapter (e.g. @zed-industries/claude-code-acp) via npm. */
+  async installAcp(toolId: CliToolId): Promise<GodotRunResult> {
+    const startedAt = Date.now();
+    const adapter = this.registry.requireLocalCli(toolId);
+    if (!hasAcpUpgrade(adapter)) {
+      return {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: `${CLI_TOOL_LABELS[toolId]} 没有可用的 ACP 适配器。`,
+        durationMs: Date.now() - startedAt
+      };
+    }
+    const { installCommand } = adapter.acp.acpConfig;
+    const [manager = "npm", ...args] = installCommand;
+    getAppLogger().info("cli", "开始安装 ACP 适配器", { toolId, installCommand });
+    const managerExecutable = await this.env.which(manager);
+    if (!managerExecutable) {
+      return buildInstallManagerUnavailableResult(manager, startedAt);
+    }
+    const result = await runProcess(managerExecutable, args, { timeoutMs: 20 * 60 * 1000 });
+    getAppLogger().log(result.exitCode === 0 ? "info" : "warn", "cli", "ACP 适配器安装完成", {
+      toolId,
+      ok: result.exitCode === 0,
+      exitCode: result.exitCode,
+      durationMs: Date.now() - startedAt,
+      stdout: shortOutput(result.stdout, 600),
+      stderr: shortOutput(result.stderr)
+    });
+    return {
+      ok: result.exitCode === 0,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      durationMs: Date.now() - startedAt
+    };
   }
 
   buildAgentCommand(toolId: CliToolId, prompt: string, executablePath?: string): { command: string; args: string[]; stdin: string } {

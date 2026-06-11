@@ -1,6 +1,14 @@
 export type GameDimension = "2d" | "3d";
 
-export type CliToolId = "codex" | "claude" | "kscc" | "kimi";
+export type CliToolId =
+  | "codex"
+  | "claude"
+  | "kscc"
+  | "kimi"
+  | "gemini"
+  | "qwen"
+  | "cursor"
+  | "copilot";
 
 export type CliToolStatus = "available" | "missing" | "error";
 
@@ -59,6 +67,23 @@ export interface CliToolHealth {
   lastErrorKind?: CliFailureKind;
 }
 
+/**
+ * Status of a CLI's optional ACP (Agent Client Protocol) run-mode upgrade.
+ * When `available`, turns run over ACP (native streaming, live tool calls,
+ * audited per-action permissions, session resume) instead of one-shot
+ * headless invocation.
+ */
+export interface CliToolAcpStatus {
+  /** The CLI has a known ACP agent adapter. */
+  supported: boolean;
+  /** The ACP agent executable was found on this machine. */
+  available: boolean;
+  agentCommand: string;
+  executablePath?: string;
+  installCommand: string[];
+  installHint: string;
+}
+
 export interface CliDiagnostic {
   id: string;
   severity: CliDiagnosticSeverity;
@@ -91,6 +116,8 @@ export interface CliTool {
   credentialHint: string;
   capabilities: CliToolCapabilities;
   health: CliToolHealth;
+  /** ACP run-mode upgrade status (absent for CLIs without an ACP adapter). */
+  acp?: CliToolAcpStatus;
   diagnostics: CliDiagnostic[];
   lastCheckedAt: string;
 }
@@ -242,6 +269,8 @@ export interface StudioProject {
   agentCliToolIds?: Partial<Record<string, CliToolId>>;
   rootPath: string;
   webBuildPath: string;
+  /** Resolved maintenance log file for this project. */
+  projectLogPath?: string;
   createdAt: string;
   updatedAt: string;
   activeAgentId: string;
@@ -439,6 +468,10 @@ export interface EnvironmentTool {
   status: EnvironmentToolStatus;
   executablePath?: string;
   version?: string;
+  /** One-click install is possible on this machine (e.g. winget on Windows). */
+  installAvailable?: boolean;
+  /** How to install when one-click is unavailable. */
+  installHint?: string;
   diagnostics: RuntimeDiagnostic[];
   lastCheckedAt: string;
 }
@@ -538,6 +571,32 @@ export interface DeleteProjectResult {
   selectedProject?: ProjectDetails;
 }
 
+export interface StudioDirectorySettings {
+  dataRoot?: string;
+  projectsRoot?: string;
+  setupCompleted: boolean;
+  setupRequired: boolean;
+  settingsPath: string;
+  defaultDataRoot: string;
+  defaultProjectsRoot: string;
+  resolvedDataRoot: string;
+  resolvedProjectsRoot: string;
+  appLogPath: string;
+  selectedProjectLogPath?: string;
+  requiresRestart?: boolean;
+}
+
+export interface UpdateStudioDirectorySettingsInput {
+  dataRoot?: string;
+  projectsRoot?: string;
+  setupCompleted?: boolean;
+}
+
+export interface SelectDirectoryInput {
+  title?: string;
+  defaultPath?: string;
+}
+
 export type UpdateConfigSource = "userData" | "bundled" | "default" | "missing";
 
 export type UpdatePolicy = "none" | "optional" | "required";
@@ -617,6 +676,7 @@ export interface StudioBootstrap {
   agents: AgentProfile[];
   cliTools: CliTool[];
   update: UpdateInfo;
+  directorySettings: StudioDirectorySettings;
 }
 
 export interface StudioApi {
@@ -625,10 +685,15 @@ export interface StudioApi {
   checkForUpdates(): Promise<UpdateInfo>;
   downloadAndInstallUpdate(): Promise<UpdateInstallResult>;
   onUpdateEvent(callback: (event: UpdateEvent) => void): () => void;
+  updateDirectorySettings(input: UpdateStudioDirectorySettingsInput): Promise<StudioDirectorySettings>;
+  selectDirectory(input?: SelectDirectoryInput): Promise<string | undefined>;
+  restartApp(): Promise<void>;
   refreshEnvironment(): Promise<SystemEnvironment>;
+  installEnvironmentTool(toolId: EnvironmentToolId): Promise<GodotRunResult>;
   refreshCliTools(): Promise<CliTool[]>;
   testCliTool(toolId: CliToolId): Promise<CliTool>;
   installCliTool(toolId: CliToolId): Promise<GodotRunResult>;
+  installCliAcp(toolId: CliToolId): Promise<GodotRunResult>;
   createProject(input: CreateProjectInput): Promise<ProjectDetails>;
   updateProjectAgentClis(input: UpdateProjectAgentClisInput): Promise<ProjectDetails>;
   deleteProject(projectId: string): Promise<DeleteProjectResult>;
@@ -647,6 +712,7 @@ export interface StudioApi {
   commitProjectGit(input: GitCommitInput): Promise<GitCommitResult>;
   restoreProjectGit(input: GitRestoreInput): Promise<GitRestoreResult>;
   readProjectFile(input: ProjectFilePreviewInput): Promise<ProjectFilePreview>;
+  readProjectLog(projectId: string): Promise<ProjectFilePreview>;
   startPreview(projectId: string): Promise<PreviewResult>;
   startAutoPreview(projectId: string): Promise<PreviewResult>;
   stopAutoPreview(projectId: string): Promise<PreviewEvent>;
@@ -663,7 +729,7 @@ export const AGENT_PROFILES: AgentProfile[] = [
     id: "producer",
     title: "制作人",
     specialty: "目标拆解、里程碑、取舍",
-    defaultCli: "codex",
+    defaultCli: "kscc",
     accent: "#2f7dd3",
     systemPrompt:
       "你是 GameAIStudio 的制作人 Agent。你负责把普通用户的一句话游戏想法拆成可执行目标、风险、里程碑和验收标准。"
@@ -672,7 +738,7 @@ export const AGENT_PROFILES: AgentProfile[] = [
     id: "designer",
     title: "策划",
     specialty: "玩法规则、关卡、数值",
-    defaultCli: "claude",
+    defaultCli: "kscc",
     accent: "#a45dce",
     systemPrompt:
       "你是 GameAIStudio 的策划 Agent。你负责设计核心循环、操作、关卡、反馈和可玩性，并让设计适合 Godot 快速实现。"
@@ -681,7 +747,7 @@ export const AGENT_PROFILES: AgentProfile[] = [
     id: "programmer",
     title: "程序",
     specialty: "Godot 脚本、场景、导出",
-    defaultCli: "codex",
+    defaultCli: "kscc",
     accent: "#248f6b",
     systemPrompt:
       "你是 GameAIStudio 的程序 Agent。你负责在当前 Godot 项目内实现 GDScript、场景结构、测试和 Web 导出修复。"
@@ -690,7 +756,7 @@ export const AGENT_PROFILES: AgentProfile[] = [
     id: "artist",
     title: "美术",
     specialty: "视觉风格、素材清单、占位资产",
-    defaultCli: "kimi",
+    defaultCli: "kscc",
     accent: "#c77a1a",
     systemPrompt:
       "你是 GameAIStudio 的美术 Agent。你负责把用户想法转为可实现的视觉方向、素材清单、占位图形和 Godot 资源建议。"
@@ -710,7 +776,11 @@ export const CLI_TOOL_LABELS: Record<CliToolId, string> = {
   codex: "Codex",
   claude: "Claude",
   kscc: "KSCC",
-  kimi: "Kimi"
+  kimi: "Kimi",
+  gemini: "Gemini",
+  qwen: "Qwen Code",
+  cursor: "Cursor",
+  copilot: "Copilot"
 };
 
 export function chooseAgentCli(agent: AgentProfile, tools: CliTool[], preferredCliToolId?: CliToolId): CliToolId {

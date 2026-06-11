@@ -5,15 +5,18 @@ import type {
   CliToolId,
   CreateProjectInput,
   DeleteProjectMessageInput,
+  EnvironmentToolId,
   GitCommitInput,
   GitRestoreInput,
   ProjectFilePreviewInput,
   PreviewEvent,
   RunAgentTurnInput,
   RunStudioWorkflowInput,
+  SelectDirectoryInput,
   StudioApi,
   StudioRunEvent,
   UpdateEvent,
+  UpdateStudioDirectorySettingsInput,
   UpdateProjectAgentClisInput
 } from "@gameaistudio/shared";
 
@@ -22,15 +25,20 @@ const api: StudioApi = {
   getUpdateStatus: () => ipcRenderer.invoke("updates:status"),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   downloadAndInstallUpdate: () => ipcRenderer.invoke("updates:download-install"),
+  updateDirectorySettings: (input: UpdateStudioDirectorySettingsInput) => ipcRenderer.invoke("settings:update-directories", input),
+  selectDirectory: (input?: SelectDirectoryInput) => ipcRenderer.invoke("system:select-directory", input),
+  restartApp: () => ipcRenderer.invoke("system:restart-app"),
   onUpdateEvent: (callback: (event: UpdateEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, event: UpdateEvent) => callback(event);
     ipcRenderer.on("update:event", handler);
     return () => ipcRenderer.removeListener("update:event", handler);
   },
   refreshEnvironment: () => ipcRenderer.invoke("environment:refresh"),
+  installEnvironmentTool: (toolId: EnvironmentToolId) => ipcRenderer.invoke("environment:install", toolId),
   refreshCliTools: () => ipcRenderer.invoke("cli:refresh"),
   testCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:test", toolId),
   installCliTool: (toolId: CliToolId) => ipcRenderer.invoke("cli:install", toolId),
+  installCliAcp: (toolId: CliToolId) => ipcRenderer.invoke("cli:install-acp", toolId),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke("projects:create", input),
   updateProjectAgentClis: (input: UpdateProjectAgentClisInput) => ipcRenderer.invoke("projects:update-agent-clis", input),
   deleteProject: (projectId: string) => ipcRenderer.invoke("projects:delete", projectId),
@@ -40,6 +48,7 @@ const api: StudioApi = {
   commitProjectGit: (input: GitCommitInput) => ipcRenderer.invoke("projects:git-commit", input),
   restoreProjectGit: (input: GitRestoreInput) => ipcRenderer.invoke("projects:git-restore", input),
   readProjectFile: (input: ProjectFilePreviewInput) => ipcRenderer.invoke("projects:file-preview", input),
+  readProjectLog: (projectId: string) => ipcRenderer.invoke("projects:project-log-preview", projectId),
   runAgentTurn: (input: RunAgentTurnInput) => ipcRenderer.invoke("agents:run-turn", input),
   deleteProjectMessage: (input: DeleteProjectMessageInput) => ipcRenderer.invoke("projects:delete-message", input),
   clearProjectMessages: (input: ClearProjectMessagesInput) => ipcRenderer.invoke("projects:clear-messages", input),

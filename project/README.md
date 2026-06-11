@@ -65,12 +65,15 @@ pnpm release:update
 - 内置 Godot 模板：`gameaistudio_template/`
 - 用户游戏项目：`%USERPROFILE%\Documents\GameAIStudio\projects`
 - 工作室状态文件：`%USERPROFILE%\Documents\GameAIStudio\studio-state.json`
-- 应用维护日志：`%USERPROFILE%\Documents\GameAIStudio\logs\app.log`
+- 应用维护日志默认路径：`%USERPROFILE%\Documents\GameAIStudio\logs\app.log`
+- 项目维护日志默认路径：`<项目目录>\.gameaistudio\logs\project.log`
+- 软件目录配置文件：Electron `userData` 下的 `studio-settings.json`（设置界面会显示实际路径）
 - 更新安装包缓存：由 `electron-updater` 管理，通常位于 Electron `userData` 下的更新缓存目录
-- 用户更新配置：`%APPDATA%\GameAIStudio\update.env`
+- 用户更新配置：Electron `userData` 下的 `update.env`（设置界面会显示实际路径）
 
 开发时可以设置 `GAMEAISTUDIO_HOME` 覆盖用户数据目录。
 测试资源解析时，可以设置 `GAMEAISTUDIO_RESOURCE_ROOT` 指向包含 `engine/` 和 `gameaistudio_template/` 的目录。
+首次打开软件会自动弹出设置提示，让用户确认软件数据目录和游戏项目目录。两项都可以留空使用默认路径；软件数据目录保存状态文件、App 日志等维护数据，游戏项目目录决定新建游戏项目落地位置。该配置保存在 Electron `userData`，热更新不会覆盖。
 
 ## 软件更新
 
@@ -251,9 +254,9 @@ ${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup-x.x.x.exe.blockmap
 
 固定下载包 `GameAIStudio-Setup.exe` 不带版本号，便于对外传播；标准更新清单里的安装包继续使用 `GameAIStudio-Setup-x.x.x.exe`，便于定位和回滚。
 
-如果服务器返回 `nextEnv`，应用会校验它的 SHA-256，并写入 `%APPDATA%\GameAIStudio\update.env`。下次启动时，应用会优先读取用户目录里的更新配置，再读取内置 `.env`。
+如果服务器返回 `nextEnv`，应用会校验它的 SHA-256，并写入 Electron `userData` 下的 `update.env`。下次启动时，应用会优先读取用户目录里的更新配置，再读取内置 `.env`。
 
-所有更新检查、标准 updater 事件、`nextEnv` 写入、安装包下载进度和 `quitAndInstall` 调用都会记录到 `logs/app.log`。
+所有更新检查、标准 updater 事件、`nextEnv` 写入、安装包下载进度和 `quitAndInstall` 调用都会记录到当前配置的 `app.log`。
 
 ## 发布打包
 
@@ -278,6 +281,7 @@ ${GAMEAISTUDIO_RELEASE_BASE_URL}/releases/GameAIStudio-Setup-x.x.x.exe.blockmap
 - 每次 Agent 回合前都会准备 `.gameaistudio/agent-context.md`，内容包含项目文件图谱、最近对话、角色上下文、交付状态和响应契约。Agent CLI 提示词会引用该文件，不再把完整上下文塞进命令行参数。
 - Agent 回合结束后会追加 `.gameaistudio/agent-journal.md`，并把最近日志尾部注入下一次 Agent 上下文，让制作人、策划、程序、美术、QA 能通过项目本地状态交接。
 - 创建项目时会初始化 `GAMEAISTUDIO.md`、`.gameaistudio/agent-context.md` 和 `.gameaistudio/agent-journal.md`，并在项目状态面板提供快捷入口，可在二级弹层中预览这些文件。
+- 首次启动会提示配置软件数据目录和游戏项目目录；目录配置保存在 userData，热更新后继续沿用用户配置。
 - 支持在应用内预览文本文件、图片、变更文件和 Agent 图片附件，同时把预览路径限制在所选项目目录内。
 - 桌面打开路径失败时会在 UI 中提示，不会静默忽略缺失的 zip、清单、Agent 上下文或日志文件。
 - 保持生成的 Godot 项目中的 `.gameaistudio/project.json` 与最新预览和导出元数据同步，同时不覆盖 `GAMEAISTUDIO.md` Agent 笔记。

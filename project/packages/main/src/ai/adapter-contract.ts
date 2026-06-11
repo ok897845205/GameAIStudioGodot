@@ -38,6 +38,12 @@ export type AgentTurnRequest = {
   workingDir: string;
   /** Optional path to the project-local agent context file. */
   contextPath?: string;
+  /**
+   * Stable identity of the conversation thread (e.g. `projectId:agentId`).
+   * Adapters that support session resume use it to continue the same
+   * provider-side session across turns instead of cold-starting each time.
+   */
+  sessionKey?: string;
   images: AdapterImageInput[];
   /** Cancellation — adapters MUST kill the child process / abort the request. */
   signal: AbortSignal;

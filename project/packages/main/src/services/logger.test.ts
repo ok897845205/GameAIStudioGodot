@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { FileLogger, getProjectLogger } from "./logger";
 
 async function tmpDir(): Promise<string> {
@@ -78,14 +78,8 @@ describe("FileLogger", () => {
 });
 
 describe("getProjectLogger", () => {
-  const created: string[] = [];
-  afterEach(() => {
-    created.length = 0;
-  });
-
   it("writes under <projectRoot>/.gameaistudio/logs/project.log", async () => {
     const root = await tmpDir();
-    created.push(root);
     const logger = getProjectLogger(root);
 
     logger.info("project", "created", { project: "demo" });
@@ -102,4 +96,5 @@ describe("getProjectLogger", () => {
     const b = getProjectLogger(path.join(os.tmpdir(), "gais-cache-x"));
     expect(a).toBe(b);
   });
+
 });

@@ -1,6 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectFilePreview } from "@gameaistudio/shared";
+import type { StudioProject } from "@gameaistudio/shared";
+import { resolveProjectLogPath } from "./logger";
 import { isPathInsideDirectory } from "./preview-server";
 import { ProjectService } from "./project-service";
 import { stripUtf8Bom } from "./text-file-encoding";
@@ -55,15 +57,34 @@ export class ProjectFilePreviewService {
       throw new Error("文件路径不在当前项目目录内。");
     }
 
+    return this.readAbsoluteFile(project, absolutePath, normalizedRelativePath);
+  }
+
+  async readProjectLog(projectId: string): Promise<ProjectFilePreview> {
+    const project = await this.projectService.requireProject(projectId);
+    const absolutePath = resolveProjectLogPath(project.rootPath);
+    const relativeToProject = path.relative(project.rootPath, absolutePath);
+    const displayPath =
+      relativeToProject && !relativeToProject.startsWith("..") && !path.isAbsolute(relativeToProject)
+        ? relativeToProject.replace(/\\/g, "/")
+        : absolutePath;
+    return this.readAbsoluteFile(project, absolutePath, displayPath);
+  }
+
+  private async readAbsoluteFile(
+    project: StudioProject,
+    absolutePath: string,
+    displayPath: string,
+  ): Promise<ProjectFilePreview> {
     const fileStat = await stat(absolutePath);
     if (!fileStat.isFile()) {
-      throw new Error(`不是可预览文件：${normalizedRelativePath}`);
+      throw new Error(`不是可预览文件：${displayPath}`);
     }
 
     const mimeType = mimeTypeFor(absolutePath);
     const base = {
       projectId: project.id,
-      relativePath: normalizedRelativePath,
+      relativePath: displayPath,
       absolutePath,
       name: path.basename(absolutePath),
       size: fileStat.size,

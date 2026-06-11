@@ -13,6 +13,11 @@ export interface StudioPaths {
   godotConsolePath?: string;
 }
 
+export interface StudioPathOverrides {
+  dataRoot?: string;
+  projectsRoot?: string;
+}
+
 function uniqueExisting(paths: string[]): string[] {
   return [...new Set(paths.filter(Boolean).map((candidate) => path.resolve(candidate)))];
 }
@@ -40,10 +45,18 @@ export function resolveResourceRoot(): string {
   return resourceRoot ?? process.cwd();
 }
 
-export function resolveStudioPaths(): StudioPaths {
+export function resolveStudioPaths(overrides: StudioPathOverrides = {}): StudioPaths {
   const resourceRoot = resolveResourceRoot();
-  const dataRoot =
-    process.env.GAMEAISTUDIO_HOME?.trim() || path.join(app.getPath("documents"), "GameAIStudio");
+  const dataRoot = path.resolve(
+    overrides.dataRoot?.trim() ||
+    process.env.GAMEAISTUDIO_HOME?.trim() ||
+    path.join(app.getPath("documents"), "GameAIStudio")
+  );
+  const projectsRoot = path.resolve(
+    overrides.projectsRoot?.trim() ||
+    process.env.GAMEAISTUDIO_PROJECTS_ROOT?.trim() ||
+    path.join(dataRoot, "projects")
+  );
   const engineRoot = path.join(resourceRoot, "engine");
   const godotGuiPath = path.join(engineRoot, "Godot_v4.6.2-stable_win64.exe");
   const godotConsolePath = path.join(engineRoot, "Godot_v4.6.2-stable_win64_console.exe");
@@ -51,7 +64,7 @@ export function resolveStudioPaths(): StudioPaths {
   return {
     resourceRoot,
     dataRoot,
-    projectsRoot: path.join(dataRoot, "projects"),
+    projectsRoot,
     templatesRoot: path.join(resourceRoot, "gameaistudio_template"),
     engineRoot,
     godotGuiPath: existsSync(godotGuiPath) ? godotGuiPath : undefined,

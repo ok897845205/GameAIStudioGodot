@@ -85,6 +85,6 @@ describe("desktop package assets", () => {
 
     expect(projectReadme).toContain("pnpm smoke:webzip");
     expect(projectReadme).toContain("当前应用能力");
-    expect(workspaceReadme).toContain("参考项目");
+    expect(workspaceReadme).toContain("发布检查");
   });
 });

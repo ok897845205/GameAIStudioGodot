@@ -100,13 +100,13 @@ function fileChange(filePath = "scripts/player.gd"): ProjectFileChange {
 }
 
 describe("chooseAgentCli", () => {
-  it("uses each role's default CLI when it is installed", () => {
+  it("uses each role's default CLI when it is installed (flagship: kscc)", () => {
     const tools = [tool("codex"), tool("claude"), tool("kscc"), tool("kimi")];
 
-    expect(chooseAgentCli(agent("producer"), tools)).toBe("codex");
-    expect(chooseAgentCli(agent("designer"), tools)).toBe("claude");
-    expect(chooseAgentCli(agent("programmer"), tools)).toBe("codex");
-    expect(chooseAgentCli(agent("artist"), tools)).toBe("kimi");
+    expect(chooseAgentCli(agent("producer"), tools)).toBe("kscc");
+    expect(chooseAgentCli(agent("designer"), tools)).toBe("kscc");
+    expect(chooseAgentCli(agent("programmer"), tools)).toBe("kscc");
+    expect(chooseAgentCli(agent("artist"), tools)).toBe("kscc");
     expect(chooseAgentCli(agent("qa"), tools)).toBe("kscc");
   });
 
@@ -123,9 +123,9 @@ describe("chooseAgentCli", () => {
   });
 
   it("ignores a preferred CLI when it is not installed and returns the role default", () => {
-    const tools = [tool("codex"), tool("claude"), tool("kimi", false)];
+    const tools = [tool("codex"), tool("kscc"), tool("kimi", false)];
 
-    expect(chooseAgentCli(agent("designer"), tools, "kimi")).toBe("claude");
+    expect(chooseAgentCli(agent("designer"), tools, "kimi")).toBe("kscc");
   });
 
   it("skips installed CLI tools whose adapter health is unavailable", () => {

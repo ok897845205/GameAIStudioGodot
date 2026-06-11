@@ -217,6 +217,9 @@ function buildCliFailureHint(toolId: CliToolId | undefined, output: string): str
   if (!/(invalid bearer token|invalid_authentication_error|api key appears to be invalid|failed to authenticate)/i.test(output)) {
     return undefined;
   }
+  if (toolId === "kscc") {
+    return "修复建议：请在终端运行 `kscc auth` 检查登录状态；如果未登录或 token 失效，运行 `kscc setup-token` 完成认证后回到 GameAIStudio 刷新 CLI。";
+  }
   if (toolId === "claude") {
     return "修复建议：Claude 交互界面能打开不一定代表 `claude --print` 可用。请在终端运行 `claude auth status` 检查状态；如果仍然 401，运行 `claude setup-token` 或重新登录后再刷新 GameAIStudio。";
   }
@@ -499,6 +502,9 @@ export class AgentService {
         prompt,
         workingDir: project.rootPath,
         contextPath: context.contextPath,
+        // One provider-side session per (project × agent) thread — adapters
+        // with resume support continue it across turns.
+        sessionKey: `${project.id}:${input.agentId}`,
         images: attachments.map((attachment, index) => ({
           name: attachment.name,
           mimeType: attachment.mimeType,

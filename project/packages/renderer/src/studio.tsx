@@ -59,8 +59,6 @@ import { cn } from "./lib/utils";
 type BusyAction =
   | "boot"
   | "create"
-  | "send"
-  | "workflow"
   | "preview"
   | "build"
   | "git"
@@ -254,6 +252,27 @@ export function StudioApp() {
   const [gitRestoreHash, setGitRestoreHash] = useState("");
   const [filePreview, setFilePreview] = useState<ProjectFilePreview>();
   const [chatSearch, setChatSearch] = useState("");
+  // Multi-project concurrency: in-flight chat/workflow per project (covers the
+  // gap before the run record exists) + live "has a running run" map for ALL
+  // projects so the sidebar shows activity even when you switch away.
+  const [pendingByProject, setPendingByProject] = useState<Record<string, "send" | "workflow">>({});
+  const [runningProjects, setRunningProjects] = useState<Record<string, true>>({});
+
+  const setProjectPending = (projectId: string, kind?: "send" | "workflow") =>
+    setPendingByProject((cur) => {
+      const next = { ...cur };
+      if (kind) next[projectId] = kind;
+      else delete next[projectId];
+      return next;
+    });
+  const markProjectRunning = (projectId: string, running: boolean) =>
+    setRunningProjects((cur) => {
+      if (Boolean(cur[projectId]) === running) return cur;
+      const next = { ...cur };
+      if (running) next[projectId] = true;
+      else delete next[projectId];
+      return next;
+    });
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>();
   const [updateMessage, setUpdateMessage] = useState("");
   const [updateInstallLocked, setUpdateInstallLocked] = useState(false);
@@ -338,6 +357,10 @@ export function StudioApp() {
     ? (activeRun.steps.find((s) => s.id === activeRun.currentStepId) ??
       activeRun.steps.find((s) => s.status === "running"))
     : undefined;
+  // The selected project is "working" when a run is live or a chat/workflow
+  // request is in flight (run record may not exist yet).
+  const selectedPending = selectedProject ? pendingByProject[selectedProject.id] : undefined;
+  const selectedProjectWorking = Boolean(activeRun) || Boolean(selectedPending);
   const activeStepIndex = activeRun && activeStep
     ? activeRun.steps.findIndex((s) => s.id === activeStep.id)
     : -1;
@@ -391,6 +414,7 @@ export function StudioApp() {
         const nextAgents = data.agents ?? AGENT_PROFILES;
         const nextAgent =
           nextAgents.find((a) => a.id === detail.activeAgentId) ?? nextAgents[0]!;
+        markProjectRunning(detail.id, (detail.runs ?? []).some((r) => r.status === "running" || r.status === "queued"));
         setSelectedProject(detail);
         setActiveAgentId(detail.activeAgentId);
         setSelectedCli(chooseAgentCli(nextAgent, data.cliTools, detail.agentCliToolIds?.[nextAgent.id]));
@@ -409,6 +433,11 @@ export function StudioApp() {
 
   useEffect(() => {
     return window.studio.onRunEvent((event) => {
+      // Sidebar activity map covers every project, not just the selected one.
+      markProjectRunning(
+        event.run.projectId,
+        event.run.status === "running" || event.run.status === "queued",
+      );
       setSelectedProject((cur) => {
         if (!cur || cur.id !== event.run.projectId) return cur;
         const runs = [
@@ -494,7 +523,8 @@ export function StudioApp() {
       const detail = await window.studio.getProject(id);
       const nextAgent =
         agents.find((a) => a.id === detail.activeAgentId) ?? agents[0]!;
-      setSelectedProject(detail);
+      markProjectRunning(detail.id, (detail.runs ?? []).some((r) => r.status === "running" || r.status === "queued"));
+        setSelectedProject(detail);
       setActiveAgentId(detail.activeAgentId);
       setSelectedCli(chooseAgentCli(nextAgent, tools, detail.agentCliToolIds?.[nextAgent.id]));
     } catch (e) {
@@ -519,19 +549,26 @@ export function StudioApp() {
 
   async function startStudioWorkflow(project: ProjectDetails, message: string, agentCliToolIds?: AgentCliToolIds) {
     if (!ensureUpdateAllowsWork()) return;
-    const result = await window.studio.runStudioWorkflow({
-      projectId: project.id,
-      message,
-      agentIds: workflowAgents.map((agent) => agent.id),
-      agentCliToolIds: agentCliToolIds ?? project.agentCliToolIds,
-      autoExportWeb: true,
-      autoPackageWebZip: true,
-      autoStartPreview: true,
-      withQualityLoop: true,
-    });
-    setSelectedProject(result.project);
-    setProjects(await window.studio.listProjects());
-    setNotice(result.run.summary ?? "团队工作流结束。");
+    setProjectPending(project.id, "workflow");
+    try {
+      const result = await window.studio.runStudioWorkflow({
+        projectId: project.id,
+        message,
+        agentIds: workflowAgents.map((agent) => agent.id),
+        agentCliToolIds: agentCliToolIds ?? project.agentCliToolIds,
+        autoExportWeb: true,
+        autoPackageWebZip: true,
+        autoStartPreview: true,
+        withQualityLoop: true,
+      });
+      // Land the result only if the user is still looking at this project —
+      // never yank them back from another project they switched to.
+      setSelectedProject((cur) => (cur && cur.id === project.id ? result.project : cur));
+      setProjects(await window.studio.listProjects());
+      setNotice(`「${project.name}」${result.run.summary ?? "团队工作流结束。"}`);
+    } finally {
+      setProjectPending(project.id, undefined);
+    }
   }
 
   async function createProject() {
@@ -557,7 +594,9 @@ export function StudioApp() {
       setRightCollapsed(false);
       setRightTab("activity");
       setNotice(`已创建项目：${project.name}，正在启动团队工作流。`);
-      setBusy("workflow");
+      // The workflow runs under per-project pending state, not the global
+      // busy flag — other projects stay fully usable meanwhile.
+      setBusy(undefined);
       await startStudioWorkflow(project, project.prompt, agentCliToolIds);
     } catch (e) {
       setNotice(errText(e));
@@ -578,7 +617,7 @@ export function StudioApp() {
     if (!selectedProject) return;
     if (!ensureUpdateAllowsWork()) return;
     const projectId = selectedProject.id;
-    setBusy("send");
+    setProjectPending(projectId, "send");
     setNotice("");
 
     // Optimistically show the user's message immediately (the canonical
@@ -610,21 +649,27 @@ export function StudioApp() {
         attachments: input.attachments,
         regenerate: input.regenerate,
       });
-      setSelectedProject({
-        ...result.project,
-        messages: result.messages,
-        runs: result.runs,
-      });
+      // Land only when this project is still selected; switching projects
+      // mid-turn must not yank the user back.
+      setSelectedProject((cur) =>
+        cur && cur.id === projectId
+          ? { ...result.project, messages: result.messages, runs: result.runs }
+          : cur,
+      );
       setProjects(await window.studio.listProjects());
     } catch (e) {
       setNotice(errText(e));
     } finally {
-      setBusy(undefined);
+      setProjectPending(projectId, undefined);
     }
   }
 
   const handleAgentSend = async ({ text, attachments }: AgentSendInput) => {
     if (!selectedProject || (!text.trim() && attachments.length === 0)) return;
+    if (selectedProjectWorking) {
+      setNotice("该项目正有任务运行中，请等待完成或先取消，再发送新消息。");
+      return;
+    }
     if (!activeCliAvailable) {
       setNotice(activeCliUnavailableReason ?? "当前 CLI 不可用，请在设置中修复后刷新。");
       return;
@@ -644,6 +689,10 @@ export function StudioApp() {
   /** Quick-action helper: route a preset request to a specific Agent. */
   async function sendToAgent(agentId: string, text: string) {
     if (!selectedProject || isBusy) return;
+    if (selectedProjectWorking) {
+      setNotice("该项目正有任务运行中，请等待完成或先取消。");
+      return;
+    }
     const agent = agents.find((a) => a.id === agentId) ?? agents[0]!;
     const cli = chooseAgentCli(agent, tools, selectedProject.agentCliToolIds?.[agentId]);
     setActiveAgentId(agentId);
@@ -654,6 +703,10 @@ export function StudioApp() {
   /** 重新生成: re-run the latest user message of the active thread. */
   async function regenerateLastReply() {
     if (!selectedProject || isBusy) return;
+    if (selectedProjectWorking) {
+      setNotice("该项目正有任务运行中，请等待完成或先取消。");
+      return;
+    }
     const lastUser = [...(selectedProject.messages ?? [])]
       .reverse()
       .find((m) => m.role === "user" && m.agentId === activeAgentId);
@@ -774,13 +827,14 @@ export function StudioApp() {
 
   async function runWorkflow() {
     if (!selectedProject) return;
-    setBusy("workflow");
+    if (selectedProjectWorking) {
+      setNotice("该项目正有任务运行中，请等待完成或先取消。");
+      return;
+    }
     try {
       await startStudioWorkflow(selectedProject, selectedProject.prompt);
     } catch (e) {
       setNotice(errText(e));
-    } finally {
-      setBusy(undefined);
     }
   }
 
@@ -911,6 +965,10 @@ export function StudioApp() {
 
   async function deleteProject() {
     if (!selectedProject) return;
+    if (selectedProjectWorking) {
+      setNotice("该项目正有任务运行中，请先取消运行再删除。");
+      return;
+    }
     if (
       !window.confirm(
         `删除项目「${selectedProject.name}」？\n\n此操作会将本地游戏目录一起删除：\n${selectedProject.rootPath}\n\n此操作不可撤销。`,
@@ -1170,7 +1228,8 @@ export function StudioApp() {
         projectId: selectedProject.id,
         agentCliToolIds: { [agentId]: cliToolId },
       });
-      setSelectedProject(detail);
+      markProjectRunning(detail.id, (detail.runs ?? []).some((r) => r.status === "running" || r.status === "queued"));
+        setSelectedProject(detail);
       if (agentId === activeAgentId) setSelectedCli(cliToolId);
       const agent = agents.find((a) => a.id === agentId);
       setNotice(`${agent?.title ?? agentId} 现在使用 ${CLI_TOOL_LABELS[cliToolId]}。`);
@@ -1272,9 +1331,15 @@ export function StudioApp() {
                   : "hover:bg-accent/50",
               )}
             >
-              <span className="truncate text-sm">{p.name}</span>
+              <span className="flex items-center gap-1.5 truncate text-sm">
+                {runningProjects[p.id] && (
+                  <Loader2 className="size-3 shrink-0 animate-spin text-primary" />
+                )}
+                <span className="truncate">{p.name}</span>
+              </span>
               <span className="text-xs text-muted-foreground">
                 {p.dimension.toUpperCase()} · {formatTime(p.updatedAt)}
+                {runningProjects[p.id] ? " · 运行中" : ""}
               </span>
             </button>
           ))}
@@ -1448,7 +1513,7 @@ export function StudioApp() {
           </div>
         )}
 
-        {selectedProject && !activeRun && (
+        {selectedProject && !selectedProjectWorking && (
           <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border px-4 py-1.5">
             {[
               { label: "继续制作", title: "再跑一轮团队工作流", run: () => void runWorkflow() },
@@ -1523,7 +1588,7 @@ export function StudioApp() {
             <AgentChat
               key={`${selectedProject.id}:${activeAgentId}`}
               messages={activeMessages}
-              isRunning={busy === "send" || busy === "workflow"}
+              isRunning={selectedProjectWorking}
               isSendDisabled={!hasInstalledCli || !activeCliAvailable}
               supportsImages={activeCliSupportsImages}
               projectRoot={selectedProject.rootPath}
@@ -1623,9 +1688,9 @@ export function StudioApp() {
                 <Button
                   className="w-full"
                   onClick={runWorkflow}
-                  disabled={isBusy || !hasInstalledCli}
+                  disabled={isBusy || selectedProjectWorking || !hasInstalledCli}
                 >
-                  {busy === "workflow" ? (
+                  {selectedPending === "workflow" ? (
                     <Loader2 className="animate-spin" />
                   ) : (
                     <Bot />

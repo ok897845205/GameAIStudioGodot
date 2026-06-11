@@ -732,3 +732,43 @@ describe("local-cli-adapter headless session resume (KSCC flagship path)", () =>
     }
   });
 });
+
+describe("structured streaming paragraph separation", () => {
+  it("separates consecutive Codex agent messages as paragraphs (stream and final)", async () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "先读取上下文。" } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "现在开始改脚本。" } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "已完成全部修改。" } }),
+      "",
+    ].join("\n");
+    const runner = makeRunner({
+      "/usr/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -": {
+        exitCode: 0,
+        stdout,
+        stream: stdout.split(/(?<=\n)/),
+      },
+    });
+    const adapter = createLocalCliAdapter(codexLocalConfig, { runner });
+    const env = fakeEnv({ which: async (c) => (c === "codex" ? "/usr/bin/codex" : undefined) });
+
+    const chunks: TurnChunk[] = [];
+    for await (const chunk of adapter.runTurn(
+      { prompt: "go", workingDir: "/p", images: [], signal: new AbortController().signal },
+      env,
+    )) {
+      chunks.push(chunk);
+    }
+
+    const streamed = chunks
+      .filter((c): c is Extract<TurnChunk, { type: "text-delta" }> => c.type === "text-delta")
+      .map((c) => c.text)
+      .join("");
+    expect(streamed).toBe("先读取上下文。\n\n现在开始改脚本。\n\n已完成全部修改。");
+    expect(chunks.at(-1)).toMatchObject({
+      type: "final",
+      content: "先读取上下文。\n\n现在开始改脚本。\n\n已完成全部修改。",
+      exitCode: 0,
+    });
+  });
+});

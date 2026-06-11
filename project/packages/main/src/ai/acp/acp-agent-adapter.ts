@@ -340,6 +340,10 @@ export function createAcpAgentAdapter(config: AcpAgentConfig): AcpAgentAdapter {
     // `session/load` replays the whole history as session/update notifications
     // before our prompt runs; those must not re-enter the chat stream.
     let promptPhase = false;
+    // Agents narrate in separate messages between tool calls; the protocol
+    // carries no explicit message boundary, so a tool/plan update marks one.
+    // Without this, every narration chunk concatenates into a wall of text.
+    let pendingParagraphBreak = false;
     const client = new AcpClient({
       command: executablePath,
       args: config.agentArgs ?? [],
@@ -347,8 +351,22 @@ export function createAcpAgentAdapter(config: AcpAgentConfig): AcpAgentAdapter {
       env: spawnContext.spawnEnv,
       onNotification: (method, params) => {
         if (method !== "session/update" || !promptPhase) return;
-        for (const chunk of acpUpdateToChunks(asRecord(params.update))) {
-          if (chunk.type === "text-delta") content += chunk.text;
+        const update = asRecord(params.update);
+        const updateKind = asString(update.sessionUpdate);
+        if (updateKind === "tool_call" || updateKind === "tool_call_update" || updateKind === "plan") {
+          pendingParagraphBreak = true;
+        }
+        for (const chunk of acpUpdateToChunks(update)) {
+          if (chunk.type === "text-delta") {
+            let text = chunk.text;
+            if (pendingParagraphBreak && content && !/\n\s*$/.test(content)) {
+              text = `\n\n${text}`;
+            }
+            pendingParagraphBreak = false;
+            content += text;
+            push({ type: "text-delta", text });
+            continue;
+          }
           push(chunk);
         }
       },
@@ -370,6 +388,9 @@ export function createAcpAgentAdapter(config: AcpAgentConfig): AcpAgentAdapter {
             optionName: option.name,
           });
           push({ type: "step", title: `已自动批准：${sanitizeCliText(title)}` });
+          // A permission round is tool activity — narration after it starts a
+          // new paragraph.
+          pendingParagraphBreak = true;
           return { outcome: { outcome: "selected", optionId: option.optionId } };
         }
         throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });

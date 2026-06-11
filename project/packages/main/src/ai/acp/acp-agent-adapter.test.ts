@@ -125,7 +125,7 @@ describe("AcpAgentAdapter runTurn (against the fake ACP agent)", () => {
       .filter((c): c is Extract<TurnChunk, { type: "text-delta" }> => c.type === "text-delta")
       .map((c) => c.text)
       .join("");
-    expect(text).toBe("正在分析项目。已完成修改。");
+    expect(text).toBe("正在分析项目。\n\n已完成修改。"); // 工具调用边界自动分段
 
     const steps = chunks
       .filter((c): c is Extract<TurnChunk, { type: "step" }> => c.type === "step")
@@ -136,7 +136,7 @@ describe("AcpAgentAdapter runTurn (against the fake ACP agent)", () => {
 
     expect(chunks.at(-1)).toMatchObject({
       type: "final",
-      content: "正在分析项目。已完成修改。",
+      content: "正在分析项目。\n\n已完成修改。",
       exitCode: 0,
       cancelled: false,
       timedOut: false,

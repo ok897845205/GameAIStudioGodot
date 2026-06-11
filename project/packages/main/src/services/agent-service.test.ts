@@ -475,3 +475,79 @@ describe("AgentService regenerate", () => {
     }
   });
 });
+
+describe("AgentService per-project exclusion", () => {
+  it("rejects a concurrent turn on the same project without invoking the CLI, then allows retry", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-agent-lock-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const projectService = new ProjectService(paths, store);
+    const runService = new RunService(store);
+    const processRegistry = new ProcessRegistry();
+    const fileChangeService = new ProjectFileChangeService();
+    const contextService = new AgentContextService();
+
+    try {
+      await writeTemplate(paths);
+      const project = await projectService.createProject({
+        name: "并发测试",
+        dimension: "2d",
+        prompt: "锁测试"
+      });
+      let cliInvocations = 0;
+      let releaseFirstTurn: (() => void) | undefined;
+      const firstTurnGate = new Promise<void>((resolve) => {
+        releaseFirstTurn = resolve;
+      });
+      const cliService = {
+        discover: async () => [fakeTool("fake-codex")],
+        runTurn: async function* () {
+          cliInvocations += 1;
+          await firstTurnGate; // hold the first turn open
+          yield { type: "final", content: "完成", exitCode: 0, durationMs: 2 };
+        }
+      } as unknown as CliService;
+      const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+
+      const first = agentService.runTurn({
+        projectId: project.id,
+        agentId: "producer",
+        cliToolId: "codex",
+        message: "第一条",
+        autoStartPreview: false
+      });
+      // Give the first turn a beat to acquire the lock and reach the CLI.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const second = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "designer",
+        cliToolId: "codex",
+        message: "第二条（应被拒绝）",
+        autoStartPreview: false
+      });
+      const rejection = [...second.messages].reverse().find((m) => m.role === "system");
+      expect(rejection?.kind).toBe("error");
+      expect(rejection?.content).toContain("正有");
+      expect(rejection?.content).toContain("未执行");
+      expect(cliInvocations).toBe(1); // second turn never reached the CLI
+
+      releaseFirstTurn?.();
+      await first;
+
+      // Lock released → a new turn executes normally.
+      const third = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "producer",
+        cliToolId: "codex",
+        message: "第三条",
+        autoStartPreview: false
+      });
+      expect(cliInvocations).toBe(2);
+      const agentReply = [...third.messages].reverse().find((m) => m.role === "agent");
+      expect(agentReply?.content).toContain("完成");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20000);
+});

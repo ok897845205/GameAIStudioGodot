@@ -305,6 +305,7 @@ export function createLocalCliAdapter(
     let wake: (() => void) | undefined;
     let finished = false;
     let structuredStdoutBuffer = "";
+    let sawStructuredText = false;
     const push = (chunk: TurnChunk) => {
       queue.push(chunk);
       wake?.();
@@ -349,7 +350,15 @@ export function createLocalCliAdapter(
           // reach the chat bubble, the run log or persisted messages.
           if (delta.text) {
             const text = sanitizeCliText(delta.text);
-            if (text) push({ type: "text-delta", text });
+            if (text) {
+              // Structured formats deliver one complete narration block per
+              // delta — separate them as paragraphs (matches the final parse)
+              // instead of jamming them into a wall of text.
+              const isStructured = config.outputFormat && config.outputFormat !== "plain";
+              const separated = isStructured && sawStructuredText ? `\n\n${text}` : text;
+              sawStructuredText = true;
+              push({ type: "text-delta", text: separated });
+            }
           }
           if (delta.stderr) {
             const text = sanitizeCliText(delta.stderr);

@@ -14,6 +14,7 @@ import { PreviewServer } from "./services/preview-server";
 import { ProcessRegistry } from "./services/process-runner";
 import { ProjectFileChangeService } from "./services/project-file-change-service";
 import { ProjectFilePreviewService } from "./services/project-file-preview-service";
+import { ProjectLockService } from "./services/project-lock";
 import { ProjectService } from "./services/project-service";
 import { resolveResourceRoot, resolveStudioPaths, setGlobalStudioPathOverrides } from "./services/resource-paths";
 import { RunService } from "./services/run-service";
@@ -175,6 +176,9 @@ app.whenReady().then(async () => {
       }
     }
   );
+  // One shared lock instance so chat turns and workflows exclude each other
+  // per project (multi-project work stays parallel).
+  const projectLocks = new ProjectLockService();
   const agentService = new AgentService(
     projectService,
     cliService,
@@ -186,7 +190,8 @@ app.whenReady().then(async () => {
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("agent:stream", event);
       }
-    }
+    },
+    projectLocks
   );
   const godotService = new GodotService(paths, projectService);
   const godotRuntimeService = new GodotRuntimeService(paths);
@@ -199,7 +204,7 @@ app.whenReady().then(async () => {
   const exportService = new ExportService(projectService);
   const filePreviewService = new ProjectFilePreviewService(projectService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
-  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService);
+  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService, projectLocks);
   const appUpdateService = new UpdateService({
     prepareQuitAndInstall: () => {
       allowQuitWithoutUpdateConfirm = true;

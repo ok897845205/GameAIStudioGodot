@@ -24,6 +24,7 @@ import { createMessageId } from "./naming";
 import { CliService } from "./cli-service";
 import { ProjectFileChangeService } from "./project-file-change-service";
 import { ProjectService } from "./project-service";
+import { ProjectLockService } from "./project-lock";
 import { ProcessRegistry, type ProcessRunResult } from "./process-runner";
 import { RunService } from "./run-service";
 
@@ -290,10 +291,74 @@ export class AgentService {
     private readonly processRegistry: ProcessRegistry,
     private readonly fileChangeService: ProjectFileChangeService,
     private readonly contextService: AgentContextService,
-    private readonly emitStream: (event: AgentStreamEvent) => void = () => {}
+    private readonly emitStream: (event: AgentStreamEvent) => void = () => {},
+    private readonly projectLocks: ProjectLockService = new ProjectLockService()
   ) {}
 
+  /**
+   * Per-project mutual exclusion: only one turn/workflow may run per project
+   * (two CLIs editing the same files corrupt change attribution and the
+   * shared agent context). Workflow-internal turns carry `parentRunId` and
+   * run under the workflow's own lock instead.
+   */
   async runTurn(
+    input: RunAgentTurnInput,
+    options: { recordRun?: boolean; parentRunId?: string; parentStepId?: string } = {}
+  ): Promise<RunAgentTurnResult> {
+    if (options.parentRunId) {
+      return this.executeTurn(input, options);
+    }
+    if (!this.projectLocks.tryAcquire(input.projectId, "agent-turn")) {
+      return this.rejectBusyTurn(input);
+    }
+    try {
+      return await this.executeTurn(input, options);
+    } finally {
+      this.projectLocks.release(input.projectId);
+    }
+  }
+
+  /** Friendly in-chat rejection when the project is already working. */
+  private async rejectBusyTurn(input: RunAgentTurnInput): Promise<RunAgentTurnResult> {
+    const project = await this.projectService.requireProject(input.projectId);
+    const reason = this.projectLocks.busyMessage(input.projectId);
+    getAgentLogger(project.rootPath, input.agentId).warn("agent-turn", "项目忙，拒绝并发回合", {
+      agentId: input.agentId,
+      cliToolId: input.cliToolId,
+      active: this.projectLocks.describe(input.projectId),
+    });
+    const now = new Date().toISOString();
+    const userMessage: AgentMessage = {
+      id: createMessageId(),
+      projectId: project.id,
+      agentId: input.agentId,
+      role: "user",
+      content: input.message,
+      createdAt: now,
+      cliToolId: input.cliToolId,
+    };
+    const busyMessage: AgentMessage = {
+      id: createMessageId(),
+      projectId: project.id,
+      agentId: input.agentId,
+      role: "system",
+      kind: "error",
+      content: reason,
+      createdAt: now,
+      cliToolId: input.cliToolId,
+    };
+    const messages = await this.projectService.appendMessages(
+      project.id,
+      input.regenerate ? [busyMessage] : [userMessage, busyMessage]
+    );
+    return {
+      project: await this.projectService.getProject(project.id),
+      messages,
+      runs: await this.runService.listRuns(project.id),
+    };
+  }
+
+  private async executeTurn(
     input: RunAgentTurnInput,
     options: { recordRun?: boolean; parentRunId?: string; parentStepId?: string } = {}
   ): Promise<RunAgentTurnResult> {

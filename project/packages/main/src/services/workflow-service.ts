@@ -23,6 +23,7 @@ import { GodotService } from "./godot-service";
 import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { ProjectService } from "./project-service";
+import { ProjectLockService } from "./project-lock";
 import { RunService } from "./run-service";
 
 const DEFAULT_WORKFLOW_AGENTS = ["producer", "designer", "programmer", "artist", "qa"];
@@ -308,10 +309,23 @@ export class WorkflowService {
     private readonly exportService: ExportService,
     private readonly autoPreviewService: AutoPreviewService,
     private readonly runService: RunService,
-    private readonly gitService?: Pick<GitService, "commit">
+    private readonly gitService?: Pick<GitService, "commit">,
+    private readonly projectLocks: ProjectLockService = new ProjectLockService()
   ) {}
 
+  /** Per-project exclusion: a second workflow/turn on the same project is rejected. */
   async run(input: RunStudioWorkflowInput): Promise<RunStudioWorkflowResult> {
+    if (!this.projectLocks.tryAcquire(input.projectId, "studio-workflow")) {
+      throw new Error(this.projectLocks.busyMessage(input.projectId));
+    }
+    try {
+      return await this.executeRun(input);
+    } finally {
+      this.projectLocks.release(input.projectId);
+    }
+  }
+
+  private async executeRun(input: RunStudioWorkflowInput): Promise<RunStudioWorkflowResult> {
     const project = await this.projectService.requireProject(input.projectId);
     const agentIds = input.agentIds?.length ? input.agentIds : DEFAULT_WORKFLOW_AGENTS;
     const agents = agentIds.map(agentById);

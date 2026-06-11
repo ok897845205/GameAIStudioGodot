@@ -62,7 +62,9 @@ function readCodexErrorMessage(event: JsonRecord): string {
 
 export function parseCodexJsonl(stdout: string, stderr = ""): ParsedLocalCliOutput {
   let sessionId = "";
-  let content = "";
+  // Codex narrates in multiple agent messages (one between tool batches);
+  // keep them all as paragraphs instead of only the last one.
+  const messages: string[] = [];
   let errorMessage = "";
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -78,7 +80,7 @@ export function parseCodexJsonl(stdout: string, stderr = ""): ParsedLocalCliOutp
 
     const agentMessage = readCodexAgentMessage(event);
     if (agentMessage) {
-      content = agentMessage;
+      messages.push(agentMessage);
       continue;
     }
 
@@ -88,6 +90,7 @@ export function parseCodexJsonl(stdout: string, stderr = ""): ParsedLocalCliOutp
     }
   }
 
+  const content = messages.join("\n\n");
   return {
     content: content || (errorMessage ? "" : stdout),
     stderr: errorMessage ? [errorMessage, stderr].filter(Boolean).join("\n") : stderr,

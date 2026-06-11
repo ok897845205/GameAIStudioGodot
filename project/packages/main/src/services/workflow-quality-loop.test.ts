@@ -277,3 +277,84 @@ describe("WorkflowService quality loop", () => {
     }
   });
 });
+
+describe("WorkflowService per-project exclusion", () => {
+  it("rejects a second workflow on the same project while the first is running", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-wf-lock-"));
+    try {
+      const store = new StudioStore(path.join(dir, "state.json"));
+      const runService = new RunService(store);
+      const project: StudioProject = {
+        id: "project_lock",
+        name: "Lock Demo",
+        dimension: "2d",
+        prompt: "test",
+        rootPath: path.join(dir, "project"),
+        webBuildPath: path.join(dir, "project", "build", "web"),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        activeAgentId: "producer"
+      };
+      await store.upsertProject(project);
+      const messages: AgentMessage[] = [];
+      let releaseTurn: (() => void) | undefined;
+      const turnGate = new Promise<void>((resolve) => {
+        releaseTurn = resolve;
+      });
+
+      const workflow = new WorkflowService(
+        {
+          requireProject: async () => project,
+          getProject: async (): Promise<ProjectDetails> => ({ ...project, messages, runs: [] }),
+          appendMessages: async (_id: string, next: AgentMessage[]) => {
+            messages.push(...next);
+            return messages;
+          }
+        } as never,
+        { discover: async () => [tool("codex")] } as never,
+        {
+          runTurn: async (input: { agentId: string }) => {
+            await turnGate;
+            const message: AgentMessage = {
+              id: `m_${Date.now()}`,
+              projectId: project.id,
+              agentId: input.agentId,
+              role: "agent",
+              content: "QA结论：通过",
+              createdAt: new Date().toISOString(),
+              cliToolId: "codex",
+              exitCode: 0,
+              fileChanges: []
+            };
+            return { messages: [message], project: { ...project, messages: [message], runs: [] }, runs: [] };
+          }
+        } as never,
+        { validate: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }) } as never,
+        {} as never,
+        {} as never,
+        runService
+      );
+
+      const input = {
+        projectId: project.id,
+        message: "并发",
+        agentIds: ["producer"],
+        autoExportWeb: false,
+        autoPackageWebZip: false,
+        autoStartPreview: false
+      };
+      const first = workflow.run(input);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await expect(workflow.run(input)).rejects.toThrow("正有");
+
+      releaseTurn?.();
+      await first;
+      // Lock released → a new workflow may start again.
+      releaseTurn = undefined;
+      const second = workflow.run(input);
+      await expect(second).resolves.toBeTruthy();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 20000);
+});

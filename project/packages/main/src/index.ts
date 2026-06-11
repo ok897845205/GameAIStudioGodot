@@ -51,7 +51,10 @@ async function createWindow(): Promise<void> {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // Embedded web tools (马良画卷 image canvas) render in a <webview> with
+      // its own isolated guest session — the app renderer stays sandboxed.
+      webviewTag: true
     }
   });
 

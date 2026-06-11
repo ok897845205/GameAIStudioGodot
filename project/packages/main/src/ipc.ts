@@ -244,6 +244,12 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   handle("system:open-path", async (_event, targetPath: string) => {
     await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));
   });
+  handle("system:open-external", async (_event, url: string) => {
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error(`只允许打开 http/https 链接：${url}`);
+    }
+    await shell.openExternal(url);
+  });
   handle("system:restart-app", async () => {
     getAppLogger().info("app", "用户请求重启以应用目录设置");
     app.relaunch();

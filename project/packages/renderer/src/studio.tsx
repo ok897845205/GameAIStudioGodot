@@ -12,6 +12,7 @@ import {
   Info,
   Loader2,
   Moon,
+  Palette,
   PanelRightClose,
   PanelRightOpen,
   Play,
@@ -49,6 +50,7 @@ import {
 } from "@gameaistudio/shared";
 import appPackage from "../../../package.json";
 import { AgentChat, type AgentSendInput } from "./chat";
+import { ImageLabView } from "./components/image-lab";
 import { RunActivityPanel } from "./components/run-activity";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
@@ -255,6 +257,10 @@ export function StudioApp() {
   const [gitRestoreHash, setGitRestoreHash] = useState("");
   const [filePreview, setFilePreview] = useState<ProjectFilePreview>();
   const [chatSearch, setChatSearch] = useState("");
+  // 马良画卷 embedded image lab: mounted lazily on first open, then kept
+  // alive (visibility toggle) so generations survive switching back to chat.
+  const [imageLabActive, setImageLabActive] = useState(false);
+  const [imageLabMounted, setImageLabMounted] = useState(false);
   // Multi-project concurrency: in-flight chat/workflow per project (covers the
   // gap before the run record exists) + live "has a running run" map for ALL
   // projects so the sidebar shows activity even when you switch away.
@@ -1438,6 +1444,18 @@ export function StudioApp() {
         </div>
 
         <div className="space-y-1 border-t border-border p-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start"
+            onClick={() => {
+              setImageLabMounted(true);
+              setImageLabActive(true);
+            }}
+            title="打开马良画卷，在线生成游戏素材图片"
+          >
+            <Palette /> AI 生图
+          </Button>
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
@@ -1483,7 +1501,7 @@ export function StudioApp() {
       </aside>
 
       {/* ── CENTER: role tabs + chat ───────────────────────────────── */}
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
             <h1 className="truncate text-sm font-semibold">
@@ -1737,6 +1755,14 @@ export function StudioApp() {
               <X className="size-3.5" />
             </button>
           </div>
+        )}
+
+        {imageLabMounted && (
+          <ImageLabView
+            active={imageLabActive}
+            onClose={() => setImageLabActive(false)}
+            onOpenExternal={(url) => void window.studio.openExternalUrl(url).catch((e) => setNotice(errText(e)))}
+          />
         )}
       </main>
 

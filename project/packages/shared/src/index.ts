@@ -761,6 +761,7 @@ export interface StudioApi {
   validateProject(projectId: string): Promise<GodotRunResult>;
   openGodotEditor(projectId: string): Promise<GodotOpenResult>;
   openPath(path: string): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
 }
 
 export const AGENT_PROFILES: AgentProfile[] = [

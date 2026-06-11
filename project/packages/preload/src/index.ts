@@ -80,7 +80,8 @@ const api: StudioApi = {
   runGodotExport: (projectId: string) => ipcRenderer.invoke("projects:godot-export", projectId),
   validateProject: (projectId: string) => ipcRenderer.invoke("projects:validate", projectId),
   openGodotEditor: (projectId: string) => ipcRenderer.invoke("projects:godot-open-editor", projectId),
-  openPath: (targetPath: string) => ipcRenderer.invoke("system:open-path", targetPath)
+  openPath: (targetPath: string) => ipcRenderer.invoke("system:open-path", targetPath),
+  openExternalUrl: (url: string) => ipcRenderer.invoke("system:open-external", url)
 };
 
 contextBridge.exposeInMainWorld("studio", api);

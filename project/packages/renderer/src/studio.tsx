@@ -1393,8 +1393,8 @@ export function StudioApp() {
     },
     {
       label: "Agent 上下文",
-      title: "预览 .gameaistudio/agent-context.md",
-      run: () => previewProjectFile(".gameaistudio/agent-context.md"),
+      title: "预览 docs/agent-context.md",
+      run: () => previewProjectFile("docs/agent-context.md"),
       icon: <FileText />,
     },
     {

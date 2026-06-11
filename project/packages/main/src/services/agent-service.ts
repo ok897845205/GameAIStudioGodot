@@ -61,7 +61,7 @@ export function buildAgentPrompt(input: {
     "",
     "工作约束：",
     "- 只在这个 Godot 项目目录内创建或修改文件。",
-    "- `.gameaistudio/` 是软件内部数据目录（聊天存档、日志、会话状态），禁止读取、引用或修改其中内容，仅以下例外：① Agent 上下文文件 `.gameaistudio/agent-context.md`（必读）；② 工作日志 `.gameaistudio/agent-journal.md`（可读）；③ 本轮明确给出的附件路径。要在游戏中使用附件，先把它复制到项目素材目录（如 assets/）。",
+    "- `.gameaistudio/` 是软件内部数据目录（聊天存档、日志、会话状态），禁止读取、引用或修改其中内容，仅两个例外：① 工作日志 `.gameaistudio/agent-journal.md`（可读）；② 本轮明确给出的附件路径。要在游戏中使用附件，先把它复制到项目素材目录（如 assets/）。",
     "- 计划、设计、美术方向、QA 报告等协作文档一律写入项目 `docs/` 目录，不要写进 `.gameaistudio/`。",
     "- 先阅读或遵循 Agent 上下文文件中的项目文件地图、最近对话和交付要求。",
     "- 优先交付一个可预览、可导出的最小可玩版本；程序类任务要尽量直接修改 Godot 文件。",

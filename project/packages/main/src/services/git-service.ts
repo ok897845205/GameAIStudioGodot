@@ -1,4 +1,5 @@
-import { access, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   GitCommit,
@@ -19,6 +20,13 @@ type CommandRunner = typeof runProcess;
 
 const GIT_COMMIT_IDENTITY = ["-c", "user.name=GameAIStudio", "-c", "user.email=gameaistudio@local"];
 
+/**
+ * App-internal state directory (chat history, sessions, logs, attachments,
+ * context). Versioning it would let a Git restore roll back live app state,
+ * so it stays out of the repository entirely.
+ */
+const STUDIO_INTERNAL_DIR = ".gameaistudio";
+
 export function buildProjectGitignore(): string {
   return [
     "# Godot generated data",
@@ -28,21 +36,70 @@ export function buildProjectGitignore(): string {
     "*.tmp",
     "*.uid",
     "",
-    "# GameAIStudio local runtime data",
-    ".gameaistudio/project.json",
-    ".gameaistudio/agent-context.md",
-    ".gameaistudio/agent-journal.md",
-    ".gameaistudio/logs/",
-    ".gameaistudio/last-restore.json",
-    ".gameaistudio/attachments/",
-    ".gameaistudio/chat-history.json",
-    ".gameaistudio/chat-export-*.md",
-    ".gameaistudio/acp-session-ids.json",
+    "# GameAIStudio app state (chat history, sessions, logs) — never versioned,",
+    "# a Git restore must not roll back live app data.",
+    `${STUDIO_INTERNAL_DIR}/`,
+    "# Regenerated every Agent turn (contains recent chat excerpts).",
+    "docs/agent-context.md",
     "",
     "# Local dependencies",
     "node_modules/",
     ""
   ].join("\n");
+}
+
+/**
+ * Copies the current on-disk versions of the given project-relative files to
+ * a temp directory so they survive a hard reset. Returns undefined when there
+ * is nothing to protect.
+ */
+async function backupProjectFiles(
+  rootPath: string,
+  relativePaths: string[]
+): Promise<{ tempRoot: string; saved: Set<string> } | undefined> {
+  if (relativePaths.length === 0) {
+    return undefined;
+  }
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-git-shield-"));
+  const saved = new Set<string>();
+  for (const relativePath of relativePaths) {
+    const source = path.join(rootPath, relativePath);
+    if (!(await pathExists(source))) {
+      continue;
+    }
+    const target = path.join(tempRoot, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(source, target);
+    saved.add(relativePath);
+  }
+  return { tempRoot, saved };
+}
+
+/**
+ * Re-applies a backup after a hard reset: protected files that existed before
+ * the reset get their pre-reset content back; files the reset materialized
+ * from the old commit but that did not exist before are deleted.
+ */
+async function restoreProjectFiles(
+  rootPath: string,
+  relativePaths: string[],
+  backup: { tempRoot: string; saved: Set<string> } | undefined
+): Promise<void> {
+  try {
+    for (const relativePath of relativePaths) {
+      const current = path.join(rootPath, relativePath);
+      if (backup?.saved.has(relativePath)) {
+        await mkdir(path.dirname(current), { recursive: true });
+        await cp(path.join(backup.tempRoot, relativePath), current, { force: true });
+      } else {
+        await rm(current, { force: true });
+      }
+    }
+  } finally {
+    if (backup) {
+      await rm(backup.tempRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 export function parseGitStatusPorcelain(stdout: string): string[] {
@@ -344,7 +401,24 @@ export class GitService {
       return result;
     }
 
+    // Old commits may still track files under `.gameaistudio/` — a hard reset
+    // would overwrite live app state (sessions, context, legacy docs) with
+    // stale content. Shield those paths across the reset.
+    const shieldedPaths = await this.listTrackedStudioFiles(project, target.hash);
+    const backup = await backupProjectFiles(project.rootPath, shieldedPaths).catch(() => undefined);
+
     const result = await this.git(project, ["reset", "--hard", target.hash], { timeoutMs: 20000 });
+    if (result.exitCode === 0 && shieldedPaths.length > 0) {
+      await restoreProjectFiles(project.rootPath, shieldedPaths, backup).catch((error: unknown) => {
+        getProjectLogger(project.rootPath).warn("git", "还原后恢复软件内部数据失败", {
+          projectId: project.id,
+          shieldedPaths,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    } else if (backup) {
+      await rm(backup.tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
     if (result.exitCode !== 0) {
       const nextStatus = await this.getStatus(project.id);
       const failed = await this.withProject(project, {
@@ -396,6 +470,15 @@ export class GitService {
   }
 
   private async commitTrackedChanges(project: StudioProject, message: string): Promise<GitCommitResult> {
+    // Older builds committed files under `.gameaistudio/` before it was
+    // ignored. Drop them from the index (files stay on disk) so new commits
+    // stop versioning app state; harmless when nothing matches.
+    await this.git(
+      project,
+      ["rm", "-r", "--cached", "--ignore-unmatch", "-q", "--", STUDIO_INTERNAL_DIR],
+      { timeoutMs: 10000 }
+    ).catch(() => undefined);
+
     const add = await this.git(project, ["add", "--all"], { timeoutMs: 10000 });
     if (add.exitCode !== 0) {
       return this.commandFailure(project, add, "Git 暂存变更失败。");
@@ -444,6 +527,22 @@ export class GitService {
       stderr: result.stderr || commitResultMessage(result),
       exitCode: result.exitCode
     });
+  }
+
+  /** Lists files under `.gameaistudio/` tracked by the given commit. */
+  private async listTrackedStudioFiles(project: StudioProject, ref: string): Promise<string[]> {
+    const result = await this.git(
+      project,
+      ["ls-tree", "-r", "--name-only", ref, "--", STUDIO_INTERNAL_DIR],
+      { timeoutMs: 8000 }
+    );
+    if (result.exitCode !== 0) {
+      return [];
+    }
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
 
   private async resolveCommit(project: StudioProject, status: GitProjectStatus, commitHash: string): Promise<GitCommit | undefined> {

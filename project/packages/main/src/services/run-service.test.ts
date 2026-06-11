@@ -68,6 +68,53 @@ describe("RunService", () => {
     }
   });
 
+  it("marks runs left running/queued by an app close as failed on startup recovery", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-run-recover-"));
+    const events: StudioRunEvent[] = [];
+
+    try {
+      const store = new StudioStore(path.join(dir, "state.json"));
+      // First "session": a run is started and the app dies mid-step.
+      const before = new RunService(store);
+      const interrupted = await before.createRun({
+        projectId: "proj_1",
+        kind: "agent-turn",
+        title: "程序 Agent 回合",
+        steps: [{ title: "调用 Codex", agentId: "programmer", cliToolId: "codex" }]
+      });
+      await before.startRun(interrupted.id, interrupted.steps[0]?.id);
+      await before.updateStep(interrupted.id, interrupted.steps[0]!.id, { status: "running" });
+      const finishedRun = await before.createRun({
+        projectId: "proj_1",
+        kind: "agent-turn",
+        title: "已完成回合",
+        steps: [{ title: "调用 Codex" }]
+      });
+      await before.startRun(finishedRun.id, finishedRun.steps[0]?.id);
+      await before.updateStep(finishedRun.id, finishedRun.steps[0]!.id, { status: "completed" });
+      await before.finishRun(finishedRun.id, "completed", "done");
+
+      // Second "session": startup sweep recovers the phantom run.
+      const after = new RunService(store, (event) => events.push(event));
+      const recovered = await after.recoverInterruptedRuns();
+
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]?.id).toBe(interrupted.id);
+      expect(recovered[0]?.status).toBe("failed");
+      expect(recovered[0]?.steps[0]?.status).toBe("failed");
+      expect(recovered[0]?.steps[0]?.message).toContain("应用在运行期间被关闭");
+      expect(recovered[0]?.summary).toContain("可重新发起");
+      expect(events.some((event) => event.type === "updated" && event.run.id === interrupted.id)).toBe(true);
+
+      // Finished runs stay untouched; a second sweep finds nothing.
+      const storedRuns = await after.listRuns("proj_1");
+      expect(storedRuns.find((run) => run.id === finishedRun.id)?.status).toBe("completed");
+      expect(await after.recoverInterruptedRuns()).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("writes run step details to the project maintenance log", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-run-log-"));
     const projectRoot = path.join(dir, "project");

@@ -124,6 +124,11 @@ export class StudioStore {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  async listAllRuns(): Promise<StudioRun[]> {
+    const state = await this.load();
+    return [...state.runs];
+  }
+
   async getRun(runId: string): Promise<StudioRun | undefined> {
     const state = await this.load();
     return state.runs.find((run) => run.id === runId);

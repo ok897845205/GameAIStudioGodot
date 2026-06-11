@@ -100,11 +100,38 @@ describe("migrateLegacyAgentDocs", () => {
       expect(await readFile(path.join(root, "docs", "producer-plan.md"), "utf8")).toBe("# plan");
       expect(await readFile(path.join(root, "docs", "qa-report.md"), "utf8")).toBe("# qa");
       // Reserved app files stay where the app expects them.
-      await access(path.join(studioDir, "agent-context.md"));
       await access(path.join(studioDir, "agent-journal.md"));
       await access(path.join(studioDir, "chat-export-20260611.md"));
       await access(path.join(studioDir, "chat-history.json"));
+      // Legacy agent-context.md is deleted (it regenerates at docs/ every turn).
+      await expect(access(path.join(studioDir, "agent-context.md"))).rejects.toThrow();
+      await expect(access(path.join(root, "docs", "agent-context.md"))).rejects.toThrow();
       await expect(access(path.join(studioDir, "producer-plan.md"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rewrites the stale agent-context path in legacy GAMEAISTUDIO.md guides", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-doc-migration-"));
+    const studioDir = path.join(root, ".gameaistudio");
+    await mkdir(studioDir, { recursive: true });
+    await writeFile(path.join(studioDir, "old-plan.md"), "# plan", "utf8");
+    await writeFile(
+      path.join(root, "GAMEAISTUDIO.md"),
+      "﻿# Demo\n\n- Read `.gameaistudio/agent-context.md` when GameAIStudio prepares an Agent turn.\n- Agent 自己加的备注，保留我。\n",
+      "utf8"
+    );
+
+    try {
+      await migrateLegacyAgentDocs(root);
+
+      const guide = await readFile(path.join(root, "GAMEAISTUDIO.md"), "utf8");
+      expect(guide).toContain("docs/agent-context.md");
+      expect(guide).not.toContain(".gameaistudio/agent-context.md");
+      // Agent edits and the BOM survive the surgical rewrite.
+      expect(guide).toContain("Agent 自己加的备注，保留我。");
+      expect(guide.startsWith("﻿")).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -150,9 +177,9 @@ describe("ProjectService", () => {
       expect(project.messages).toHaveLength(2);
       expect(await readFile(path.join(project.rootPath, "project.godot"), "utf8")).toContain('config/name="黄金矿工"');
       expect(await readFile(path.join(project.rootPath, "GAMEAISTUDIO.md"), "utf8")).toContain("Original prompt: 我要创建一个黄金矿工");
-      expect(await readFile(path.join(project.rootPath, ".gameaistudio", "agent-context.md"), "utf8")).toContain("No Agent turn has been prepared yet");
+      expect(await readFile(path.join(project.rootPath, "docs", "agent-context.md"), "utf8")).toContain("No Agent turn has been prepared yet");
       expect(await readFile(path.join(project.rootPath, ".gameaistudio", "agent-journal.md"), "utf8")).toContain("Project created");
-      for (const relativePath of ["GAMEAISTUDIO.md", ".gameaistudio/agent-context.md", ".gameaistudio/agent-journal.md"]) {
+      for (const relativePath of ["GAMEAISTUDIO.md", "docs/agent-context.md", ".gameaistudio/agent-journal.md"]) {
         const bytes = await readFile(path.join(project.rootPath, relativePath));
         expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
       }

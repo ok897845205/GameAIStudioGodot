@@ -162,6 +162,50 @@ export class RunService {
     return updated;
   }
 
+  /**
+   * Startup sweep: any run persisted as queued/running cannot actually be
+   * running — CLI child processes die with the app — so a run found in that
+   * state at boot was interrupted by an app close or crash. Mark it (and its
+   * unfinished steps) failed so the UI doesn't show a phantom "运行中".
+   */
+  async recoverInterruptedRuns(): Promise<StudioRun[]> {
+    const runs = await this.store.listAllRuns();
+    const stale = runs.filter((run) => run.status === "running" || run.status === "queued");
+    const recovered: StudioRun[] = [];
+    for (const run of stale) {
+      const now = new Date().toISOString();
+      const steps = run.steps.map((step) => {
+        if (step.status !== "running" && step.status !== "queued") {
+          return step;
+        }
+        return {
+          ...step,
+          status: "failed" as const,
+          message:
+            step.status === "running"
+              ? "应用在运行期间被关闭，本步骤已中断；可重新发起。"
+              : "应用在运行期间被关闭，本步骤未执行。",
+          completedAt: now,
+          durationMs: step.startedAt ? Date.parse(now) - Date.parse(step.startedAt) : step.durationMs
+        };
+      });
+      const updated = await this.patchRun(run, {
+        status: "failed",
+        steps,
+        currentStepId: undefined,
+        summary: "应用在运行期间被关闭，运行已中断；项目文件保留已完成的部分，可重新发起。",
+        completedAt: now
+      });
+      void this.logRun(updated, "warn", "启动时发现中断的运行，已标记失败", {
+        kind: updated.kind,
+        title: updated.title,
+        interruptedSteps: updated.steps.filter((step) => step.message?.includes("应用在运行期间被关闭")).length
+      });
+      recovered.push(updated);
+    }
+    return recovered;
+  }
+
   async cancelRun(runId: string, summary = "用户已取消运行。"): Promise<StudioRun> {
     const run = await this.requireRun(runId);
     const now = new Date().toISOString();

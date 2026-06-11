@@ -82,7 +82,7 @@ describe("buildAgentPrompt", () => {
   it("references the prepared Agent context file instead of inlining long markdown into CLI args", () => {
     const longMarkdown = `# Context\n${"large context line\n".repeat(400)}`;
     const context: AgentContextBundle = {
-      contextPath: "E:/projects/gold-miner/.gameaistudio/agent-context.md",
+      contextPath: "E:/projects/gold-miner/docs/agent-context.md",
       markdown: longMarkdown,
       files: [],
       recentMessages: [],

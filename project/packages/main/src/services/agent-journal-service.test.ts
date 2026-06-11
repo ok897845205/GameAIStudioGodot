@@ -56,7 +56,7 @@ describe("Agent journal", () => {
       agentMessage: createMessage(project),
       status: "completed",
       fileChanges: changes,
-      contextPath: path.join(project.rootPath, ".gameaistudio", "agent-context.md")
+      contextPath: path.join(project.rootPath, "docs", "agent-context.md")
     });
 
     expect(entry).toContain("Gold Miner");

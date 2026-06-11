@@ -203,6 +203,9 @@ app.whenReady().then(async () => {
       }
     }
   );
+  // Runs persisted as running/queued at boot were interrupted by an app
+  // close or crash — mark them failed so the UI doesn't show phantom work.
+  await runService.recoverInterruptedRuns().catch(() => []);
   // One shared lock instance so chat turns and workflows exclude each other
   // per project (multi-project work stays parallel).
   const projectLocks = new ProjectLockService();

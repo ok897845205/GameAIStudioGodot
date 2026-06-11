@@ -58,7 +58,12 @@ export async function assertTemplateReady(templatePath: string, dimension: GameD
 
 // Markdown files at the `.gameaistudio/` root that belong to the app itself
 // and must never be relocated by the legacy-doc migration below.
-const RESERVED_STUDIO_MARKDOWN = new Set(["agent-context.md", "agent-journal.md"]);
+const RESERVED_STUDIO_MARKDOWN = new Set(["agent-journal.md"]);
+
+// agent-context.md now lives at docs/agent-context.md and regenerates every
+// turn — a legacy copy under `.gameaistudio/` is stale by definition and is
+// deleted rather than moved.
+const LEGACY_DELETED_MARKDOWN = new Set(["agent-context.md"]);
 
 /**
  * Earlier builds let Agents write collaboration documents (plans, design
@@ -91,6 +96,10 @@ export async function migrateLegacyAgentDocs(rootPath: string): Promise<string[]
   const moved: string[] = [];
   for (const entry of candidates) {
     const source = path.join(studioDir, entry.name);
+    if (LEGACY_DELETED_MARKDOWN.has(entry.name.toLowerCase())) {
+      await rm(source, { force: true }).catch(() => undefined);
+      continue;
+    }
     let target = path.join(docsDir, entry.name);
     if (await pathExists(target)) {
       const stem = entry.name.replace(/\.md$/i, "");
@@ -110,7 +119,28 @@ export async function migrateLegacyAgentDocs(rootPath: string): Promise<string[]
   if (moved.length > 0) {
     getProjectLogger(rootPath).info("project", "已将协作文档从 .gameaistudio 迁移到 docs/", { moved });
   }
+  await updateLegacyProjectGuide(rootPath);
   return moved;
+}
+
+/**
+ * GAMEAISTUDIO.md is written once at project creation and may be edited by
+ * Agents afterwards, so it cannot be regenerated wholesale. Surgically rewrite
+ * the stale agent-context path that older guides point at (the file moved
+ * from `.gameaistudio/` to `docs/`).
+ */
+async function updateLegacyProjectGuide(rootPath: string): Promise<void> {
+  const guidePath = path.join(rootPath, "GAMEAISTUDIO.md");
+  try {
+    const content = await readFile(guidePath, "utf8");
+    if (!content.includes(".gameaistudio/agent-context.md")) {
+      return;
+    }
+    await writeFile(guidePath, content.replaceAll(".gameaistudio/agent-context.md", "docs/agent-context.md"), "utf8");
+    getProjectLogger(rootPath).info("project", "已更新 GAMEAISTUDIO.md 中的 Agent 上下文路径指引");
+  } catch {
+    // Guide missing or unreadable — nothing to update.
+  }
 }
 
 export class ProjectService {
@@ -417,7 +447,7 @@ export class ProjectService {
         "- Keep all generated files inside this Godot project.",
         "- Prefer small playable increments over broad rewrites.",
         "- Maintain Web export compatibility.",
-        "- Read `.gameaistudio/agent-context.md` when GameAIStudio prepares an Agent turn.",
+        "- Read `docs/agent-context.md` when GameAIStudio prepares an Agent turn.",
         "- Write collaboration documents (plans, design specs, QA reports) into `docs/`, never into `.gameaistudio/`.",
         "- Record major design decisions in this file when useful."
       ].join("\n")
@@ -426,9 +456,11 @@ export class ProjectService {
 
   private async writeInitialAgentFiles(project: StudioProject): Promise<void> {
     const studioDir = path.join(project.rootPath, ".gameaistudio");
+    const docsDir = path.join(project.rootPath, "docs");
     await mkdir(studioDir, { recursive: true });
+    await mkdir(docsDir, { recursive: true });
     await writeUtf8BomFile(
-      path.join(studioDir, "agent-context.md"),
+      path.join(docsDir, "agent-context.md"),
       [
         "# GameAIStudio Agent Context",
         "",

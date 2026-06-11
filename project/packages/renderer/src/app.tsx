@@ -124,7 +124,7 @@ function projectFilePath(rootPath: string, relativePath: string): string {
 }
 
 function projectAgentContextPath(rootPath: string): string {
-  return projectFilePath(rootPath, ".gameaistudio/agent-context.md");
+  return projectFilePath(rootPath, "docs/agent-context.md");
 }
 
 function projectAgentJournalPath(rootPath: string): string {
@@ -1616,7 +1616,7 @@ export function App() {
                 <Button icon={<FileJson size={16} />} onClick={() => previewProjectFile("GAMEAISTUDIO.md")}>
                   项目说明
                 </Button>
-                <Button icon={<FileJson size={16} />} onClick={() => previewProjectFile(".gameaistudio/agent-context.md")}>
+                <Button icon={<FileJson size={16} />} onClick={() => previewProjectFile("docs/agent-context.md")}>
                   Agent 上下文
                 </Button>
                 <Button icon={<Terminal size={16} />} onClick={() => previewProjectFile(".gameaistudio/agent-journal.md")}>

@@ -96,18 +96,19 @@ describe("parseGitLog", () => {
 });
 
 describe("buildProjectGitignore", () => {
-  it("ignores generated output while keeping project source trackable", () => {
+  it("ignores generated output and the whole app-state directory", () => {
     const content = buildProjectGitignore();
 
     expect(content).toContain(".godot/");
     expect(content).toContain("build/");
     expect(content).toContain("dist/");
-    expect(content).toContain(".gameaistudio/project.json");
-    expect(content).toContain(".gameaistudio/agent-context.md");
-    expect(content).toContain(".gameaistudio/agent-journal.md");
-    expect(content).toContain(".gameaistudio/logs/");
-    expect(content).toContain(".gameaistudio/attachments/");
-    expect(content).not.toContain(".gameaistudio/snapshots/");
+    // The entire app-state directory stays out of version control so a Git
+    // restore can never roll back chat history, sessions, or context.
+    expect(content).toContain("\n.gameaistudio/\n");
+    expect(content).not.toContain(".gameaistudio/project.json");
+    expect(content).not.toContain(".gameaistudio/attachments/");
+    // Machine-generated per turn — keep it out of the game's history too.
+    expect(content).toContain("docs/agent-context.md");
   });
 });
 
@@ -201,7 +202,9 @@ describe("GitService", () => {
       expect(result.status.clean).toBe(true);
       expect(calls.some((args) => args[0] === "init")).toBe(true);
       expect(calls.some((args) => args.includes("commit") && args.includes("初始化"))).toBe(true);
-      expect(await readFile(path.join(dir, ".gitignore"), "utf8")).toContain(".gameaistudio/attachments/");
+      // Every commit drops legacy-tracked app-state files from the index.
+      expect(calls.some((args) => args[0] === "rm" && args.includes("--cached") && args.includes(".gameaistudio"))).toBe(true);
+      expect(await readFile(path.join(dir, ".gitignore"), "utf8")).toContain(".gameaistudio/");
       await getProjectLogger(project.rootPath).flush();
       const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
       expect(log).toContain("[git] 开始初始化 Git 版本库");
@@ -253,6 +256,57 @@ describe("GitService", () => {
       const log = await readFile(path.join(project.rootPath, ".gameaistudio", "logs", "project.log"), "utf8");
       expect(log).toContain("[git] 开始还原 Git 版本");
       expect(log).toContain("[git] Git 还原完成");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shields .gameaistudio app state from being rolled back by a restore", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-git-service-"));
+    const project = createProject(dir);
+    await mkdir(path.join(dir, ".git"), { recursive: true });
+    const studioDir = path.join(dir, ".gameaistudio");
+    await mkdir(studioDir, { recursive: true });
+    // Live app state present before the restore.
+    await writeFile(path.join(studioDir, "acp-session-ids.json"), '{"current":true}', "utf8");
+
+    const service = new GitService(createProjectService(project) as never, async (_command, args) => {
+      if (args[0] === "--version") {
+        return processResult(0, "git version 2.50.0\n");
+      }
+      if (args[0] === "status") {
+        return processResult(0, "");
+      }
+      if (args.includes("--abbrev-ref")) {
+        return processResult(0, "main\n");
+      }
+      if (args.includes("--short")) {
+        return processResult(0, "abc123\n");
+      }
+      if (args[0] === "ls-tree") {
+        // The old commit still tracks two app-state files.
+        return processResult(0, ".gameaistudio/acp-session-ids.json\n.gameaistudio/qa-report.md\n");
+      }
+      if (args[0] === "log") {
+        return processResult(0, "abc123456abc123GameAIStudio2026-06-09T10:00:00+08:00Playable version\n");
+      }
+      if (args[0] === "reset") {
+        // Simulate the hard reset materializing the stale tracked contents.
+        await writeFile(path.join(studioDir, "acp-session-ids.json"), '{"stale":true}', "utf8");
+        await writeFile(path.join(studioDir, "qa-report.md"), "# stale report", "utf8");
+        return processResult(0, "HEAD is now at abc123 Playable version\n");
+      }
+      return processResult(0);
+    });
+
+    try {
+      const result = await service.restore({ projectId: project.id, commitHash: "abc123456" });
+
+      expect(result.ok).toBe(true);
+      // Pre-restore live state wins over the stale committed copy…
+      expect(await readFile(path.join(studioDir, "acp-session-ids.json"), "utf8")).toBe('{"current":true}');
+      // …and files that did not exist before the restore are removed again.
+      await expect(readFile(path.join(studioDir, "qa-report.md"), "utf8")).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

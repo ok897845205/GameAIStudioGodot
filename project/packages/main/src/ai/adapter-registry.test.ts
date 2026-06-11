@@ -40,7 +40,7 @@ describe("adapter registry", () => {
     const expectations: Record<string, { command: string; args: string[] }> = {
       kscc: { command: "claude-code-acp", args: [] },
       claude: { command: "claude-code-acp", args: [] },
-      codex: { command: "codex-acp", args: [] },
+      codex: { command: "codex-acp", args: ["-c", 'sandbox_mode="danger-full-access"'] },
       kimi: { command: "kimi", args: ["acp"] },
       gemini: { command: "gemini", args: ["--experimental-acp"] },
       qwen: { command: "qwen", args: ["--experimental-acp"] },

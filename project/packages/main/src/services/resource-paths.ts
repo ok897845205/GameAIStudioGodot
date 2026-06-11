@@ -18,6 +18,15 @@ export interface StudioPathOverrides {
   projectsRoot?: string;
 }
 
+// Startup registers the user-configured directories here so every caller of
+// `resolveStudioPaths()` (incl. lazy ones like the CLI runtime environment)
+// resolves the SAME directories as the main assembly — not the defaults.
+let globalOverrides: StudioPathOverrides = {};
+
+export function setGlobalStudioPathOverrides(overrides: StudioPathOverrides): void {
+  globalOverrides = { ...overrides };
+}
+
 function uniqueExisting(paths: string[]): string[] {
   return [...new Set(paths.filter(Boolean).map((candidate) => path.resolve(candidate)))];
 }
@@ -49,11 +58,13 @@ export function resolveStudioPaths(overrides: StudioPathOverrides = {}): StudioP
   const resourceRoot = resolveResourceRoot();
   const dataRoot = path.resolve(
     overrides.dataRoot?.trim() ||
+    globalOverrides.dataRoot?.trim() ||
     process.env.GAMEAISTUDIO_HOME?.trim() ||
     path.join(app.getPath("documents"), "GameAIStudio")
   );
   const projectsRoot = path.resolve(
     overrides.projectsRoot?.trim() ||
+    globalOverrides.projectsRoot?.trim() ||
     process.env.GAMEAISTUDIO_PROJECTS_ROOT?.trim() ||
     path.join(dataRoot, "projects")
   );

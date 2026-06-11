@@ -1006,8 +1006,13 @@ export function StudioApp() {
         projectsRoot: directorySettings.projectsRoot ?? "",
       });
       if (directorySettings.requiresRestart) {
-        setNotice("目录设置已保存，正在重启软件以应用新目录。");
-        await window.studio.restartApp();
+        const runningHint = activeRun ? "\n\n注意：当前有任务正在运行，重启会中断它。" : "";
+        if (window.confirm(`目录设置已保存。需要重启软件才能应用新目录，现在重启吗？${runningHint}`)) {
+          setNotice("正在重启软件以应用新目录。");
+          await window.studio.restartApp();
+          return;
+        }
+        setNotice("目录设置已保存，下次启动软件时生效。");
         return;
       }
       setSettingsOpen(false);
@@ -1944,12 +1949,15 @@ export function StudioApp() {
       >
         <div className="space-y-3">
           <label className="block">
-            <span className="text-sm text-muted-foreground">项目名</span>
+            <span className="text-sm text-muted-foreground">游戏名称（仅用于显示，可用中文）</span>
             <input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               className="mt-1 h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
             />
+            <span className="mt-1 block text-xs text-muted-foreground">
+              项目目录会自动按「2D_game_年月日时分秒」生成（纯英文，避免 AI CLI 路径兼容问题）。
+            </span>
           </label>
           <label className="block">
             <span className="text-sm text-muted-foreground">一句话需求</span>
@@ -2179,6 +2187,11 @@ export function StudioApp() {
               <p className="mb-3 text-xs leading-5 text-muted-foreground">
                 软件数据目录保存状态文件、App 日志等维护数据；游戏项目目录用于新建游戏落地。留空使用默认位置，修改后会重启软件生效，已有项目不会自动搬迁。
               </p>
+              {currentDirectorySettings.startupFallbackActive && (
+                <div className="mb-3 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-xs text-danger">
+                  配置的目录在启动时不可用（例如移动硬盘未连接），本次以默认目录运行。已保存的配置未被修改——恢复目录可用后重启软件即可继续使用。
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="block">
                   <span className="text-xs text-muted-foreground">软件数据目录</span>

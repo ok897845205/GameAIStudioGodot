@@ -58,6 +58,11 @@ const ACP_UPGRADES: Partial<Record<CliToolId, Parameters<typeof createAcpAgentAd
     id: "codex",
     label: "Codex",
     agentCommand: "codex-acp",
+    // Same rationale as the headless `--dangerously-bypass-approvals-and-sandbox`:
+    // Codex's Windows sandbox helpers fail to spawn from an Electron child
+    // ("windows sandbox: spawn setup refresh"). Permission requests still flow
+    // through ACP and are audited per action.
+    agentArgs: ["-c", 'sandbox_mode="danger-full-access"'],
     installCommand: ["npm", "install", "-g", "@zed-industries/codex-acp"],
     installHint:
       "安装 ACP 适配器以启用 Codex 的 ACP 模式：npm install -g @zed-industries/codex-acp（复用已有 codex 登录）。",

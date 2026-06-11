@@ -1,8 +1,8 @@
-version: 0.1.10
+version: 0.1.11
 files:
-  - url: releases/GameAIStudio-Setup-0.1.10.exe
-    sha512: P9PkbdDSM2756iN/rNJ8CNdRKqtJIlwmHYARlDI8zXiUtgsslPZ18PTudQn/PLh6aZFOaK3/q8wlF5kukIlNMg==
-    size: 150507564
-path: releases/GameAIStudio-Setup-0.1.10.exe
-sha512: P9PkbdDSM2756iN/rNJ8CNdRKqtJIlwmHYARlDI8zXiUtgsslPZ18PTudQn/PLh6aZFOaK3/q8wlF5kukIlNMg==
-releaseDate: '2026-06-11T02:38:36.446Z'
+  - url: releases/GameAIStudio-Setup-0.1.11.exe
+    sha512: +/QxlepZNLSUAIsK6rQDP9TE9pvp1eNG911pl7E3g6eqj/fp6duqxlQiyvZaRI9ErTutzKIYsiOdg2k3Pfbzcg==
+    size: 150509748
+path: releases/GameAIStudio-Setup-0.1.11.exe
+sha512: +/QxlepZNLSUAIsK6rQDP9TE9pvp1eNG911pl7E3g6eqj/fp6duqxlQiyvZaRI9ErTutzKIYsiOdg2k3Pfbzcg==
+releaseDate: '2026-06-11T04:37:24.993Z'

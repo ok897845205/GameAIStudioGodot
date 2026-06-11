@@ -42,6 +42,19 @@ export function sanitizeProjectName(input: string): string {
   return cleaned;
 }
 
+/**
+ * On-disk project directory name: pure ASCII so every local AI CLI handles the
+ * cwd safely (`2D_game_20260611103045`). The user-facing game name (which may
+ * be Chinese) is stored separately as the display name and never enters paths.
+ */
+export function createProjectDirectoryName(dimension: string, now: Date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp =
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${dimension.toUpperCase()}_game_${stamp}`;
+}
+
 export function createProjectId(): string {
   return `proj_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }

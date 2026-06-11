@@ -376,3 +376,157 @@ describe("AcpAgentAdapter hostCli (claude-code-acp driving KSCC)", () => {
     expect(probe.ok).toBe(true);
   }, 20000);
 });
+
+describe("resolveSpawnableHostCliPath (Windows .cmd shim → EINVAL fix)", () => {
+  // Verbatim npm shim shape (String.raw keeps the single backslashes intact).
+  const SHIM_CONTENT = String.raw`@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\@seasun\kscc\cli-wrapper.js" %*
+`.replace(/\n/g, "\r\n");
+
+  async function setup(options: { exe: boolean; js: boolean }) {
+    const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gas-shim-"));
+    const shim = path.join(dir, "kscc.cmd");
+    await writeFile(shim, SHIM_CONTENT, "utf8");
+    if (options.exe) {
+      await writeFile(path.join(dir, "kscc.exe"), "MZ", "utf8");
+    }
+    if (options.js) {
+      const jsPath = path.join(dir, "node_modules", "@seasun", "kscc", "cli-wrapper.js");
+      await mkdir(path.dirname(jsPath), { recursive: true });
+      await writeFile(jsPath, "// entry", "utf8");
+    }
+    const env = {
+      platform: process.platform,
+      env: {},
+      which: async (command: string) => (command === "kscc" ? shim : undefined),
+      npmGlobalBin: async () => undefined,
+    } as unknown as RuntimeEnvironment;
+    return { dir, shim, env, path };
+  }
+
+  it("parses the npm shim's JS entry", async () => {
+    const { readCmdShimTarget } = await import("./acp-agent-adapter");
+    const { dir, shim, path } = await setup({ exe: false, js: true });
+    try {
+      expect(await readCmdShimTarget(shim)).toBe(
+        path.join(dir, "node_modules", "@seasun", "kscc", "cli-wrapper.js"),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the sibling native .exe over the shim", async () => {
+    const { resolveSpawnableHostCliPath } = await import("./acp-agent-adapter");
+    const { dir, env, path } = await setup({ exe: true, js: true });
+    try {
+      expect(await resolveSpawnableHostCliPath(env, "kscc")).toBe(path.join(dir, "kscc.exe"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the shim's JS entry when no .exe exists", async () => {
+    const { resolveSpawnableHostCliPath } = await import("./acp-agent-adapter");
+    const { dir, env, path } = await setup({ exe: false, js: true });
+    try {
+      expect(await resolveSpawnableHostCliPath(env, "kscc")).toBe(
+        path.join(dir, "node_modules", "@seasun", "kscc", "cli-wrapper.js"),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined (→ headless fallback) when nothing spawnable exists", async () => {
+    const { resolveSpawnableHostCliPath } = await import("./acp-agent-adapter");
+    const { dir, env } = await setup({ exe: false, js: false });
+    try {
+      expect(await resolveSpawnableHostCliPath(env, "kscc")).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createPreferAcpAdapter runtime fallback (五花八门环境保护)", () => {
+  function trackingFallback(): { adapter: LocalCliAdapter; calls: () => number } {
+    let invocations = 0;
+    const adapter = {
+      id: "kscc",
+      label: "KSCC",
+      capabilities: {} as never,
+      config: {} as never,
+      discover: async () => ({ found: true }),
+      health: async () => ({ installed: true, authed: true, headlessOk: true }),
+      runTurn: async function* () {
+        invocations += 1;
+        yield { type: "text-delta", text: "headless 路径" } as TurnChunk;
+        yield { type: "final", content: "headless 路径", exitCode: 0, durationMs: 1 } as TurnChunk;
+      },
+    } as unknown as LocalCliAdapter;
+    return { adapter, calls: () => invocations };
+  }
+
+  it("retries the same turn over headless when the ACP turn fails before any output, then benches ACP", async () => {
+    const { adapter: fallback, calls } = trackingFallback();
+    const composite = createPreferAcpAdapter(fixtureAdapter("prompt-error"), fallback);
+
+    const first = await collect(composite.runTurn(request(), fakeEnv(true)));
+    expect(first.at(-1)).toMatchObject({ type: "final", content: "headless 路径", exitCode: 0 });
+    expect(
+      first.some((c) => c.type === "step" && c.title.includes("自动切换 headless")),
+    ).toBe(true);
+    expect(calls()).toBe(1);
+
+    // Second turn skips the benched ACP path entirely (no ACP startup step).
+    const second = await collect(composite.runTurn(request(), fakeEnv(true)));
+    expect(second.at(-1)).toMatchObject({ type: "final", content: "headless 路径" });
+    expect(second.some((c) => c.type === "step" && c.title.includes("ACP 模式启动"))).toBe(false);
+    expect(calls()).toBe(2);
+  }, 30000);
+
+  it("does not retry when the ACP turn already produced content", async () => {
+    const { adapter: fallback, calls } = trackingFallback();
+    const composite = createPreferAcpAdapter(fixtureAdapter("midfail"), fallback);
+
+    const chunks = await collect(composite.runTurn(request(), fakeEnv(true)));
+    const text = chunks
+      .filter((c): c is Extract<TurnChunk, { type: "text-delta" }> => c.type === "text-delta")
+      .map((c) => c.text)
+      .join("");
+    expect(text).toContain("已经开始分析了");
+    expect(chunks.at(-1)).toMatchObject({ type: "final", exitCode: 1 });
+    expect(calls()).toBe(0); // no double-run after partial output
+  }, 30000);
+});
+
+describe("ACP adapter-process stderr hygiene", () => {
+  it("keeps internal tracing noise out of the live stream (logs/final only)", async () => {
+    const adapter = fixtureAdapter("happy");
+    const chunks = await collect(adapter.runTurn(request(), fakeEnv(true)));
+
+    // The fixture prints a codex-style tracing line on stderr at boot; it must
+    // not surface as a stderr-delta chunk in the chat/run stream.
+    const stderrDeltas = chunks.filter((c) => c.type === "stderr-delta");
+    expect(stderrDeltas).toHaveLength(0);
+    expect(chunks.at(-1)).toMatchObject({ type: "final", exitCode: 0 });
+  }, 20000);
+});

@@ -15,3 +15,13 @@ describe("sanitizeProjectName", () => {
   });
 });
 
+
+describe("createProjectDirectoryName", () => {
+  it("builds an ASCII-only CLI-safe directory name from dimension and timestamp", async () => {
+    const { createProjectDirectoryName } = await import("./naming");
+    const name = createProjectDirectoryName("2d", new Date(2026, 5, 11, 10, 30, 45));
+    expect(name).toBe("2D_game_20260611103045");
+    expect(/^[\x20-\x7e]+$/.test(name)).toBe(true);
+    expect(createProjectDirectoryName("3d", new Date(2026, 0, 2, 3, 4, 5))).toBe("3D_game_20260102030405");
+  });
+});

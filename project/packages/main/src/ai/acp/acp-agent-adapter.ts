@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { GodotRunResult } from "@gameaistudio/shared";
 import { sanitizeCliText } from "../../services/cli-text";
 import { getProjectLogger } from "../../services/logger";
@@ -73,6 +76,42 @@ export async function resolveAcpAgentExecutable(
       if (found) return found;
     }
   }
+  return undefined;
+}
+
+/**
+ * Extracts the JS entry an npm `.cmd` shim points at (the
+ * `"%dp0%\node_modules\<pkg>\cli.js"` line), resolved to an absolute path.
+ */
+export async function readCmdShimTarget(shimPath: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(shimPath, "utf8");
+    const match = /"%dp0%[\\/]([^"]+\.(?:js|cjs|mjs))"/i.exec(content);
+    if (!match?.[1]) return undefined;
+    return path.join(path.dirname(shimPath), match[1]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolves a host CLI (exported via env to an ACP adapter, e.g.
+ * CLAUDE_CODE_EXECUTABLE) to something the adapter's internal `spawn` can
+ * actually run. On Windows, npm installs a `.cmd` shim — Node refuses to
+ * spawn those without a shell (EINVAL, CVE-2024-27980), so prefer the sibling
+ * native `.exe`, then the shim's JS entry (SDKs run `.js` paths via node).
+ */
+export async function resolveSpawnableHostCliPath(
+  env: RuntimeEnvironment,
+  command: string,
+): Promise<string | undefined> {
+  const raw = await resolveAcpAgentExecutable(env, command);
+  if (!raw) return undefined;
+  if (!/\.(cmd|bat)$/i.test(raw)) return raw;
+  const exeSibling = raw.replace(/\.(cmd|bat)$/i, ".exe");
+  if (existsSync(exeSibling)) return exeSibling;
+  const shimTarget = await readCmdShimTarget(raw);
+  if (shimTarget && existsSync(shimTarget)) return shimTarget;
   return undefined;
 }
 
@@ -164,7 +203,10 @@ export function createAcpAgentAdapter(config: AcpAgentConfig): AcpAgentAdapter {
     if (!config.hostCli) {
       return { executablePath, ...(config.env ? { spawnEnv: config.env } : {}) };
     }
-    const hostPath = await resolveAcpAgentExecutable(env, config.hostCli.command);
+    // Must be a path the adapter's internal spawn can execute (never a .cmd
+    // shim — that EINVALs on Windows); unusable host → ACP unavailable and the
+    // headless fallback takes over.
+    const hostPath = await resolveSpawnableHostCliPath(env, config.hostCli.command);
     if (!hostPath) return undefined;
     return {
       executablePath,
@@ -333,8 +375,16 @@ export function createAcpAgentAdapter(config: AcpAgentConfig): AcpAgentAdapter {
         throw Object.assign(new Error(`Method not found: ${method}`), { code: -32601 });
       },
       onStderr: (chunk) => {
-        const text = sanitizeCliText(chunk);
-        if (text.trim()) push({ type: "stderr-delta", text });
+        // Adapter-process stderr is internal diagnostics (tracing lines from
+        // codex-acp / claude-code-acp), not user-facing output: log it, never
+        // stream it into the chat. Failures still surface via final.stderr.
+        const text = sanitizeCliText(chunk).trim();
+        if (text) {
+          plog.debug("acp", "agent 进程 stderr", {
+            adapterId: config.id,
+            line: text.slice(0, 600),
+          });
+        }
       },
     });
 

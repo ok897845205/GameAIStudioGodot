@@ -11,7 +11,7 @@ import {
   type StudioProject
 } from "@gameaistudio/shared";
 import { getAppLogger, getProjectLogger } from "./logger";
-import { createMessageId, createProjectId, sanitizeProjectName } from "./naming";
+import { createMessageId, createProjectDirectoryName, createProjectId } from "./naming";
 import { getTemplatePath, type StudioPaths } from "./resource-paths";
 import { StudioStore } from "./store";
 import { writeUtf8BomFile } from "./text-file-encoding";
@@ -65,8 +65,11 @@ export class ProjectService {
   async createProject(input: CreateProjectInput): Promise<ProjectDetails> {
     const id = createProjectId();
     const now = new Date().toISOString();
-    const safeName = sanitizeProjectName(input.name || input.prompt);
-    const rootPath = path.join(this.paths.projectsRoot, `${safeName}-${id.slice(-6)}`);
+    // The directory name is auto-generated ASCII (CLI-safe cwd); the
+    // user-entered name (which may be Chinese) is display-only.
+    const rootPath = await this.allocateProjectRoot(input.dimension);
+    const displayName =
+      input.name.trim() || input.prompt.trim().replace(/\s+/g, " ").slice(0, 24) || path.basename(rootPath);
     const templatePath = getTemplatePath(this.paths, input.dimension);
 
     await assertTemplateReady(templatePath, input.dimension);
@@ -79,7 +82,7 @@ export class ProjectService {
 
     const project: StudioProject = {
       id,
-      name: input.name.trim() || safeName,
+      name: displayName,
       dimension: input.dimension,
       prompt: input.prompt.trim(),
       agentCliToolIds: input.agentCliToolIds,
@@ -113,6 +116,21 @@ export class ProjectService {
       messages: introMessages,
       runs: []
     };
+  }
+
+  /** Finds an unused `2D_game_<timestamp>` directory (suffix on collision). */
+  private async allocateProjectRoot(dimension: GameDimension): Promise<string> {
+    const base = createProjectDirectoryName(dimension);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = path.join(
+        this.paths.projectsRoot,
+        attempt === 0 ? base : `${base}_${attempt + 1}`
+      );
+      if (!(await pathExists(candidate))) {
+        return candidate;
+      }
+    }
+    throw new Error(`无法分配项目目录：${base} 及其后缀都已存在。`);
   }
 
   async listProjects(): Promise<StudioProject[]> {

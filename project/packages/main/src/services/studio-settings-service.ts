@@ -17,6 +17,23 @@ interface StoredStudioSettings {
 export interface StudioSettingsServiceOptions {
   defaultDataRoot: string;
   settingsPath: string;
+  /** App install/resource root — user directories must never live inside it. */
+  resourceRoot?: string;
+}
+
+/** Is `candidate` a filesystem root (C:\, E:\, /)? Those are never valid here. */
+export function isFilesystemRoot(candidate: string): boolean {
+  const resolved = path.resolve(candidate);
+  return path.dirname(resolved) === resolved;
+}
+
+/** Is `candidate` equal to or inside `parent`? (case-insensitive on Windows) */
+export function isInsideDirectory(candidate: string, parent: string): boolean {
+  const normalize = (value: string) =>
+    process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const child = normalize(candidate);
+  const base = normalize(parent);
+  return child === base || child.startsWith(base + path.sep);
 }
 
 function expandDirectoryInput(value: string): string {
@@ -66,8 +83,18 @@ async function copyIfSourceExistsAndTargetMissing(source: string, target: string
 export class StudioSettingsService {
   private settings: StoredStudioSettings = {};
   private activePaths?: StudioPaths;
+  private startupFallbackActive = false;
 
   constructor(private readonly options: StudioSettingsServiceOptions) {}
+
+  /**
+   * Marks that the configured directories were unusable at startup and this
+   * session fell back to the defaults. The stored configuration is NOT
+   * touched — a transient failure (unplugged drive) must never erase it.
+   */
+  markStartupFallback(): void {
+    this.startupFallbackActive = true;
+  }
 
   get defaultDataRoot(): string {
     return path.resolve(this.options.defaultDataRoot);
@@ -124,12 +151,25 @@ export class StudioSettingsService {
       appLogPath: resolveAppLogPath(resolvedDataRoot),
       selectedProjectLogPath: projectRoot ? resolveProjectLogPath(projectRoot) : undefined,
       requiresRestart,
+      startupFallbackActive: this.startupFallbackActive,
     };
+  }
+
+  /** Rejects directories that would corrupt the install or sweep a whole drive. */
+  private validateDirectory(label: string, candidate: string): void {
+    if (isFilesystemRoot(candidate)) {
+      throw new Error(`${label}不能是磁盘根目录（${candidate}），请选择一个具体的文件夹。`);
+    }
+    if (this.options.resourceRoot && isInsideDirectory(candidate, this.options.resourceRoot)) {
+      throw new Error(`${label}不能位于软件安装目录内（${this.options.resourceRoot}），以免被升级或卸载覆盖。`);
+    }
   }
 
   async update(input: UpdateStudioDirectorySettingsInput = {}): Promise<StudioDirectorySettings> {
     const dataRoot = cleanDir(input.dataRoot);
     const projectsRoot = cleanDir(input.projectsRoot);
+    if (dataRoot) this.validateDirectory("软件数据目录", dataRoot);
+    if (projectsRoot) this.validateDirectory("游戏项目目录", projectsRoot);
     const candidate: StoredStudioSettings = {
       kind: SETTINGS_KIND,
       dataRoot,

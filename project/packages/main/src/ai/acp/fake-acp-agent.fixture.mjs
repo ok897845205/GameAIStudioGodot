@@ -15,6 +15,9 @@ let openPromptSession = "";
 
 // Non-JSON stdout noise the client must tolerate.
 process.stdout.write("fake-acp-agent booting\n");
+// Internal tracing noise on stderr (like codex-acp's Rust logs) — must reach
+// logs/final.stderr but never the live chat stream.
+process.stderr.write("2026-06-11T00:00:00.000000Z ERROR codex_core::exec: exec error: windows sandbox: spawn setup refresh\n");
 
 rl.on("line", (line) => {
   let message;
@@ -100,6 +103,28 @@ rl.on("line", (line) => {
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "继续推进。" } });
       send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
       setTimeout(() => process.exit(0), 50);
+      return;
+    }
+
+    // Adapter-incompatibility shape: prompt fails before any output (e.g.
+    // claude-code-acp crashing on a fork's tool_use events).
+    if (mode === "prompt-error") {
+      send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32603, message: "Internal error", data: { details: "Cannot read properties of null (reading 'file_path')" } },
+      });
+      setTimeout(() => process.exit(1), 50);
+      return;
+    }
+
+    // Failure after partial output — must NOT trigger the headless retry.
+    if (mode === "midfail") {
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "已经开始分析了。" } });
+      setTimeout(() => {
+        send({ jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } });
+        setTimeout(() => process.exit(1), 50);
+      }, 30);
       return;
     }
 

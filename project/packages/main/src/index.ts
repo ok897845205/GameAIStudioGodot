@@ -15,7 +15,7 @@ import { ProcessRegistry } from "./services/process-runner";
 import { ProjectFileChangeService } from "./services/project-file-change-service";
 import { ProjectFilePreviewService } from "./services/project-file-preview-service";
 import { ProjectService } from "./services/project-service";
-import { resolveStudioPaths } from "./services/resource-paths";
+import { resolveResourceRoot, resolveStudioPaths, setGlobalStudioPathOverrides } from "./services/resource-paths";
 import { RunService } from "./services/run-service";
 import {
   flushAllLogs,
@@ -93,6 +93,7 @@ app.whenReady().then(async () => {
   const studioSettingsService = new StudioSettingsService({
     defaultDataRoot: path.join(app.getPath("documents"), "GameAIStudio"),
     settingsPath: path.join(app.getPath("userData"), "studio-settings.json"),
+    resourceRoot: resolveResourceRoot(),
   });
   await studioSettingsService.load();
 
@@ -104,6 +105,10 @@ app.whenReady().then(async () => {
     await mkdir(paths.dataRoot, { recursive: true });
     await mkdir(paths.projectsRoot, { recursive: true });
   } catch (error) {
+    // The configured directories are unusable right now (unplugged drive,
+    // disconnected network share, …). Fall back to the defaults FOR THIS
+    // SESSION ONLY — never rewrite the stored settings over a transient
+    // failure, or the user's configuration would be silently erased.
     startupDirectoryError = error;
     failedStartupPaths = paths;
     const fallbackDataRoot = studioSettingsService.defaultDataRoot;
@@ -112,10 +117,13 @@ app.whenReady().then(async () => {
       projectsRoot: path.join(fallbackDataRoot, "projects"),
     });
     studioSettingsService.setActivePaths(paths);
+    studioSettingsService.markStartupFallback();
     await mkdir(paths.dataRoot, { recursive: true });
     await mkdir(paths.projectsRoot, { recursive: true });
-    await studioSettingsService.update({ setupCompleted: false }).catch(() => undefined);
   }
+  // Keep every lazy resolveStudioPaths() caller (e.g. the CLI runtime
+  // environment) on the same directories this session actually uses.
+  setGlobalStudioPathOverrides({ dataRoot: paths.dataRoot, projectsRoot: paths.projectsRoot });
 
   const log = initAppLogger({ dataRoot: paths.dataRoot, mirrorConsole: !app.isPackaged });
   installProcessErrorLogging();

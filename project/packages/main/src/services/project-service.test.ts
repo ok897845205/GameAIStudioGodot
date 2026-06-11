@@ -199,3 +199,53 @@ describe("ProjectService", () => {
     }
   });
 });
+
+describe("project directory naming (CLI-safe)", () => {
+  it("creates an ASCII timestamped directory while keeping the Chinese display name", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-naming-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const service = new ProjectService(paths, store);
+    try {
+      await writeTemplate(paths, "2d");
+      const project = await service.createProject({
+        name: "黄金矿工豪华版",
+        dimension: "2d",
+        prompt: "我要创建一个黄金矿工"
+      });
+
+      const dirName = path.basename(project.rootPath);
+      expect(dirName).toMatch(/^2D_game_\d{14}$/); // 纯 ASCII，无中文
+      expect(project.name).toBe("黄金矿工豪华版"); // 显示名保留用户输入
+
+      // 同秒再次创建不会撞目录（自动加后缀）。
+      const second = await service.createProject({
+        name: "第二个",
+        dimension: "2d",
+        prompt: "again"
+      });
+      expect(second.rootPath).not.toBe(project.rootPath);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to a trimmed prompt as the display name when no name is given", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-naming-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const service = new ProjectService(paths, store);
+    try {
+      await writeTemplate(paths, "3d");
+      const project = await service.createProject({
+        name: "  ",
+        dimension: "3d",
+        prompt: "做一个赛博朋克跑酷游戏"
+      });
+      expect(project.name).toBe("做一个赛博朋克跑酷游戏");
+      expect(path.basename(project.rootPath)).toMatch(/^3D_game_\d{14}/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -584,6 +584,12 @@ export interface StudioDirectorySettings {
   appLogPath: string;
   selectedProjectLogPath?: string;
   requiresRestart?: boolean;
+  /**
+   * The configured directories were unavailable at startup (e.g. unplugged
+   * drive); this session is running on the default directories instead. The
+   * stored configuration is preserved — fix the location and restart.
+   */
+  startupFallbackActive?: boolean;
 }
 
 export interface UpdateStudioDirectorySettingsInput {

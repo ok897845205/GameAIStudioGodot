@@ -90,7 +90,30 @@ function confirmQuitDuringUpdate(owner?: BrowserWindow): boolean {
   return confirmed;
 }
 
+// Single-instance guard. A second launch would share the same userData dir:
+// Chromium's disk/GPU cache fails with "拒绝访问 (0x5)", and far worse, two
+// processes would race studio-state.json (chat/project records) while the
+// per-project work locks are process-local. The second launch hands off to
+// the existing window instead.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+app.on("second-instance", () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+  getAppLogger().info("app", "检测到重复启动，已聚焦现有窗口");
+});
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) {
+    return;
+  }
   const studioSettingsService = new StudioSettingsService({
     defaultDataRoot: path.join(app.getPath("documents"), "GameAIStudio"),
     settingsPath: path.join(app.getPath("userData"), "studio-settings.json"),

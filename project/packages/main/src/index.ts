@@ -8,6 +8,7 @@ import { CliService } from "./services/cli-service";
 import { EnvironmentService } from "./services/environment-service";
 import { ExportService } from "./services/export-service";
 import { GitService } from "./services/git-service";
+import { IntentRouterService } from "./services/intent-router";
 import { GodotRuntimeService } from "./services/godot-runtime-service";
 import { GodotService } from "./services/godot-service";
 import { PreviewServer } from "./services/preview-server";
@@ -258,7 +259,8 @@ app.whenReady().then(async () => {
     runService,
     processRegistry,
     updateService: appUpdateService,
-    studioSettingsService
+    studioSettingsService,
+    intentRouter: new IntentRouterService(cliService)
   });
 
   log.info("app", "服务装配完成，IPC 已注册");

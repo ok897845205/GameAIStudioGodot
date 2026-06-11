@@ -1,6 +1,6 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
-import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, EnvironmentToolId, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SelectDirectoryInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SelectDirectoryInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -21,6 +21,8 @@ import { WebExportPipelineService } from "./services/web-export-pipeline-service
 import { WorkflowService } from "./services/workflow-service";
 import type { StudioPaths } from "./services/resource-paths";
 import { runAgentTurnWithOptionalPreview } from "./services/agent-turn-orchestrator";
+import { DispatchService } from "./services/dispatch-service";
+import type { IntentRouterService } from "./services/intent-router";
 import { openSystemPath } from "./services/system-open-service";
 import { resolveProjectLogPath } from "./services/logger";
 import { StudioSettingsService } from "./services/studio-settings-service";
@@ -44,6 +46,7 @@ interface IpcDependencies {
   processRegistry: ProcessRegistry;
   updateService: UpdateService;
   studioSettingsService: StudioSettingsService;
+  intentRouter: IntentRouterService;
 }
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
@@ -212,6 +215,22 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     return {
       ...result,
       project: await projectDetailsWithGit(deps, input.projectId)
+    };
+  });
+  const dispatchService = new DispatchService({
+    router: deps.intentRouter,
+    projectService: deps.projectService,
+    workflowService: deps.workflowService,
+    runAgentTurn: (input) => runAgentTurnWithOptionalPreview(deps, input),
+    discoverTools: () => deps.cliService.discover()
+  });
+  handle("agents:dispatch", async (_event, input: DispatchChatInput) => {
+    const result = await dispatchService.dispatch(input);
+    const project = await projectDetailsWithGit(deps, input.projectId);
+    return {
+      ...result,
+      ...(result.turn ? { turn: { ...result.turn, project } } : {}),
+      ...(result.workflow ? { workflow: { ...result.workflow, project } } : {})
     };
   });
   handle("agents:run-workflow", async (_event, input: RunStudioWorkflowInput) => {

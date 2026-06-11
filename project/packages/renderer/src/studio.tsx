@@ -24,6 +24,7 @@ import {
   Sun,
   Terminal,
   Trash2,
+  Wand2,
   X,
 } from "lucide-react";
 import {
@@ -72,6 +73,8 @@ type RightTab = "build" | "activity" | "git" | "status";
 type AgentCliToolIds = Partial<Record<string, CliToolId>>;
 
 const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
+/** Pseudo-agent id for the auto-dispatch chat mode (intent routing). */
+const AUTO_AGENT_ID = "auto";
 const APP_VERSION = appPackage.version;
 
 const initialForm = {
@@ -237,7 +240,7 @@ export function StudioApp() {
   const [bootstrap, setBootstrap] = useState<StudioBootstrap>();
   const [projects, setProjects] = useState<StudioProject[]>([]);
   const [selectedProject, setSelectedProject] = useState<ProjectDetails>();
-  const [activeAgentId, setActiveAgentId] = useState("producer");
+  const [activeAgentId, setActiveAgentId] = useState(AUTO_AGENT_ID);
   const [selectedCli, setSelectedCli] = useState<CliToolId>("kscc");
   const [busy, setBusy] = useState<BusyAction>("boot");
   const [notice, setNotice] = useState("");
@@ -332,12 +335,15 @@ export function StudioApp() {
       ? `请先修复这些 Agent 的 CLI：${createCliIssues.map((agent) => agent.title).join("、")}`
       : "创建项目后立即启动团队工作流。";
 
+  const isAutoMode = activeAgentId === AUTO_AGENT_ID;
   const threadMessages = useMemo(
     () =>
-      (selectedProject?.messages ?? []).filter(
-        (m) => m.agentId === activeAgentId || m.role === "system",
-      ),
-    [selectedProject, activeAgentId],
+      isAutoMode
+        ? (selectedProject?.messages ?? [])
+        : (selectedProject?.messages ?? []).filter(
+            (m) => m.agentId === activeAgentId || m.role === "system",
+          ),
+    [selectedProject, activeAgentId, isAutoMode],
   );
   // History search filters the visible thread; an empty query shows it all.
   const activeMessages = useMemo(() => {
@@ -416,7 +422,7 @@ export function StudioApp() {
           nextAgents.find((a) => a.id === detail.activeAgentId) ?? nextAgents[0]!;
         markProjectRunning(detail.id, (detail.runs ?? []).some((r) => r.status === "running" || r.status === "queued"));
         setSelectedProject(detail);
-        setActiveAgentId(detail.activeAgentId);
+        setActiveAgentId(AUTO_AGENT_ID);
         setSelectedCli(chooseAgentCli(nextAgent, data.cliTools, detail.agentCliToolIds?.[nextAgent.id]));
       }
     } catch (e) {
@@ -525,7 +531,7 @@ export function StudioApp() {
         agents.find((a) => a.id === detail.activeAgentId) ?? agents[0]!;
       markProjectRunning(detail.id, (detail.runs ?? []).some((r) => r.status === "running" || r.status === "queued"));
         setSelectedProject(detail);
-      setActiveAgentId(detail.activeAgentId);
+      setActiveAgentId(AUTO_AGENT_ID);
       setSelectedCli(chooseAgentCli(nextAgent, tools, detail.agentCliToolIds?.[nextAgent.id]));
     } catch (e) {
       setNotice(errText(e));
@@ -535,8 +541,9 @@ export function StudioApp() {
   }
 
   function switchActiveAgent(agentId: string) {
-    const nextAgent = agents.find((agent) => agent.id === agentId) ?? agents[0]!;
     setActiveAgentId(agentId);
+    if (agentId === AUTO_AGENT_ID) return; // auto mode picks CLI per decision
+    const nextAgent = agents.find((agent) => agent.id === agentId) ?? agents[0]!;
     setSelectedCli(chooseAgentCli(nextAgent, tools, selectedProject?.agentCliToolIds?.[nextAgent.id]));
   }
 
@@ -587,7 +594,7 @@ export function StudioApp() {
       });
       setSelectedProject(project);
       setProjects(await window.studio.listProjects());
-      setActiveAgentId(project.activeAgentId);
+      setActiveAgentId(AUTO_AGENT_ID);
       const producer = agents.find((agent) => agent.id === project.activeAgentId) ?? agents[0]!;
       setSelectedCli(chooseAgentCli(producer, tools, agentCliToolIds[producer.id]));
       setCreateOpen(false);
@@ -664,10 +671,65 @@ export function StudioApp() {
     }
   }
 
+  /** Auto mode: send through the intent router (agent turn or trimmed/full team run). */
+  async function dispatchFromChat(text: string, attachments: AgentSendInput["attachments"]) {
+    if (!selectedProject) return;
+    if (!ensureUpdateAllowsWork()) return;
+    if (!hasInstalledCli) {
+      setNotice("未检测到任何本地 AI CLI，请先在设置中安装。");
+      return;
+    }
+    const projectId = selectedProject.id;
+    setProjectPending(projectId, "send");
+    setNotice("");
+    const optimistic: AgentMessage = {
+      id: `optimistic-${Date.now()}`,
+      projectId,
+      agentId: AUTO_AGENT_ID,
+      role: "user",
+      content: text.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    setSelectedProject((cur) =>
+      cur && cur.id === projectId
+        ? { ...cur, messages: [...cur.messages, optimistic] }
+        : cur,
+    );
+    try {
+      const result = await window.studio.dispatchChat({
+        projectId,
+        message: text.trim(),
+        attachments,
+        autoStartPreview: true,
+      });
+      const landed = result.kind === "workflow" ? result.workflow?.project : result.turn?.project;
+      const messages = result.turn?.messages;
+      setSelectedProject((cur) =>
+        cur && cur.id === projectId && landed
+          ? {
+              ...landed,
+              ...(messages ? { messages } : {}),
+              ...(result.turn?.runs ? { runs: result.turn.runs } : {}),
+            }
+          : cur,
+      );
+      setProjects(await window.studio.listProjects());
+      setNotice(`自动派单：${result.decision.reason}`);
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setProjectPending(projectId, undefined);
+    }
+  }
+
   const handleAgentSend = async ({ text, attachments }: AgentSendInput) => {
     if (!selectedProject || (!text.trim() && attachments.length === 0)) return;
     if (selectedProjectWorking) {
       setNotice("该项目正有任务运行中，请等待完成或先取消，再发送新消息。");
+      return;
+    }
+    if (isAutoMode) {
+      await dispatchFromChat(text, attachments);
       return;
     }
     if (!activeCliAvailable) {
@@ -744,16 +806,17 @@ export function StudioApp() {
 
   async function clearActiveThread() {
     if (!selectedProject) return;
-    const count = (selectedProject.messages ?? []).filter(
-      (m) => m.agentId === activeAgentId,
-    ).length;
+    const count = isAutoMode
+      ? (selectedProject.messages ?? []).length
+      : (selectedProject.messages ?? []).filter((m) => m.agentId === activeAgentId).length;
     if (count === 0) {
       setNotice("当前会话没有可清空的消息。");
       return;
     }
+    const scopeLabel = isAutoMode ? "整个项目的聊天记录" : `「${activeAgent.title}」的当前会话`;
     if (
       !window.confirm(
-        `清空「${activeAgent.title}」的当前会话？\n\n共 ${count} 条消息将被删除，此操作不可撤销。`,
+        `清空${scopeLabel}？\n\n共 ${count} 条消息将被删除，此操作不可撤销。`,
       )
     ) {
       return;
@@ -761,12 +824,12 @@ export function StudioApp() {
     try {
       const messages = await window.studio.clearProjectMessages({
         projectId: selectedProject.id,
-        agentId: activeAgentId,
+        ...(isAutoMode ? {} : { agentId: activeAgentId }),
       });
       setSelectedProject((cur) =>
         cur && cur.id === selectedProject.id ? { ...cur, messages } : cur,
       );
-      setNotice(`已清空 ${activeAgent.title} 的会话。`);
+      setNotice(`已清空${scopeLabel}。`);
     } catch (e) {
       setNotice(errText(e));
     }
@@ -857,6 +920,35 @@ export function StudioApp() {
         });
         setPreviewNotice(`实时预览已启动：${preview.url}`);
       }
+    } catch (e) {
+      setNotice(errText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function openPreviewInBrowser() {
+    if (!selectedProject) return;
+    if (selectedProject.previewWatching && selectedProject.previewUrl) {
+      window.open(selectedProject.previewUrl);
+      return;
+    }
+
+    setBusy("preview");
+    try {
+      const preview = await window.studio.startAutoPreview(selectedProject.id);
+      setSelectedProject((cur) =>
+        cur && cur.id === selectedProject.id
+          ? {
+              ...cur,
+              previewUrl: preview.url,
+              previewWatching: true,
+              previewStatus: "watching",
+            }
+          : cur,
+      );
+      setPreviewNotice(`实时预览已启动：${preview.url}`);
+      window.open(preview.url);
     } catch (e) {
       setNotice(errText(e));
     } finally {
@@ -1407,8 +1499,9 @@ export function StudioApp() {
             <select
               value={selectedCli}
               onChange={(e) => setSelectedCli(e.target.value as CliToolId)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs"
-              title="当前对话使用的本地 CLI"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs disabled:opacity-60"
+              disabled={isAutoMode}
+              title={isAutoMode ? "自动模式按各 Agent 的项目配置选择 CLI" : "当前对话使用的本地 CLI"}
             >
               {Object.entries(CLI_TOOL_LABELS).map(([id, label]) => (
                 <option key={id} value={id}>
@@ -1435,15 +1528,19 @@ export function StudioApp() {
                   <FolderOpen />
                 </Button>
                 <Button
-                  variant="ghost"
-                  size="icon"
-                  title="浏览器打开预览"
-                  onClick={() =>
-                    selectedProject.previewUrl &&
-                    window.open(selectedProject.previewUrl)
+                  variant={selectedProject.previewUrl ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 px-3 font-semibold"
+                  title={
+                    selectedProject.previewWatching && selectedProject.previewUrl
+                      ? "在浏览器打开当前 Web 预览"
+                      : "启动 Web 实时预览，并在浏览器打开"
                   }
+                  onClick={() => void openPreviewInBrowser()}
+                  disabled={isBusy}
                 >
                   <ExternalLink />
+                  浏览器预览
                 </Button>
                 <Button
                   variant="ghost"
@@ -1464,16 +1561,27 @@ export function StudioApp() {
               size="sm"
               value={activeAgentId}
               onValueChange={switchActiveAgent}
-              tabs={agents.map((a) => ({
-                value: a.id,
-                accent: a.accent,
-                label: (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Bot className="size-3.5" />
-                    {a.title}
-                  </span>
-                ),
-              }))}
+              tabs={[
+                {
+                  value: AUTO_AGENT_ID,
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Wand2 className="size-3.5" />
+                      自动
+                    </span>
+                  ),
+                },
+                ...agents.map((a) => ({
+                  value: a.id,
+                  accent: a.accent,
+                  label: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Bot className="size-3.5" />
+                      {a.title}
+                    </span>
+                  ),
+                })),
+              ]}
             />
             <div className="ml-auto flex items-center gap-1">
               <div className="relative">
@@ -1520,7 +1628,7 @@ export function StudioApp() {
               { label: "修复错误", title: "让程序 Agent 修复报错与导出问题", run: () => void sendToAgent("programmer", "请检查当前项目的报错、Web 导出失败和明显缺陷，并直接修复。") },
               { label: "QA 测试", title: "让 QA Agent 验证当前版本", run: () => void sendToAgent("qa", "请对当前版本做一轮 QA：验证核心玩法是否可玩、Web 导出是否正常，列出缺陷和修复建议。") },
               { label: "美术优化", title: "让美术 Agent 优化画面", run: () => void sendToAgent("artist", "请优化当前游戏的视觉表现：配色、UI 可读性和角色/场景素材，给出可直接落地的改动。") },
-              { label: "运行预览", title: "启动 / 打开 Web 实时预览", run: () => (selectedProject.previewWatching && selectedProject.previewUrl ? window.open(selectedProject.previewUrl) : void togglePreview()) },
+              { label: "浏览器预览", title: "启动 / 打开 Web 实时预览", run: () => void openPreviewInBrowser() },
               { label: "导出 Web", title: "导出 Web zip", run: () => void buildAction("zip") },
               { label: "保存版本", title: "提交当前 Git 变更", run: () => void commitGit() },
               { label: "查看日志", title: "预览项目日志", run: () => void previewProjectFile(".gameaistudio/logs/project.log") },
@@ -1567,7 +1675,7 @@ export function StudioApp() {
           </div>
         )}
 
-        {selectedProject && !activeRun && !activeCliAvailable && (
+        {selectedProject && !activeRun && !isAutoMode && !activeCliAvailable && (
           <div className="flex items-center gap-2 border-b border-border bg-danger/10 px-4 py-1.5 text-xs text-danger">
             <span className="min-w-0 flex-1 truncate">
               {!hasInstalledCli
@@ -1589,12 +1697,20 @@ export function StudioApp() {
               key={`${selectedProject.id}:${activeAgentId}`}
               messages={activeMessages}
               isRunning={selectedProjectWorking}
-              isSendDisabled={!hasInstalledCli || !activeCliAvailable}
-              supportsImages={activeCliSupportsImages}
+              isSendDisabled={
+                isAutoMode ? !hasInstalledCli : !hasInstalledCli || !activeCliAvailable
+              }
+              supportsImages={
+                isAutoMode
+                  ? tools.some(
+                      (t) => t.installed && t.status === "available" && t.capabilities.supportsImages,
+                    )
+                  : activeCliSupportsImages
+              }
               projectRoot={selectedProject.rootPath}
               onSend={handleAgentSend}
               onDeleteMessage={(messageId) => void deleteChatMessage(messageId)}
-              onRegenerate={() => void regenerateLastReply()}
+              onRegenerate={isAutoMode ? undefined : () => void regenerateLastReply()}
               onOpenFile={openMentionedFile}
             />
           ) : (

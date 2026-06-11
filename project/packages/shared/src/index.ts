@@ -357,6 +357,38 @@ export interface RunStudioWorkflowInput {
   withQualityLoop?: boolean;
 }
 
+// ── 自动模式派单（intent routing）────────────────────────────────────────────
+
+export type DispatchRoute = "agent" | "team";
+
+/** Task size — decides between a single turn and the trimmed/full pipeline. */
+export type DispatchScope = "small" | "large";
+
+export interface DispatchDecision {
+  route: DispatchRoute;
+  /** Target agent for route="agent" (also the lead voice for team runs). */
+  agentId: string;
+  scope: DispatchScope;
+  /** Short user-visible reason for the routing choice. */
+  reason: string;
+  /** How the decision was made — heuristic rules, the classifier turn, or the safe fallback. */
+  source: "heuristic" | "classifier" | "fallback";
+}
+
+export interface DispatchChatInput {
+  projectId: string;
+  message: string;
+  attachments?: AgentAttachmentInput[];
+  autoStartPreview: boolean;
+}
+
+export interface DispatchChatResult {
+  decision: DispatchDecision;
+  kind: "agent-turn" | "workflow";
+  turn?: RunAgentTurnResult;
+  workflow?: RunStudioWorkflowResult;
+}
+
 export interface RunStudioWorkflowResult {
   project: ProjectDetails;
   run: StudioRun;
@@ -706,6 +738,7 @@ export interface StudioApi {
   listProjects(): Promise<StudioProject[]>;
   getProject(projectId: string): Promise<ProjectDetails>;
   runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTurnResult>;
+  dispatchChat(input: DispatchChatInput): Promise<DispatchChatResult>;
   deleteProjectMessage(input: DeleteProjectMessageInput): Promise<AgentMessage[]>;
   clearProjectMessages(input: ClearProjectMessagesInput): Promise<AgentMessage[]>;
   exportProjectChat(projectId: string): Promise<ExportChatResult>;

@@ -9,6 +9,7 @@ import {
   Gamepad2,
   GitBranch,
   Hammer,
+  Image as ImageIcon,
   Info,
   Loader2,
   Moon,
@@ -51,6 +52,7 @@ import {
 } from "@gameaistudio/shared";
 import appPackage from "../../../package.json";
 import { AgentChat, type AgentSendInput } from "./chat";
+import { AssetWorkshopView } from "./components/asset-workshop";
 import { ImageLabView } from "./components/image-lab";
 import { RunActivityPanel } from "./components/run-activity";
 import { Button } from "./components/ui/button";
@@ -75,7 +77,8 @@ type BusyAction =
 type RightTab = "build" | "activity" | "git" | "status";
 type AgentCliToolIds = Partial<Record<string, CliToolId>>;
 
-const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
+// 美术先于程序：素材闭环（美术规划 → 自动生图 → 程序引用）依赖这个顺序。
+const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "artist", "programmer", "qa"];
 /** Pseudo-agent id for the auto-dispatch chat mode (intent routing). */
 const AUTO_AGENT_ID = "auto";
 
@@ -282,6 +285,10 @@ export function StudioApp() {
   // alive (visibility toggle) so generations survive switching back to chat.
   const [imageLabActive, setImageLabActive] = useState(false);
   const [imageLabMounted, setImageLabMounted] = useState(false);
+  // AI 素材工坊: same lazy-mount + visibility-toggle pattern so in-flight
+  // generations survive switching back to chat.
+  const [workshopActive, setWorkshopActive] = useState(false);
+  const [workshopMounted, setWorkshopMounted] = useState(false);
   // Multi-project concurrency: in-flight chat/workflow per project (covers the
   // gap before the run record exists) + live "has a running run" map for ALL
   // projects so the sidebar shows activity even when you switch away.
@@ -594,6 +601,7 @@ export function StudioApp() {
         autoPackageWebZip: true,
         autoStartPreview: true,
         withQualityLoop: true,
+        withAssetPipeline: true,
       });
       // Land the result only if the user is still looking at this project —
       // never yank them back from another project they switched to.
@@ -1472,12 +1480,26 @@ export function StudioApp() {
             size="sm"
             className="w-full justify-start"
             onClick={() => {
+              setWorkshopMounted(true);
+              setWorkshopActive(true);
+              setImageLabActive(false);
+            }}
+            title="打开 AI 素材工坊：生成游戏素材、管理素材库、配置生图模型"
+          >
+            <Palette /> AI 素材工坊
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start"
+            onClick={() => {
               setImageLabMounted(true);
               setImageLabActive(true);
+              setWorkshopActive(false);
             }}
             title="打开马良画卷，在线生成游戏素材图片"
           >
-            <Palette /> AI 生图
+            <ImageIcon /> AI 生图
           </Button>
           <div className="flex items-center gap-1">
             <Button
@@ -1780,6 +1802,13 @@ export function StudioApp() {
           </div>
         )}
 
+        {workshopMounted && (
+          <AssetWorkshopView
+            active={workshopActive}
+            project={selectedProject}
+            onClose={() => setWorkshopActive(false)}
+          />
+        )}
         {imageLabMounted && (
           <ImageLabView
             active={imageLabActive}

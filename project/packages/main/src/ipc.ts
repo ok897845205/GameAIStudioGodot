@@ -1,6 +1,6 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
-import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SelectDirectoryInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteGeneratedAssetInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GenerateImageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SaveMediaModelInput, SaveMediaProviderInput, SelectDirectoryInput, SetGeneratedAssetSlotInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -26,6 +26,9 @@ import type { IntentRouterService } from "./services/intent-router";
 import { openSystemPath } from "./services/system-open-service";
 import { resolveProjectLogPath } from "./services/logger";
 import { StudioSettingsService } from "./services/studio-settings-service";
+import type { AssetLibraryService } from "./services/asset-library-service";
+import type { ImageGenerationService } from "./services/image-generation-service";
+import type { MediaSettingsService } from "./services/media-settings-service";
 
 interface IpcDependencies {
   paths: StudioPaths;
@@ -47,6 +50,9 @@ interface IpcDependencies {
   updateService: UpdateService;
   studioSettingsService: StudioSettingsService;
   intentRouter: IntentRouterService;
+  mediaSettingsService: MediaSettingsService;
+  imageGenerationService: ImageGenerationService;
+  assetLibraryService: AssetLibraryService;
 }
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
@@ -240,6 +246,17 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
       project: await projectDetailsWithGit(deps, input.projectId)
     };
   });
+
+  handle("media:get-settings", async () => deps.mediaSettingsService.getSettings());
+  handle("media:save-provider", async (_event, input: SaveMediaProviderInput) => deps.mediaSettingsService.saveProvider(input));
+  handle("media:delete-provider", async (_event, providerId: string) => deps.mediaSettingsService.deleteProvider(providerId));
+  handle("media:save-model", async (_event, input: SaveMediaModelInput) => deps.mediaSettingsService.saveModel(input));
+  handle("media:delete-model", async (_event, modelId: string) => deps.mediaSettingsService.deleteModel(modelId));
+  handle("media:test-provider", async (_event, providerId: string) => deps.imageGenerationService.testProvider(providerId));
+  handle("media:generate-image", async (_event, input: GenerateImageInput) => deps.imageGenerationService.generateImage(input));
+  handle("media:list-assets", async (_event, projectId: string) => deps.assetLibraryService.listAssets(projectId));
+  handle("media:delete-asset", async (_event, input: DeleteGeneratedAssetInput) => deps.assetLibraryService.deleteAsset(input));
+  handle("media:set-asset-slot", async (_event, input: SetGeneratedAssetSlotInput) => deps.assetLibraryService.setSlot(input));
 
   handle("system:open-path", async (_event, targetPath: string) => {
     await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));

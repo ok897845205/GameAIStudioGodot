@@ -3,6 +3,9 @@ import path from "node:path";
 import { BrowserWindow, app, dialog, type MessageBoxSyncOptions } from "electron";
 import { AgentContextService } from "./services/agent-context-service";
 import { AgentService } from "./services/agent-service";
+import { AssetLibraryService } from "./services/asset-library-service";
+import { ImageGenerationService } from "./services/image-generation-service";
+import { MediaSettingsService } from "./services/media-settings-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
 import { CliService } from "./services/cli-service";
 import { EnvironmentService } from "./services/environment-service";
@@ -233,8 +236,12 @@ app.whenReady().then(async () => {
   });
   const exportService = new ExportService(projectService);
   const filePreviewService = new ProjectFilePreviewService(projectService);
+  const mediaSettingsService = new MediaSettingsService(paths.dataRoot);
+  await mediaSettingsService.load();
+  const assetLibraryService = new AssetLibraryService(projectService);
+  const imageGenerationService = new ImageGenerationService(mediaSettingsService, projectService, assetLibraryService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
-  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService, projectLocks);
+  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService, projectLocks, imageGenerationService, assetLibraryService);
   const appUpdateService = new UpdateService({
     prepareQuitAndInstall: () => {
       allowQuitWithoutUpdateConfirm = true;
@@ -266,7 +273,10 @@ app.whenReady().then(async () => {
     processRegistry,
     updateService: appUpdateService,
     studioSettingsService,
-    intentRouter: new IntentRouterService(cliService)
+    intentRouter: new IntentRouterService(cliService),
+    mediaSettingsService,
+    imageGenerationService,
+    assetLibraryService
   });
 
   log.info("app", "服务装配完成，IPC 已注册");

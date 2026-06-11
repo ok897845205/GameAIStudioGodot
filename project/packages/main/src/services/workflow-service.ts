@@ -11,15 +11,27 @@ import {
   type PreviewResult,
   type RunStudioWorkflowInput,
   type RunStudioWorkflowResult,
+  type StudioProject,
   type StudioRun,
+  type StudioRunStep,
   type WebBuildInspection
 } from "@gameaistudio/shared";
 import { AgentService } from "./agent-service";
+import {
+  MAX_PLAN_IMAGES,
+  buildArtistAssetPlanInstruction,
+  buildAssetPipelineNote,
+  describeAssetPipelineOutcome,
+  parseAssetPlan,
+  type AssetPipelineOutcome
+} from "./asset-plan";
+import type { AssetLibraryService } from "./asset-library-service";
 import { AutoPreviewService } from "./auto-preview-service";
 import { CliService } from "./cli-service";
 import { ExportService } from "./export-service";
 import type { GitService } from "./git-service";
 import { GodotService } from "./godot-service";
+import type { ImageGenerationService } from "./image-generation-service";
 import { getProjectLogger } from "./logger";
 import { createMessageId } from "./naming";
 import { ProjectService } from "./project-service";
@@ -27,6 +39,8 @@ import { ProjectLockService } from "./project-lock";
 import { RunService } from "./run-service";
 
 const DEFAULT_WORKFLOW_AGENTS = ["producer", "designer", "programmer", "artist", "qa"];
+// 素材闭环要求美术先于程序：美术输出素材计划 → 系统生图入库 → 程序直接引用。
+const ASSET_PIPELINE_WORKFLOW_AGENTS = ["producer", "designer", "artist", "programmer", "qa"];
 
 function agentById(agentId: string): AgentProfile {
   return AGENT_PROFILES.find((agent) => agent.id === agentId) ?? AGENT_PROFILES[0];
@@ -196,6 +210,26 @@ function buildWorkflowSummaryMessage(input: {
   };
 }
 
+/**
+ * The ordered execution plan of the agent section: agent turns, plus the
+ * system-run asset generation phase right after the artist when the asset
+ * pipeline is enabled. Aligned 1:1 with the leading run steps.
+ */
+export type WorkflowPhase = { kind: "agent"; agent: AgentProfile } | { kind: "asset-generation" };
+
+export function buildWorkflowPhases(agents: AgentProfile[], input: RunStudioWorkflowInput): WorkflowPhase[] {
+  const phases: WorkflowPhase[] = agents.map((agent) => ({ kind: "agent", agent }));
+  if (!input.withAssetPipeline) {
+    return phases;
+  }
+  const artistIndex = agents.findIndex((agent) => agent.id === "artist");
+  if (artistIndex === -1) {
+    return phases;
+  }
+  phases.splice(artistIndex + 1, 0, { kind: "asset-generation" });
+  return phases;
+}
+
 export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], input: RunStudioWorkflowInput): Array<{
   title: string;
   agentId?: string;
@@ -203,13 +237,26 @@ export function buildWorkflowRunSteps(agents: AgentProfile[], tools: CliTool[], 
   message?: string;
 }> {
   const programmer = agentById("programmer");
+  const phases = buildWorkflowPhases(agents, input);
+  let agentIndex = 0;
   return [
-    ...agents.map((agent, index) => ({
-      title: `${index + 1}. ${agent.title}：${agent.specialty}`,
-      agentId: agent.id,
-      cliToolId: chooseWorkflowCli(agent, tools, input),
-      message: buildWorkflowMessage(agent, input.message, index)
-    })),
+    ...phases.map((phase) => {
+      if (phase.kind === "asset-generation") {
+        return {
+          title: "AI 素材生成",
+          message: "解析美术 Agent 的素材计划，自动调用生图模型生成图片、放入项目并绑定槽位。"
+        };
+      }
+      const index = agentIndex++;
+      const planInstruction =
+        input.withAssetPipeline && phase.agent.id === "artist" ? buildArtistAssetPlanInstruction() : "";
+      return {
+        title: `${index + 1}. ${phase.agent.title}：${phase.agent.specialty}`,
+        agentId: phase.agent.id,
+        cliToolId: chooseWorkflowCli(phase.agent, tools, input),
+        message: buildWorkflowMessage(phase.agent, input.message, index) + planInstruction
+      };
+    }),
     // Quality loop phases (验收闭环): validate → fix round → git save. The fix
     // round's real message is built at runtime from the QA / validation output.
     ...(input.withQualityLoop
@@ -310,7 +357,9 @@ export class WorkflowService {
     private readonly autoPreviewService: AutoPreviewService,
     private readonly runService: RunService,
     private readonly gitService?: Pick<GitService, "commit">,
-    private readonly projectLocks: ProjectLockService = new ProjectLockService()
+    private readonly projectLocks: ProjectLockService = new ProjectLockService(),
+    private readonly imageGenerationService?: Pick<ImageGenerationService, "generateImage">,
+    private readonly assetLibraryService?: Pick<AssetLibraryService, "setSlot">
   ) {}
 
   /** Per-project exclusion: a second workflow/turn on the same project is rejected. */
@@ -327,7 +376,11 @@ export class WorkflowService {
 
   private async executeRun(input: RunStudioWorkflowInput): Promise<RunStudioWorkflowResult> {
     const project = await this.projectService.requireProject(input.projectId);
-    const agentIds = input.agentIds?.length ? input.agentIds : DEFAULT_WORKFLOW_AGENTS;
+    const agentIds = input.agentIds?.length
+      ? input.agentIds
+      : input.withAssetPipeline
+        ? ASSET_PIPELINE_WORKFLOW_AGENTS
+        : DEFAULT_WORKFLOW_AGENTS;
     const agents = agentIds.map(agentById);
     const tools = await this.cliService.discover();
     const plog = getProjectLogger(project.rootPath);
@@ -376,20 +429,59 @@ export class WorkflowService {
     let qaFindings = "";
     let qaCompleted = false;
     let fixFileChangeCount = 0;
+    // 素材闭环 state: the artist's reply feeds the asset generation phase,
+    // whose outcome feeds the programmer/QA rounds.
+    const phases = buildWorkflowPhases(agents, input);
+    let artistContent = "";
+    let artistFailed = false;
+    let assetPhaseRan = false;
+    let assetOutcome: AssetPipelineOutcome | undefined;
+    let agentIndex = 0;
 
-    for (const [index, agent] of agents.entries()) {
-      const step = latestRun.steps[index];
+    for (const [phaseIndex, phase] of phases.entries()) {
+      const step = latestRun.steps[phaseIndex];
       if (!step) {
         continue;
       }
+      if (phase.kind === "asset-generation") {
+        if (await this.runService.isCancelled(run.id)) {
+          return {
+            project: await this.projectService.getProject(project.id),
+            run: (await this.runService.getRun(run.id)) ?? latestRun
+          };
+        }
+        const assetResult = await this.runAssetGenerationStep({
+          runId: run.id,
+          project,
+          step,
+          artistContent,
+          artistFailed
+        });
+        latestRun = assetResult.run;
+        assetOutcome = assetResult.outcome;
+        assetPhaseRan = true;
+        if (assetResult.stepFailed) {
+          failedSteps += 1;
+        }
+        continue;
+      }
+
+      const agent = phase.agent;
+      const index = agentIndex++;
       await this.runService.updateStep(run.id, step.id, { status: "running" });
       const cliToolId = step.cliToolId ?? chooseWorkflowCli(agent, tools, input);
+      // Downstream rounds get the asset outcome inline so generated art is
+      // actually wired into scenes (or knowingly替换为占位).
+      const assetNote =
+        assetPhaseRan && (agent.id === "programmer" || agent.id === "qa")
+          ? `\n\n${buildAssetPipelineNote(assetOutcome, agent.id === "qa" ? "qa" : "programmer")}`
+          : "";
       const result = await this.agentService.runTurn(
         {
           projectId: project.id,
           agentId: agent.id,
           cliToolId,
-          message: step.message ?? buildWorkflowMessage(agent, input.message, index),
+          message: (step.message ?? buildWorkflowMessage(agent, input.message, index)) + assetNote,
           autoStartPreview: false
         },
         { recordRun: false, parentRunId: run.id, parentStepId: step.id }
@@ -412,6 +504,10 @@ export class WorkflowService {
         failedSteps += 1;
         failedAgentSteps += 1;
       }
+      if (agent.id === "artist") {
+        artistFailed = stepFailed;
+        artistContent = !stepFailed && lastAgentMessage ? lastAgentMessage.content : "";
+      }
       if (agent.id === "qa" && lastAgentMessage && !stepFailed) {
         qaCompleted = true;
         qaVerdict = parseQaVerdict(lastAgentMessage.content);
@@ -426,7 +522,7 @@ export class WorkflowService {
       });
     }
 
-    let stepCursor = agents.length;
+    let stepCursor = phases.length;
     if (agents.length > 0 && failedAgentSteps === agents.length) {
       const skipped = await failQueuedDeliverySteps({
         runService: this.runService,
@@ -508,7 +604,7 @@ export class WorkflowService {
       };
     }
 
-    const agentFileChangeCount = countAgentFileChanges(latestRun, agents.length);
+    const agentFileChangeCount = countAgentFileChanges(latestRun, phases.length);
     if (hasAutoDelivery(input) && agents.length > 0 && agentFileChangeCount === 0) {
       const skipped = await failQueuedDeliverySteps({
         runService: this.runService,
@@ -872,5 +968,117 @@ export class WorkflowService {
       zipResult,
       previewResult
     };
+  }
+
+  /**
+   * 「AI 素材生成」phase: turn the artist's structured plan into real images
+   * via the configured providers, save them into the project asset library
+   * and bind slots. Failures never block the workflow — the outcome (incl.
+   * missing items) is handed to the programmer/QA rounds instead.
+   */
+  private async runAssetGenerationStep(input: {
+    runId: string;
+    project: StudioProject;
+    step: StudioRunStep;
+    artistContent: string;
+    artistFailed: boolean;
+  }): Promise<{ run: StudioRun; outcome?: AssetPipelineOutcome; stepFailed: boolean }> {
+    const { runId, project, step } = input;
+    const plog = getProjectLogger(project.rootPath);
+
+    if (!this.imageGenerationService || !this.assetLibraryService) {
+      const run = await this.runService.updateStep(runId, step.id, {
+        status: "skipped",
+        message: "未接入生图服务，跳过自动素材生成，后续 Agent 使用占位方案。"
+      });
+      return { run, outcome: { planItems: [], generated: [], failed: [] }, stepFailed: false };
+    }
+
+    const planItems = input.artistFailed ? [] : parseAssetPlan(input.artistContent);
+    if (planItems.length === 0) {
+      const run = await this.runService.updateStep(runId, step.id, {
+        status: "skipped",
+        message: input.artistFailed
+          ? "美术 Agent 步骤失败，没有素材计划可执行，后续 Agent 使用占位方案。"
+          : "美术 Agent 未输出可解析的素材计划（JSON），跳过自动生图，后续 Agent 使用占位方案。"
+      });
+      return { run, outcome: { planItems: [], generated: [], failed: [] }, stepFailed: false };
+    }
+
+    await this.runService.updateStep(runId, step.id, { status: "running" });
+    const outcome: AssetPipelineOutcome = { planItems, generated: [], failed: [] };
+    let imageBudget = MAX_PLAN_IMAGES;
+
+    for (const item of planItems) {
+      if (await this.runService.isCancelled(runId)) {
+        break;
+      }
+      if (imageBudget <= 0) {
+        outcome.failed.push({ item, error: `超出本轮 ${MAX_PLAN_IMAGES} 张生成上限` });
+        continue;
+      }
+      try {
+        const result = await this.imageGenerationService.generateImage({
+          projectId: project.id,
+          prompt: item.description,
+          purpose: item.purpose,
+          style: item.style,
+          aspectRatio: item.aspectRatio,
+          transparentBackground: item.transparentBackground,
+          count: Math.min(item.count ?? 1, imageBudget)
+        });
+        if (result.ok && result.assets.length > 0) {
+          imageBudget -= result.assets.length;
+          outcome.generated.push({ item, records: result.assets });
+          const first = result.assets[0]!;
+          try {
+            await this.assetLibraryService.setSlot({ projectId: project.id, assetId: first.id, slot: item.key });
+            first.slot = item.key;
+          } catch (error) {
+            plog.warn("media", "素材槽位绑定失败", { key: item.key, error: error instanceof Error ? error.message : String(error) });
+          }
+        } else {
+          outcome.failed.push({ item, error: result.error ?? "生成失败" });
+        }
+      } catch (error) {
+        outcome.failed.push({ item, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    const generatedCount = outcome.generated.reduce((total, entry) => total + entry.records.length, 0);
+    const stepFailed = generatedCount === 0;
+    const lines = describeAssetPipelineOutcome(outcome);
+    const run = await this.runService.updateStep(runId, step.id, {
+      status: stepFailed ? "failed" : "completed",
+      message: stepFailed
+        ? `素材计划共 ${planItems.length} 项，全部生成失败，后续 Agent 使用占位方案。`
+        : `已生成 ${generatedCount} 张素材${outcome.failed.length > 0 ? `，${outcome.failed.length} 项失败（用占位顶替）` : ""}，并绑定槽位。`,
+      output: lines.join("\n") || undefined
+    });
+    plog.info("media", "工作流素材生成阶段结束", {
+      planItems: planItems.length,
+      generated: generatedCount,
+      failed: outcome.failed.length
+    });
+
+    // 素材结果同样要出现在聊天主视图，不只是运行面板。
+    await this.projectService.appendMessages(project.id, [
+      {
+        id: createMessageId(),
+        projectId: project.id,
+        agentId: "artist",
+        role: "system",
+        kind: "workflow",
+        content: [
+          stepFailed
+            ? `AI 素材生成失败：素材计划 ${planItems.length} 项全部未能生成（请检查「AI 素材工坊 → 服务设置」），本轮先用占位方案。`
+            : `AI 素材生成完成：${generatedCount} 张图片已放入项目素材库并绑定槽位，程序 Agent 将直接使用。`,
+          ...lines
+        ].join("\n"),
+        createdAt: new Date().toISOString()
+      }
+    ]);
+
+    return { run, outcome, stepFailed };
   }
 }

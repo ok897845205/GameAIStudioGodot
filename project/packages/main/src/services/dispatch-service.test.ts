@@ -108,9 +108,11 @@ describe("DispatchService", () => {
     await service.dispatch({ projectId: "p1", message: "重做成跑酷", autoStartPreview: true });
 
     expect(workflowInputs[0]).toMatchObject({
-      agentIds: ["producer", "designer", "programmer", "artist", "qa"],
+      // 美术先于程序：素材闭环要求程序拿到已生成素材再写场景。
+      agentIds: ["producer", "designer", "artist", "programmer", "qa"],
       autoPackageWebZip: true,
       withQualityLoop: true,
+      withAssetPipeline: true,
     });
   });
 });

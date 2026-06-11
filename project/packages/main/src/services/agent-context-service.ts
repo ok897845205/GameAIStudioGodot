@@ -2,6 +2,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type PreviewStatus, type ProjectDetails } from "@gameaistudio/shared";
 import { readAgentJournalTail } from "./agent-journal-service";
+import { buildAssetContextLines, readGeneratedAssetRecords } from "./asset-library-service";
 import { writeUtf8BomFile } from "./text-file-encoding";
 
 export interface AgentContextFile {
@@ -39,6 +40,8 @@ interface BuildMarkdownInput {
   knownIssues?: string;
   /** This agent's most recent failure, if any. */
   lastError?: string;
+  /** AI-generated asset manifest lines (role/slot/prompt per asset). */
+  generatedAssets?: string[];
 }
 
 const DEFAULT_MAX_FILES = 140;
@@ -284,6 +287,16 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     ...(input.lastError
       ? ["## Your Last Error", "", input.lastError, "", "Avoid repeating the failure above; fix its root cause first if it blocks you.", ""]
       : []),
+    ...(input.generatedAssets && input.generatedAssets.length > 0
+      ? [
+          "## Generated Asset Library (AI 素材库)",
+          "",
+          "These images were AI-generated inside this project. Use the res:// paths directly in scenes; the slot names the game role an asset is assigned to.",
+          "",
+          ...input.generatedAssets,
+          ""
+        ]
+      : []),
     "## Recent Agent Journal",
     "",
     agentJournal,
@@ -312,6 +325,7 @@ export class AgentContextService {
     const files = await listAgentContextFiles(input.project.rootPath, this.options.maxFiles ?? DEFAULT_MAX_FILES);
     const recentMessages = summarizeRecentMessages(input.project.messages, this.options.maxMessages ?? DEFAULT_MAX_MESSAGES);
     const agentJournal = await readAgentJournalTail(input.project.rootPath);
+    const generatedAssets = buildAssetContextLines(await readGeneratedAssetRecords(input.project.rootPath));
     // Lives in docs/ (the agent-readable area), not in the agent-forbidden
     // `.gameaistudio/`; gitignored there because it regenerates every turn.
     const contextPath = path.join(input.project.rootPath, "docs", "agent-context.md");
@@ -326,7 +340,8 @@ export class AgentContextService {
       gitSummary: input.gitSummary,
       ownMessages: summarizeAgentOwnMessages(input.project.messages, input.agentId),
       knownIssues: latestQaFindings(input.project.messages),
-      lastError: latestAgentError(input.project.messages, input.agentId)
+      lastError: latestAgentError(input.project.messages, input.agentId),
+      generatedAssets
     });
 
     await mkdir(path.dirname(contextPath), { recursive: true });

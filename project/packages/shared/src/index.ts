@@ -361,6 +361,28 @@ export interface RunStudioWorkflowInput {
    * a QA-driven fix round (修复与打磨) and a visible Git save step.
    */
   withQualityLoop?: boolean;
+  /**
+   * 一站式素材闭环: the artist Agent outputs a structured asset plan, the
+   * system generates the images via the configured providers, saves them into
+   * the project with slots, and hands the res:// paths to the programmer/QA
+   * rounds. Requires the artist agent in the run; degrades to placeholder
+   * guidance when generation is unavailable or fails.
+   */
+  withAssetPipeline?: boolean;
+}
+
+/** One asset the artist Agent asks the system to generate (素材规划 item). */
+export interface AssetPlanItem {
+  /** Stable role key, becomes the asset slot, e.g. "player_ship". */
+  key: string;
+  /** Generation prompt for this asset. */
+  description: string;
+  purpose: GeneratedAssetPurpose;
+  style?: string;
+  aspectRatio?: GeneratedAssetAspect;
+  transparentBackground?: boolean;
+  /** Images to generate for this item (1–2). */
+  count?: number;
 }
 
 // ── 自动模式派单（intent routing）────────────────────────────────────────────
@@ -723,6 +745,211 @@ export interface StudioBootstrap {
   directorySettings: StudioDirectorySettings;
 }
 
+// ── AI 素材工坊（文生图 / 素材库）────────────────────────────────────────────
+
+/**
+ * Wire protocol spoken to an upstream image-generation endpoint. Users pick
+ * the protocol matching their vendor; the app builds requests accordingly:
+ * - `openai-images-v1` — POST {base}/images/generations (OpenAI, 兼容网关)
+ * - `openai-chat-image-v1` — POST {base}/chat/completions with image output
+ *   (OpenRouter google/gemini-*-image and similar)
+ * - `gemini-image-v1` — POST {base}/models/{model}:generateContent with
+ *   IMAGE response modality (Google AI Studio / Gemini-compatible gateways)
+ */
+export type MediaProtocolId = "openai-images-v1" | "openai-chat-image-v1" | "gemini-image-v1";
+
+export type MediaModelKind = "image" | "video";
+
+/** One upstream endpoint: base URL + API key + protocol + optional headers. */
+export interface MediaProviderConfig {
+  id: string;
+  name: string;
+  protocol: MediaProtocolId;
+  baseUrl: string;
+  /** Extra HTTP headers sent verbatim with every request. */
+  extraHeaders?: Record<string, string>;
+  enabled: boolean;
+  /** Never leaves the main process — renderer only sees `hasApiKey`. */
+  apiKey?: string;
+}
+
+/** Renderer-safe view of a provider (API key masked to a boolean). */
+export interface MediaProviderView {
+  id: string;
+  name: string;
+  protocol: MediaProtocolId;
+  baseUrl: string;
+  extraHeaders?: Record<string, string>;
+  enabled: boolean;
+  hasApiKey: boolean;
+}
+
+export interface SaveMediaProviderInput {
+  /** Omitted when creating a new provider. */
+  id?: string;
+  name: string;
+  protocol: MediaProtocolId;
+  baseUrl: string;
+  extraHeaders?: Record<string, string>;
+  enabled: boolean;
+  /** Omitted = keep the stored key; "" = clear it. */
+  apiKey?: string;
+}
+
+/** Routes a studio model to one upstream; lower `order` is tried first. */
+export interface MediaModelBinding {
+  id: string;
+  providerId: string;
+  upstreamModelId: string;
+  order: number;
+  enabled: boolean;
+}
+
+export interface MediaModelConfig {
+  /** Studio-facing model id, e.g. "nano-banana", "gpt-image-2". */
+  id: string;
+  kind: MediaModelKind;
+  displayName: string;
+  order: number;
+  enabled: boolean;
+  bindings: MediaModelBinding[];
+}
+
+export interface SaveMediaModelInput {
+  id: string;
+  kind: MediaModelKind;
+  displayName: string;
+  order: number;
+  enabled: boolean;
+  bindings: Array<{
+    id?: string;
+    providerId: string;
+    upstreamModelId: string;
+    order: number;
+    enabled: boolean;
+  }>;
+}
+
+export interface MediaGenerationSettings {
+  providers: MediaProviderView[];
+  models: MediaModelConfig[];
+}
+
+export type GeneratedAssetPurpose =
+  | "character"
+  | "enemy"
+  | "prop"
+  | "background"
+  | "ui-icon"
+  | "ui-button"
+  | "logo"
+  | "cover"
+  | "promo"
+  | "other";
+
+export const GENERATED_ASSET_PURPOSE_LABELS: Record<GeneratedAssetPurpose, string> = {
+  character: "角色",
+  enemy: "敌人",
+  prop: "道具",
+  background: "背景",
+  "ui-icon": "UI 图标",
+  "ui-button": "UI 按钮",
+  logo: "Logo",
+  cover: "游戏封面",
+  promo: "宣传图",
+  other: "其他"
+};
+
+export type GeneratedAssetAspect = "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
+
+export interface GeneratedAssetRecord {
+  id: string;
+  projectId: string;
+  fileName: string;
+  /** Project-relative POSIX path, e.g. "assets/characters/xxx.png". */
+  projectRelativePath: string;
+  /** Godot resource path, e.g. "res://assets/characters/xxx.png". */
+  resPath: string;
+  prompt: string;
+  /** The full prompt actually sent upstream (with purpose/style template). */
+  finalPrompt?: string;
+  purpose: GeneratedAssetPurpose;
+  style?: string;
+  aspectRatio?: GeneratedAssetAspect;
+  transparentBackground?: boolean;
+  modelId: string;
+  providerId?: string;
+  providerName?: string;
+  upstreamModelId?: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Semantic slot, e.g. "player.main", "ui.button" — lets agents know the role. */
+  slot?: string;
+  createdAt: string;
+}
+
+export interface GenerateImageInput {
+  projectId: string;
+  prompt: string;
+  purpose: GeneratedAssetPurpose;
+  style?: string;
+  aspectRatio?: GeneratedAssetAspect;
+  transparentBackground?: boolean;
+  /** Studio model id; omitted = first enabled image model. */
+  modelId?: string;
+  /** 1–4 images per request. */
+  count?: number;
+}
+
+/** One upstream call that was tried while serving a generation request. */
+export interface GenerationAttempt {
+  providerId: string;
+  providerName: string;
+  upstreamModelId: string;
+  ok: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+export interface GenerateImageResult {
+  ok: boolean;
+  modelId: string;
+  assets: GeneratedAssetRecord[];
+  attempts: GenerationAttempt[];
+  error?: string;
+}
+
+export type MediaProviderTestStatus = "ok" | "auth" | "not-found" | "rate-limit" | "network" | "protocol" | "server" | "no-key" | "unknown";
+
+/** Result of the read-only「测试连接」probe for one provider. */
+export interface MediaProviderTestResult {
+  providerId: string;
+  ok: boolean;
+  status: MediaProviderTestStatus;
+  /** Human-readable, actionable message for the settings UI. */
+  message: string;
+  /** HTTP status of the probe, when a response was received. */
+  httpStatus?: number;
+  durationMs: number;
+}
+
+export interface ProjectAssetLibrary {
+  projectId: string;
+  assets: GeneratedAssetRecord[];
+}
+
+export interface DeleteGeneratedAssetInput {
+  projectId: string;
+  assetId: string;
+}
+
+export interface SetGeneratedAssetSlotInput {
+  projectId: string;
+  assetId: string;
+  /** Empty string clears the slot. */
+  slot: string;
+}
+
 export interface StudioApi {
   bootstrap(): Promise<StudioBootstrap>;
   getUpdateStatus(): Promise<UpdateInfo>;
@@ -768,6 +995,16 @@ export interface StudioApi {
   openGodotEditor(projectId: string): Promise<GodotOpenResult>;
   openPath(path: string): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
+  getMediaSettings(): Promise<MediaGenerationSettings>;
+  saveMediaProvider(input: SaveMediaProviderInput): Promise<MediaGenerationSettings>;
+  deleteMediaProvider(providerId: string): Promise<MediaGenerationSettings>;
+  saveMediaModel(input: SaveMediaModelInput): Promise<MediaGenerationSettings>;
+  deleteMediaModel(modelId: string): Promise<MediaGenerationSettings>;
+  testMediaProvider(providerId: string): Promise<MediaProviderTestResult>;
+  generateImage(input: GenerateImageInput): Promise<GenerateImageResult>;
+  listGeneratedAssets(projectId: string): Promise<ProjectAssetLibrary>;
+  deleteGeneratedAsset(input: DeleteGeneratedAssetInput): Promise<ProjectAssetLibrary>;
+  setGeneratedAssetSlot(input: SetGeneratedAssetSlotInput): Promise<ProjectAssetLibrary>;
 }
 
 export const AGENT_PROFILES: AgentProfile[] = [

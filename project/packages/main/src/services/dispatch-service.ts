@@ -28,7 +28,8 @@ import type { WorkflowService } from "./workflow-service";
  */
 
 const SMALL_TEAM_AGENT_IDS = ["programmer", "qa"];
-const FULL_TEAM_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
+// 美术先于程序：素材闭环要求程序 Agent 拿到已生成的 res:// 素材再写场景。
+const FULL_TEAM_AGENT_IDS = ["producer", "designer", "artist", "programmer", "qa"];
 
 export function describeDispatchDecision(decision: DispatchDecision): string {
   const agent = AGENT_PROFILES.find((profile) => profile.id === decision.agentId);
@@ -86,6 +87,8 @@ export class DispatchService {
         autoPackageWebZip: !small,
         autoStartPreview: input.autoStartPreview,
         withQualityLoop: true,
+        // 大任务带美术角色，启用素材闭环（无生图配置时该阶段自动跳过）。
+        withAssetPipeline: !small,
       });
       return { decision, kind: "workflow", workflow };
     }

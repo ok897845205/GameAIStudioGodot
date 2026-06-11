@@ -190,6 +190,6 @@ describe("IntentRouterService.route", () => {
       tools: [tool("kscc")],
     });
     expect(decision.route).toBe("agent");
-    expect(decision.reason).toContain("含图片");
+    expect(decision.reason).toContain("含附件");
   });
 });

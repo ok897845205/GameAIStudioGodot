@@ -9,6 +9,16 @@ import { stripUtf8Bom } from "./text-file-encoding";
 
 const MAX_TEXT_BYTES = 512 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac"
+};
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -35,7 +45,12 @@ const TEXT_MIME_TYPES: Record<string, string> = {
 
 function mimeTypeFor(filePath: string): string {
   const extension = path.extname(filePath).toLowerCase();
-  return IMAGE_MIME_TYPES[extension] ?? TEXT_MIME_TYPES[extension] ?? "application/octet-stream";
+  return (
+    IMAGE_MIME_TYPES[extension] ??
+    AUDIO_MIME_TYPES[extension] ??
+    TEXT_MIME_TYPES[extension] ??
+    "application/octet-stream"
+  );
 }
 
 function isLikelyText(buffer: Buffer): boolean {
@@ -103,6 +118,22 @@ export class ProjectFilePreviewService {
       return {
         ...base,
         kind: "image",
+        dataUrl: `data:${mimeType};base64,${data.toString("base64")}`
+      };
+    }
+
+    if (mimeType.startsWith("audio/")) {
+      if (fileStat.size > MAX_AUDIO_BYTES) {
+        return {
+          ...base,
+          kind: "binary",
+          truncated: true
+        };
+      }
+      const data = await readFile(absolutePath);
+      return {
+        ...base,
+        kind: "audio",
         dataUrl: `data:${mimeType};base64,${data.toString("base64")}`
       };
     }

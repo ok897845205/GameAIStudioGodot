@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { StudioProject } from "@gameaistudio/shared";
-import { ProjectService, assertTemplateReady, shouldCopyTemplateEntry } from "./project-service";
+import { ProjectService, assertTemplateReady, migrateLegacyAgentDocs, shouldCopyTemplateEntry } from "./project-service";
 import type { StudioPaths } from "./resource-paths";
 import { StudioStore } from "./store";
 
@@ -78,6 +78,56 @@ describe("shouldCopyTemplateEntry", () => {
     expect(shouldCopyTemplateEntry(templatePath, path.join(templatePath, ".godot", "uid_cache.bin"))).toBe(false);
     expect(shouldCopyTemplateEntry(templatePath, path.join(templatePath, "build", "web", "index.html"))).toBe(false);
     expect(shouldCopyTemplateEntry(templatePath, path.join(templatePath, "dist", "old.zip"))).toBe(false);
+  });
+});
+
+describe("migrateLegacyAgentDocs", () => {
+  it("moves agent-authored markdown out of .gameaistudio into docs/ and keeps reserved files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-doc-migration-"));
+    const studioDir = path.join(root, ".gameaistudio");
+    await mkdir(studioDir, { recursive: true });
+    await writeFile(path.join(studioDir, "producer-plan.md"), "# plan", "utf8");
+    await writeFile(path.join(studioDir, "qa-report.md"), "# qa", "utf8");
+    await writeFile(path.join(studioDir, "agent-context.md"), "# context", "utf8");
+    await writeFile(path.join(studioDir, "agent-journal.md"), "# journal", "utf8");
+    await writeFile(path.join(studioDir, "chat-export-20260611.md"), "# export", "utf8");
+    await writeFile(path.join(studioDir, "chat-history.json"), "{}", "utf8");
+
+    try {
+      const moved = await migrateLegacyAgentDocs(root);
+
+      expect(moved.sort()).toEqual(["docs/producer-plan.md", "docs/qa-report.md"]);
+      expect(await readFile(path.join(root, "docs", "producer-plan.md"), "utf8")).toBe("# plan");
+      expect(await readFile(path.join(root, "docs", "qa-report.md"), "utf8")).toBe("# qa");
+      // Reserved app files stay where the app expects them.
+      await access(path.join(studioDir, "agent-context.md"));
+      await access(path.join(studioDir, "agent-journal.md"));
+      await access(path.join(studioDir, "chat-export-20260611.md"));
+      await access(path.join(studioDir, "chat-history.json"));
+      await expect(access(path.join(studioDir, "producer-plan.md"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does nothing for projects without legacy docs and renames on docs/ collisions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-doc-migration-"));
+    try {
+      expect(await migrateLegacyAgentDocs(root)).toEqual([]);
+
+      const studioDir = path.join(root, ".gameaistudio");
+      await mkdir(path.join(root, "docs"), { recursive: true });
+      await mkdir(studioDir, { recursive: true });
+      await writeFile(path.join(root, "docs", "design-spec.md"), "# new", "utf8");
+      await writeFile(path.join(studioDir, "design-spec.md"), "# legacy", "utf8");
+
+      const moved = await migrateLegacyAgentDocs(root);
+      expect(moved).toEqual(["docs/design-spec-migrated.md"]);
+      expect(await readFile(path.join(root, "docs", "design-spec.md"), "utf8")).toBe("# new");
+      expect(await readFile(path.join(root, "docs", "design-spec-migrated.md"), "utf8")).toBe("# legacy");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

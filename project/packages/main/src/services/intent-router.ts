@@ -149,7 +149,7 @@ export class IntentRouterService {
         ...decision,
         route: "agent",
         scope: "small",
-        reason: `${decision.reason}（含图片，改为单 Agent 处理）`,
+        reason: `${decision.reason}（含附件，改为单 Agent 处理）`,
       };
     }
     plog.info("dispatch", "自动派单决策", {

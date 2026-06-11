@@ -131,7 +131,7 @@ export interface AgentProfile {
   systemPrompt: string;
 }
 
-export type AgentAttachmentKind = "image";
+export type AgentAttachmentKind = "image" | "audio";
 
 /**
  * Visual/semantic category of a chat message. `text` (default) is a normal
@@ -156,6 +156,12 @@ export interface AgentAttachment {
   mimeType: string;
   size: number;
   projectRelativePath: string;
+  /**
+   * Renderer-only: inline data URL for optimistic messages shown before the
+   * backend has persisted the attachment (projectRelativePath is "" then).
+   * Never written by the main process and never persisted to chat history.
+   */
+  dataUrl?: string;
 }
 
 export interface AgentAttachmentInput {
@@ -576,7 +582,7 @@ export interface GitRestoreResult {
   exitCode: number | null;
 }
 
-export type ProjectFilePreviewKind = "text" | "image" | "binary";
+export type ProjectFilePreviewKind = "text" | "image" | "audio" | "binary";
 
 export interface ProjectFilePreview {
   projectId: string;

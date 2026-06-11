@@ -256,6 +256,8 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
     "## Work Style",
     "",
     "- Work directly in this Godot project folder and keep changes inside it.",
+    "- Never read or modify `.gameaistudio/` (app-internal chat archives, logs, session state). Only exceptions: this context file, `.gameaistudio/agent-journal.md`, and attachment paths explicitly given in the current turn; copy needed attachments into the game's asset folders before using them.",
+    "- Write collaboration documents (plans, design specs, art direction, QA reports) into the project's `docs/` directory, never into `.gameaistudio/`.",
     "- Prefer a small playable Godot increment over broad planning-only output.",
     "- Keep Web export compatibility in mind when changing scripts, scenes, resources, or export presets.",
     "- When changing project files, mention the main files touched and the intended gameplay effect.",

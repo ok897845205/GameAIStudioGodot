@@ -42,9 +42,12 @@ export function buildAgentPrompt(input: {
   const attachmentLines = attachments.length
     ? [
         "",
-        "本轮图片附件：",
-        ...attachments.map((attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.size} bytes): ${path.join(projectRoot, attachment.projectRelativePath)}`),
-        "请把这些图片作为用户需求的一部分进行识别、理解和回应。"
+        "本轮附件：",
+        ...attachments.map(
+          (attachment) =>
+            `- [${attachment.kind === "audio" ? "音频" : "图片"}] ${attachment.name} (${attachment.mimeType}, ${attachment.size} bytes): ${path.join(projectRoot, attachment.projectRelativePath)}`
+        ),
+        "图片请作为用户需求的一部分进行识别、理解和回应；音频无法直接试听，请按文件名/用户描述把它复制到项目素材目录（如 assets/audio/）并在游戏中接入。"
       ]
     : [];
   return [
@@ -58,6 +61,8 @@ export function buildAgentPrompt(input: {
     "",
     "工作约束：",
     "- 只在这个 Godot 项目目录内创建或修改文件。",
+    "- `.gameaistudio/` 是软件内部数据目录（聊天存档、日志、会话状态），禁止读取、引用或修改其中内容，仅以下例外：① Agent 上下文文件 `.gameaistudio/agent-context.md`（必读）；② 工作日志 `.gameaistudio/agent-journal.md`（可读）；③ 本轮明确给出的附件路径。要在游戏中使用附件，先把它复制到项目素材目录（如 assets/）。",
+    "- 计划、设计、美术方向、QA 报告等协作文档一律写入项目 `docs/` 目录，不要写进 `.gameaistudio/`。",
     "- 先阅读或遵循 Agent 上下文文件中的项目文件地图、最近对话和交付要求。",
     "- 优先交付一个可预览、可导出的最小可玩版本；程序类任务要尽量直接修改 Godot 文件。",
     "- 如需运行命令，说明命令和目的；如果当前 CLI 不能执行命令，也要给出可继续的具体文件级改动方案。",
@@ -118,14 +123,14 @@ function sanitizeAttachmentName(value: string): string {
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 96);
 }
 
-function parseImageDataUrl(input: AgentAttachmentInput): { mimeType: string; bytes: Buffer } {
+function parseAttachmentDataUrl(input: AgentAttachmentInput): { mimeType: string; bytes: Buffer } {
   const match = /^data:([^;]+);base64,(.*)$/s.exec(input.dataUrl);
   if (!match) {
-    throw new Error(`图片附件格式无效：${input.name}`);
+    throw new Error(`附件格式无效：${input.name}`);
   }
   const mimeType = match[1] || input.mimeType;
-  if (!mimeType.startsWith("image/")) {
-    throw new Error(`只支持图片附件：${input.name}`);
+  if (!mimeType.startsWith("image/") && !mimeType.startsWith("audio/")) {
+    throw new Error(`只支持图片或音频附件：${input.name}`);
   }
   return {
     mimeType,
@@ -143,13 +148,13 @@ async function persistAttachments(projectRoot: string, attachments: AgentAttachm
 
   for (const attachment of attachments) {
     const id = createMessageId();
-    const { mimeType, bytes } = parseImageDataUrl(attachment);
+    const { mimeType, bytes } = parseAttachmentDataUrl(attachment);
     const safeName = sanitizeAttachmentName(attachment.name);
     const relativePath = path.join(".gameaistudio", "attachments", `${id}-${safeName}`).replace(/\\/g, "/");
     await writeFile(path.join(projectRoot, relativePath), bytes);
     persisted.push({
       id,
-      kind: "image",
+      kind: mimeType.startsWith("audio/") ? "audio" : "image",
       name: safeName,
       mimeType,
       size: bytes.length,
@@ -447,7 +452,8 @@ export class AgentService {
         ? `${CLI_TOOL_LABELS[input.cliToolId]} CLI 未检测到。请先安装或加入 PATH。\n建议命令：${selectedTool?.installCommand.join(" ") ?? "查看 CLI 设置"}`
         : selectedTool.status !== "available"
           ? `${selectedTool.label} CLI 当前不可用，暂不执行 Agent 回合。\n${selectedTool.health.detail ?? "请先在设置中查看分层健康状态，修复登录或非交互模式后刷新 CLI。"}`
-          : attachments.length > 0 && !selectedTool.capabilities.supportsImages
+          : attachments.some((attachment) => attachment.kind === "image") &&
+              !selectedTool.capabilities.supportsImages
             ? `${selectedTool.label} Adapter 不支持图片输入。请移除图片附件，或切换到支持图片的 CLI。`
             : undefined;
     }
@@ -496,7 +502,7 @@ export class AgentService {
     }
 
     const attachmentContext = attachments.length
-      ? `${input.message}\n\n图片附件：\n${attachments.map((attachment) => `- ${attachment.name}: ${path.join(project.rootPath, attachment.projectRelativePath)}`).join("\n")}`
+      ? `${input.message}\n\n附件：\n${attachments.map((attachment) => `- [${attachment.kind === "audio" ? "音频" : "图片"}] ${attachment.name}: ${path.join(project.rootPath, attachment.projectRelativePath)}`).join("\n")}`
       : input.message;
     // Git snapshot before the CLI runs — written into the Agent context and
     // paired with the after-summary in the final log line.
@@ -570,12 +576,18 @@ export class AgentService {
         // One provider-side session per (project × agent) thread — adapters
         // with resume support continue it across turns.
         sessionKey: `${project.id}:${input.agentId}`,
-        images: attachments.map((attachment, index) => ({
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          dataUrl: input.attachments?.[index]?.dataUrl ?? "",
-          path: path.join(project.rootPath, attachment.projectRelativePath)
-        })),
+        // Only true images ride the CLI's image channel (--image flags / ACP
+        // image blocks); audio attachments reach the agent as file paths in
+        // the prompt — it copies them into the game's asset folders.
+        images: attachments
+          .map((attachment, index) => ({ attachment, index }))
+          .filter(({ attachment }) => attachment.kind === "image")
+          .map(({ attachment, index }) => ({
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            dataUrl: input.attachments?.[index]?.dataUrl ?? "",
+            path: path.join(project.rootPath, attachment.projectRelativePath)
+          })),
         signal: controller.signal
       })) {
         switch (chunk.type) {

@@ -1,11 +1,67 @@
 import { useMemo } from "react";
 import type { AgentAttachmentInput, AgentMessage } from "@gameaistudio/shared";
 import {
-  SimpleImageAttachmentAdapter,
   useExternalStoreRuntime,
   type AssistantRuntime,
+  type CompleteAttachment,
+  type PendingAttachment,
 } from "@gameaistudio/assistant/react";
 import type { ThreadMessageLike, AppendMessage } from "@gameaistudio/assistant";
+
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
+    reader.readAsDataURL(file);
+  });
+
+/**
+ * Chat attachment adapter for game-asset workflows: images become `image`
+ * parts (the CLI's vision channel), audio files become `file` parts (the
+ * agent receives them as on-disk paths and wires them into the game).
+ */
+class ChatAttachmentAdapter {
+  public accept = "image/*,audio/*";
+
+  public async add(state: { file: File }): Promise<PendingAttachment> {
+    const isAudio = state.file.type.startsWith("audio/");
+    return {
+      id: state.file.name,
+      type: isAudio ? "audio" : "image",
+      name: state.file.name,
+      contentType: state.file.type,
+      file: state.file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  public async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    if (!attachment.file) {
+      throw new Error(`附件 ${attachment.name} 缺少文件内容。`);
+    }
+    const dataUrl = await readFileAsDataUrl(attachment.file);
+    const mimeType = attachment.contentType ?? attachment.file.type;
+    return {
+      ...attachment,
+      status: { type: "complete" },
+      content: [
+        mimeType.startsWith("audio/")
+          ? {
+              type: "file",
+              filename: attachment.name,
+              data: dataUrl,
+              mimeType,
+            }
+          : { type: "image", image: dataUrl },
+      ],
+    };
+  }
+
+  public async remove() {
+    // noop
+  }
+}
 
 /**
  * Converts a GameAIStudio `AgentMessage` into the runtime's `ThreadMessageLike`.
@@ -45,17 +101,29 @@ export function appendMessageAttachments(
   message: AppendMessage,
 ): AgentAttachmentInput[] {
   return (message.attachments ?? []).flatMap((att) => {
-    const imagePart = att.content.find((p) => p.type === "image");
-    if (!imagePart || imagePart.type !== "image") return [];
-    const dataUrl = imagePart.image;
-    return [
-      {
-        name: att.name,
-        mimeType: att.contentType ?? "image/png",
-        size: Math.round((dataUrl.length * 3) / 4),
-        dataUrl,
-      },
-    ];
+    for (const part of att.content) {
+      if (part.type === "image") {
+        return [
+          {
+            name: att.name,
+            mimeType: att.contentType ?? "image/png",
+            size: Math.round((part.image.length * 3) / 4),
+            dataUrl: part.image,
+          },
+        ];
+      }
+      if (part.type === "file") {
+        return [
+          {
+            name: part.filename ?? att.name,
+            mimeType: part.mimeType,
+            size: Math.round((part.data.length * 3) / 4),
+            dataUrl: part.data,
+          },
+        ];
+      }
+    }
+    return [];
   });
 }
 
@@ -80,7 +148,7 @@ export function useAgentChatRuntime(opts: {
   supportsImages?: boolean;
   onSend: (input: AgentSendInput) => Promise<void>;
 }): AssistantRuntime {
-  const attachments = useMemo(() => new SimpleImageAttachmentAdapter(), []);
+  const attachments = useMemo(() => new ChatAttachmentAdapter(), []);
   return useExternalStoreRuntime<AgentMessage>({
     messages: opts.messages,
     isRunning: opts.isRunning,

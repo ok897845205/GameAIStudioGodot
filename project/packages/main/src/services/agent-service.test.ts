@@ -317,10 +317,71 @@ describe("AgentService", () => {
       });
 
       const userMessage = result.messages.find((message) => message.role === "user");
+      expect(userMessage?.attachments?.[0]?.kind).toBe("image");
       expect(userMessage?.attachments?.[0]?.projectRelativePath).toContain(".gameaistudio/attachments/");
       expect(await readFile(path.join(project.rootPath, userMessage!.attachments![0]!.projectRelativePath), "base64")).toBe("iVBORw==");
-      expect(await readFile(path.join(project.rootPath, "prompt.txt"), "utf8")).toContain("本轮图片附件");
+      expect(await readFile(path.join(project.rootPath, "prompt.txt"), "utf8")).toContain("本轮附件");
       expect(await readFile(path.join(project.rootPath, "prompt.txt"), "utf8")).toContain("chat.png");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists audio attachments with kind audio and asset guidance in the prompt", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-agent-service-"));
+    const paths = createPaths(root);
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const projectService = new ProjectService(paths, store);
+    const runService = new RunService(store);
+    const processRegistry = new ProcessRegistry();
+    const fileChangeService = new ProjectFileChangeService();
+    const contextService = new AgentContextService();
+
+    try {
+      await writeTemplate(paths);
+      const project = await projectService.createProject({
+        name: "Audio Attachment Demo",
+        dimension: "2d",
+        prompt: "加背景音乐"
+      });
+      // Headless codex tool reports no image support — audio must still pass.
+      const cliTool = { ...fakeTool(process.execPath), capabilities: { ...fakeTool(process.execPath).capabilities, supportsImages: false } };
+      const seenRequests: Array<{ prompt: string; images?: unknown[] }> = [];
+      const cliService = {
+        discover: async () => [cliTool],
+        runTurn: async function* (_toolId: string, req: { prompt: string; workingDir: string; images?: unknown[] }) {
+          seenRequests.push({ prompt: req.prompt, images: req.images });
+          yield { type: "text-delta", text: "got audio" };
+          yield { type: "final", content: "got audio", exitCode: 0, durationMs: 3 };
+        }
+      } as unknown as CliService;
+      const agentService = new AgentService(projectService, cliService, runService, processRegistry, fileChangeService, contextService);
+
+      const result = await agentService.runTurn({
+        projectId: project.id,
+        agentId: "programmer",
+        cliToolId: "codex",
+        message: "把这段 BGM 接入主场景。",
+        autoStartPreview: false,
+        attachments: [
+          {
+            name: "bgm.mp3",
+            mimeType: "audio/mpeg",
+            size: 4,
+            dataUrl: "data:audio/mpeg;base64,SUQzBA=="
+          }
+        ]
+      });
+
+      const userMessage = result.messages.find((message) => message.role === "user");
+      expect(userMessage?.attachments?.[0]?.kind).toBe("audio");
+      expect(userMessage?.attachments?.[0]?.projectRelativePath).toContain(".gameaistudio/attachments/");
+      expect(await readFile(path.join(project.rootPath, userMessage!.attachments![0]!.projectRelativePath), "base64")).toBe("SUQzBA==");
+      expect(seenRequests[0]?.prompt).toContain("[音频] bgm.mp3");
+      expect(seenRequests[0]?.prompt).toContain("assets/audio");
+      // Audio never rides the vision channel.
+      expect(seenRequests[0]?.images ?? []).toHaveLength(0);
+      expect(result.runs[0]?.status).toBe("completed");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

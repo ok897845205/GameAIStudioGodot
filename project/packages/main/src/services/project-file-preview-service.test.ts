@@ -101,6 +101,26 @@ describe("ProjectFilePreviewService", () => {
     }
   });
 
+  it("returns audio files as data urls", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-file-preview-"));
+    const project = createProject(dir);
+    await mkdir(path.join(dir, "assets", "audio"), { recursive: true });
+    await writeFile(path.join(dir, "assets", "audio", "bgm.mp3"), Buffer.from("SUQzBA==", "base64"));
+    const service = new ProjectFilePreviewService({ requireProject: async () => project } as never);
+
+    try {
+      const preview = await service.read({
+        projectId: project.id,
+        relativePath: "assets/audio/bgm.mp3"
+      });
+
+      expect(preview.kind).toBe("audio");
+      expect(preview.dataUrl).toBe("data:audio/mpeg;base64,SUQzBA==");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects paths outside the project root", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-file-preview-"));
     const project = createProject(dir);

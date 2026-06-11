@@ -8,7 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { Paperclip, Send, Square, X } from "lucide-react";
+import { Music, Paperclip, Send, Square, X } from "lucide-react";
 import {
   useThread,
   useThreadComposer,
@@ -51,12 +51,15 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [composer.text]);
 
-  // Create one object URL per pending attachment (not per render) and revoke
-  // them when the attachment set changes or the composer unmounts.
+  // Create one object URL per pending image attachment (not per render) and
+  // revoke them when the attachment set changes or the composer unmounts.
+  // Audio attachments get an icon chip instead of a thumbnail.
   const thumbs = useMemo(() => {
     const map = new Map<string, string>();
     for (const att of composer.attachments) {
-      if (att.file) map.set(att.id, URL.createObjectURL(att.file));
+      if (att.file && (att.contentType ?? att.file.type).startsWith("image/")) {
+        map.set(att.id, URL.createObjectURL(att.file));
+      }
     }
     return map;
   }, [composer.attachments]);
@@ -86,22 +89,22 @@ export function Composer({
 
   const addFiles = (files: FileList | File[] | null): number => {
     if (!files) return 0;
-    const images = Array.from(files).filter((file) =>
-      file.type.startsWith("image/"),
+    const images = Array.from(files).filter(
+      (file) => file.type.startsWith("image/") || file.type.startsWith("audio/"),
     );
     if (images.length === 0) return 0;
     if (!canAttachImages) {
-      setAttachNotice("当前 CLI 不支持图片输入，请切换到支持图片的 CLI。");
+      setAttachNotice("当前 CLI 不支持图片附件，请切换到支持图片的 CLI（音频不受限制）。");
       return 0;
     }
     const room = MAX_IMAGES_PER_MESSAGE - composer.attachments.length;
     if (room <= 0) {
-      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片。`);
+      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 个图片/音频附件。`);
       return 0;
     }
     const accepted = images.slice(0, room);
     if (accepted.length < images.length) {
-      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片，已保留前 ${accepted.length} 张。`);
+      setAttachNotice(`每条消息最多 ${MAX_IMAGES_PER_MESSAGE} 个附件，已保留前 ${accepted.length} 个。`);
     }
     for (const file of accepted) {
       void composerRuntime.addAttachment(file);
@@ -112,7 +115,7 @@ export function Composer({
   // Clipboard images (screenshots) paste straight into the composer.
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(e.clipboardData?.files ?? []);
-    if (files.some((file) => file.type.startsWith("image/"))) {
+    if (files.some((file) => file.type.startsWith("image/") || file.type.startsWith("audio/"))) {
       e.preventDefault();
       addFiles(files);
     }
@@ -162,6 +165,8 @@ export function Composer({
                     alt={att.name}
                     className="size-7 rounded object-cover"
                   />
+                ) : (att.contentType ?? "").startsWith("audio/") ? (
+                  <Music className="size-4 text-muted-foreground" />
                 ) : (
                   <Paperclip className="size-4 text-muted-foreground" />
                 )}
@@ -192,12 +197,12 @@ export function Composer({
               ? "cursor-pointer hover:bg-accent hover:text-foreground"
               : "cursor-not-allowed opacity-45",
           )}
-          title={canAttachImages ? "添加图片" : "当前 CLI 不支持图片输入"}
+          title={canAttachImages ? "添加图片或音频" : "当前 CLI 不支持图片附件"}
         >
           <Paperclip className="size-4" />
           <input
             type="file"
-            accept="image/*"
+            accept="image/*,audio/*"
             multiple
             className="hidden"
             disabled={!canAttachImages}

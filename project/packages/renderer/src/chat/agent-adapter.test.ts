@@ -3,6 +3,7 @@ import type { AgentMessage } from "@gameaistudio/shared";
 import { fromThreadMessageLike, type AppendMessage } from "@gameaistudio/assistant";
 import {
   agentMessageToThreadMessageLike,
+  appendMessageAttachments,
   appendMessageText,
 } from "./agent-adapter";
 
@@ -80,5 +81,82 @@ describe("appendMessageText", () => {
     } as unknown as AppendMessage;
 
     expect(appendMessageText(message)).toBe("第一行\n第二行");
+  });
+});
+
+describe("appendMessageAttachments", () => {
+  const baseMessage = (attachments: unknown[]): AppendMessage =>
+    ({
+      role: "user",
+      content: [{ type: "text", text: "看附件" }],
+      attachments,
+      parentId: null,
+      sourceId: null,
+      runConfig: {},
+      metadata: { custom: {} },
+    }) as unknown as AppendMessage;
+
+  it("extracts image parts as image attachments", () => {
+    const result = appendMessageAttachments(
+      baseMessage([
+        {
+          id: "a1",
+          type: "image",
+          name: "shot.png",
+          contentType: "image/png",
+          content: [{ type: "image", image: "data:image/png;base64,iVBORw==" }],
+          status: { type: "complete" },
+        },
+      ]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      name: "shot.png",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,iVBORw==",
+    });
+  });
+
+  it("extracts file parts (audio) as attachments with the file mimeType", () => {
+    const result = appendMessageAttachments(
+      baseMessage([
+        {
+          id: "a2",
+          type: "audio",
+          name: "bgm.mp3",
+          contentType: "audio/mpeg",
+          content: [
+            {
+              type: "file",
+              filename: "bgm.mp3",
+              data: "data:audio/mpeg;base64,SUQzBA==",
+              mimeType: "audio/mpeg",
+            },
+          ],
+          status: { type: "complete" },
+        },
+      ]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      name: "bgm.mp3",
+      mimeType: "audio/mpeg",
+      dataUrl: "data:audio/mpeg;base64,SUQzBA==",
+    });
+  });
+
+  it("ignores attachments without image or file parts", () => {
+    const result = appendMessageAttachments(
+      baseMessage([
+        {
+          id: "a3",
+          type: "document",
+          name: "notes.txt",
+          content: [{ type: "text", text: "纯文本" }],
+          status: { type: "complete" },
+        },
+      ]),
+    );
+    expect(result).toHaveLength(0);
   });
 });

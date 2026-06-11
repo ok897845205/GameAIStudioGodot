@@ -32,6 +32,7 @@ import {
   AGENT_PROFILES,
   CLI_TOOL_LABELS,
   chooseAgentCli,
+  type AgentAttachment,
   type AgentMessage,
   type CliTool,
   type CliToolId,
@@ -77,6 +78,26 @@ type AgentCliToolIds = Partial<Record<string, CliToolId>>;
 const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "programmer", "artist", "qa"];
 /** Pseudo-agent id for the auto-dispatch chat mode (intent routing). */
 const AUTO_AGENT_ID = "auto";
+
+/**
+ * Attachments for the optimistic user bubble shown while the turn runs: the
+ * inline dataUrl renders the thumbnail/player immediately; the canonical
+ * message from the backend (with the persisted project path) replaces it.
+ */
+function optimisticAttachments(
+  attachments: AgentSendInput["attachments"],
+): AgentAttachment[] | undefined {
+  if (attachments.length === 0) return undefined;
+  return attachments.map((attachment, index) => ({
+    id: `optimistic-att-${index}`,
+    kind: attachment.mimeType.startsWith("audio/") ? ("audio" as const) : ("image" as const),
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    projectRelativePath: "",
+    dataUrl: attachment.dataUrl,
+  }));
+}
 const APP_VERSION = appPackage.version;
 
 const initialForm = {
@@ -644,6 +665,7 @@ export function StudioApp() {
         role: "user",
         content: input.text.trim(),
         createdAt: new Date().toISOString(),
+        attachments: optimisticAttachments(input.attachments),
       };
       setSelectedProject((cur) =>
         cur && cur.id === projectId
@@ -695,6 +717,7 @@ export function StudioApp() {
       role: "user",
       content: text.trim(),
       createdAt: new Date().toISOString(),
+      attachments: optimisticAttachments(attachments),
     };
     setSelectedProject((cur) =>
       cur && cur.id === projectId
@@ -2761,6 +2784,8 @@ export function StudioApp() {
       >
         {filePreview?.kind === "image" && filePreview.dataUrl ? (
           <img src={filePreview.dataUrl} alt={filePreview.name} />
+        ) : filePreview?.kind === "audio" && filePreview.dataUrl ? (
+          <audio controls autoPlay={false} src={filePreview.dataUrl} className="w-full" />
         ) : (
           <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">
             {filePreview?.content ?? "（无法预览）"}

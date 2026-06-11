@@ -107,3 +107,60 @@ describe("project chat management", () => {
     expect(content).toContain("exit:0");
   });
 });
+
+describe("project-local chat persistence", () => {
+  it("writes chat history inside the project and restores it with a fresh service (app restart)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-chatfile-"));
+    const paths = createPaths(root);
+    const templatePath = path.join(paths.templatesRoot, "gameaistudio_template_2d");
+    await mkdir(templatePath, { recursive: true });
+    await writeFile(path.join(templatePath, "project.godot"), 'config/name="T"\n', "utf8");
+    await writeFile(path.join(templatePath, "export_presets.cfg"), WEB_EXPORT_PRESET, "utf8");
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const service = new ProjectService(paths, store);
+
+    try {
+      const project = await service.createProject({ name: "存档", dimension: "2d", prompt: "聊天随项目走" });
+      await service.appendMessages(project.id, [message(project.id, { content: "重启后还在吗" })]);
+
+      // The history file lives inside the project directory.
+      const filePath = path.join(project.rootPath, ".gameaistudio", "chat-history.json");
+      const persisted = JSON.parse(await readFile(filePath, "utf8")) as { messages: AgentMessage[] };
+      expect(persisted.messages.some((m) => m.content === "重启后还在吗")).toBe(true);
+
+      // A brand-new service instance (fresh cache = app restart) restores it.
+      const reopened = new ProjectService(paths, new StudioStore(path.join(paths.dataRoot, "studio-state.json")));
+      const detail = await reopened.getProject(project.id);
+      expect(detail.messages.some((m) => m.content === "重启后还在吗")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates legacy messages from the global store on first load", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-chatmigrate-"));
+    const paths = createPaths(root);
+    const templatePath = path.join(paths.templatesRoot, "gameaistudio_template_2d");
+    await mkdir(templatePath, { recursive: true });
+    await writeFile(path.join(templatePath, "project.godot"), 'config/name="T"\n', "utf8");
+    await writeFile(path.join(templatePath, "export_presets.cfg"), WEB_EXPORT_PRESET, "utf8");
+    const store = new StudioStore(path.join(paths.dataRoot, "studio-state.json"));
+    const service = new ProjectService(paths, store);
+
+    try {
+      const project = await service.createProject({ name: "迁移", dimension: "2d", prompt: "旧数据" });
+      // Simulate a pre-migration install: history only in the global store.
+      await rm(path.join(project.rootPath, ".gameaistudio", "chat-history.json"), { force: true });
+      await store.appendMessages([message(project.id, { content: "旧版全局存储里的消息" })]);
+
+      const reopened = new ProjectService(paths, store);
+      const detail = await reopened.getProject(project.id);
+      expect(detail.messages.some((m) => m.content === "旧版全局存储里的消息")).toBe(true);
+      // Migration wrote the project-local file.
+      const filePath = path.join(project.rootPath, ".gameaistudio", "chat-history.json");
+      expect(JSON.parse(await readFile(filePath, "utf8")).messages.length).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

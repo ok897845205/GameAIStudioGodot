@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -8,6 +8,7 @@ import {
   GitBranch,
   Image as ImageIcon,
   Info,
+  Music,
   Play,
   RefreshCw,
   Trash2,
@@ -73,6 +74,140 @@ function formatTime(iso?: string): string | undefined {
 function formatDuration(ms?: number): string | undefined {
   if (!ms || ms <= 0) return undefined;
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Module-level thumbnail cache: one IPC read per (project, attachment) for
+// the app session, shared across remounts of the chat.
+const thumbnailCache = new Map<string, Promise<string | undefined>>();
+
+function loadThumbnail(projectId: string, relativePath: string): Promise<string | undefined> {
+  const key = `${projectId}:${relativePath}`;
+  let cached = thumbnailCache.get(key);
+  if (!cached) {
+    cached = window.studio
+      .readProjectFile({ projectId, relativePath })
+      .then((preview) => preview.dataUrl)
+      .catch(() => undefined);
+    thumbnailCache.set(key, cached);
+  }
+  return cached;
+}
+
+/** Inline image thumbnails / audio players for chat attachments. */
+function AttachmentThumbs({
+  projectId,
+  attachments,
+  onOpen,
+}: {
+  projectId: string;
+  attachments: Array<{
+    id: string;
+    name: string;
+    projectRelativePath: string;
+    kind?: "image" | "audio";
+    dataUrl?: string;
+  }>;
+  onOpen?: (path: string) => void;
+}) {
+  const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
+
+  useEffect(() => {
+    let alive = true;
+    for (const attachment of attachments) {
+      // Optimistic messages carry the data URL inline (not yet on disk).
+      if (attachment.dataUrl) {
+        setThumbs((cur) => ({ ...cur, [attachment.id]: attachment.dataUrl ?? null }));
+        continue;
+      }
+      if (!attachment.projectRelativePath) {
+        setThumbs((cur) => ({ ...cur, [attachment.id]: null }));
+        continue;
+      }
+      void loadThumbnail(projectId, attachment.projectRelativePath).then((dataUrl) => {
+        if (!alive) return;
+        setThumbs((cur) => ({ ...cur, [attachment.id]: dataUrl ?? null }));
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [projectId, attachments]);
+
+  if (attachments.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {attachments.map((attachment) => {
+        const thumb = thumbs[attachment.id];
+        const isAudio = attachment.kind === "audio";
+        const FallbackIcon = isAudio ? Music : ImageIcon;
+        const canOpen = Boolean(onOpen && attachment.projectRelativePath);
+        if (thumb === null) {
+          // File unreadable (moved/deleted) — fall back to a named chip.
+          return (
+            <button
+              key={attachment.id}
+              type="button"
+              disabled={!canOpen}
+              onClick={() => onOpen?.(attachment.projectRelativePath)}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+              title={`${isAudio ? "音频" : "图片"}不可用：${attachment.projectRelativePath || attachment.name}`}
+            >
+              <FallbackIcon className="size-3" />
+              <span className="max-w-[10rem] truncate">{attachment.name}</span>
+            </button>
+          );
+        }
+        if (isAudio) {
+          return (
+            <div
+              key={attachment.id}
+              className="flex w-64 max-w-full flex-col gap-1 rounded-lg border border-border bg-background/60 p-2"
+            >
+              <button
+                type="button"
+                disabled={!canOpen}
+                onClick={() => onOpen?.(attachment.projectRelativePath)}
+                className="inline-flex items-center gap-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+                title={`点击查看 ${attachment.name}`}
+              >
+                <Music className="size-3 shrink-0" />
+                <span className="truncate">{attachment.name}</span>
+              </button>
+              {thumb ? (
+                <audio controls preload="metadata" src={thumb} className="h-8 w-full" />
+              ) : (
+                <span className="flex h-8 items-center justify-center text-muted-foreground">
+                  <Music className="size-4 animate-pulse" />
+                </span>
+              )}
+            </div>
+          );
+        }
+        return (
+          <button
+            key={attachment.id}
+            type="button"
+            disabled={!canOpen}
+            onClick={() => onOpen?.(attachment.projectRelativePath)}
+            className="group/thumb relative overflow-hidden rounded-lg border border-border bg-background/60"
+            title={`点击查看 ${attachment.name}`}
+          >
+            {thumb ? (
+              <img
+                src={thumb}
+                alt={attachment.name}
+                className="max-h-36 max-w-[14rem] object-contain transition-transform group-hover/thumb:scale-[1.02]"
+              />
+            ) : (
+              <span className="flex h-20 w-28 items-center justify-center text-muted-foreground">
+                <ImageIcon className="size-5 animate-pulse" />
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function FileChips({
@@ -242,11 +377,10 @@ export function Message() {
             isRunning={isRunning}
           />
 
-          {attachments.length > 0 && (
-            <FileChips
-              title="图片"
-              icon={ImageIcon}
-              paths={attachments.map((a) => a.projectRelativePath)}
+          {attachments.length > 0 && meta && (
+            <AttachmentThumbs
+              projectId={meta.projectId}
+              attachments={attachments}
               onOpen={chat.onOpenFile}
             />
           )}

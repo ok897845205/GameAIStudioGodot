@@ -1,6 +1,6 @@
 {
   "name": "gameaistudio-godot",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "GameAIStudio desktop app for creating Godot games with local AI CLI agents.",
   "author": "GameAIStudio",
   "private": true,

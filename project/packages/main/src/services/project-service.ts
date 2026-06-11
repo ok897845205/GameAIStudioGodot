@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   AGENT_PROFILES,
@@ -56,11 +56,119 @@ export async function assertTemplateReady(templatePath: string, dimension: GameD
   }
 }
 
+// Markdown files at the `.gameaistudio/` root that belong to the app itself
+// and must never be relocated by the legacy-doc migration below.
+const RESERVED_STUDIO_MARKDOWN = new Set(["agent-context.md", "agent-journal.md"]);
+
+/**
+ * Earlier builds let Agents write collaboration documents (plans, design
+ * specs, QA reports…) straight into `.gameaistudio/`. Now that the directory
+ * is agent-forbidden, those documents would become unreachable — move any
+ * non-reserved markdown file at the `.gameaistudio/` root into `docs/`,
+ * where future turns are told to keep them.
+ */
+export async function migrateLegacyAgentDocs(rootPath: string): Promise<string[]> {
+  const studioDir = path.join(rootPath, ".gameaistudio");
+  let entries;
+  try {
+    entries = await readdir(studioDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const candidates = entries.filter(
+    (entry) =>
+      entry.isFile() &&
+      entry.name.toLowerCase().endsWith(".md") &&
+      !RESERVED_STUDIO_MARKDOWN.has(entry.name.toLowerCase()) &&
+      !entry.name.toLowerCase().startsWith("chat-export-")
+  );
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const docsDir = path.join(rootPath, "docs");
+  await mkdir(docsDir, { recursive: true });
+  const moved: string[] = [];
+  for (const entry of candidates) {
+    const source = path.join(studioDir, entry.name);
+    let target = path.join(docsDir, entry.name);
+    if (await pathExists(target)) {
+      const stem = entry.name.replace(/\.md$/i, "");
+      target = path.join(docsDir, `${stem}-migrated.md`);
+      if (await pathExists(target)) continue;
+    }
+    try {
+      await rename(source, target);
+      moved.push(`docs/${path.basename(target)}`);
+    } catch (error) {
+      getProjectLogger(rootPath).warn("project", "迁移协作文档失败", {
+        file: entry.name,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  if (moved.length > 0) {
+    getProjectLogger(rootPath).info("project", "已将协作文档从 .gameaistudio 迁移到 docs/", { moved });
+  }
+  return moved;
+}
+
 export class ProjectService {
+  /** Projects whose legacy `.gameaistudio/*.md` docs were already migrated this session. */
+  private readonly docsMigrated = new Set<string>();
+
+  /**
+   * Per-project chat history, persisted INSIDE the project at
+   * `.gameaistudio/chat-history.json` — the chat travels with the project
+   * (copy/move/restore all keep it). The in-memory cache is the single
+   * mutation point so concurrent appends never lose writes; the file is the
+   * durable copy. Legacy messages from the global studio-state.json are
+   * migrated on first load.
+   */
+  private readonly chatCache = new Map<string, AgentMessage[]>();
+
   constructor(
     private readonly paths: StudioPaths,
     private readonly store: StudioStore
   ) {}
+
+  private chatHistoryPath(rootPath: string): string {
+    return path.join(rootPath, ".gameaistudio", "chat-history.json");
+  }
+
+  private async loadChat(project: StudioProject): Promise<AgentMessage[]> {
+    const cached = this.chatCache.get(project.id);
+    if (cached) return cached;
+
+    let messages: AgentMessage[] | undefined;
+    try {
+      const raw = await readFile(this.chatHistoryPath(project.rootPath), "utf8");
+      const parsed = JSON.parse(raw) as { messages?: AgentMessage[] };
+      if (Array.isArray(parsed.messages)) {
+        messages = parsed.messages;
+      }
+    } catch {
+      // No project-local history yet — migrate from the legacy global store.
+    }
+    if (!messages) {
+      messages = await this.store.listMessages(project.id);
+      if (messages.length > 0) {
+        await this.saveChat(project, messages);
+        getProjectLogger(project.rootPath).info("chat", "聊天记录已迁移到项目目录", {
+          projectId: project.id,
+          migrated: messages.length
+        });
+      }
+    }
+    this.chatCache.set(project.id, messages);
+    return messages;
+  }
+
+  private async saveChat(project: StudioProject, messages: AgentMessage[]): Promise<void> {
+    const filePath = this.chatHistoryPath(project.rootPath);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, JSON.stringify({ version: 1, messages }, null, 2), "utf8");
+  }
 
   async createProject(input: CreateProjectInput): Promise<ProjectDetails> {
     const id = createProjectId();
@@ -100,7 +208,8 @@ export class ProjectService {
     await this.store.upsertProject(project);
 
     const introMessages = this.createIntroMessages(project);
-    await this.store.appendMessages(introMessages);
+    this.chatCache.set(project.id, introMessages);
+    await this.saveChat(project, introMessages);
 
     getProjectLogger(rootPath).info("project", "创建项目", {
       project: project.name,
@@ -141,7 +250,7 @@ export class ProjectService {
     const project = await this.requireProject(projectId);
     return {
       ...project,
-      messages: await this.store.listMessages(projectId),
+      messages: [...(await this.loadChat(project))],
       runs: await this.store.listRuns(projectId)
     };
   }
@@ -150,6 +259,10 @@ export class ProjectService {
     const project = await this.store.getProject(projectId);
     if (!project) {
       throw new Error(`Project not found: ${projectId}`);
+    }
+    if (!this.docsMigrated.has(project.id)) {
+      this.docsMigrated.add(project.id);
+      await migrateLegacyAgentDocs(project.rootPath).catch(() => []);
     }
     return project;
   }
@@ -172,36 +285,51 @@ export class ProjectService {
       rootPath: project.rootPath,
     });
     await rm(project.rootPath, { recursive: true, force: true });
+    this.chatCache.delete(projectId);
     await this.store.deleteProject(projectId);
     return project;
   }
 
   async appendMessages(projectId: string, messages: AgentMessage[]): Promise<AgentMessage[]> {
-    await this.requireProject(projectId);
-    await this.store.appendMessages(messages);
-    return this.store.listMessages(projectId);
+    const project = await this.requireProject(projectId);
+    const list = await this.loadChat(project);
+    list.push(...messages);
+    await this.saveChat(project, list);
+    return [...list];
   }
 
   async deleteMessage(projectId: string, messageId: string): Promise<AgentMessage[]> {
     const project = await this.requireProject(projectId);
-    const deleted = await this.store.deleteMessage(projectId, messageId);
+    const list = await this.loadChat(project);
+    const index = list.findIndex((message) => message.id === messageId);
+    const deleted = index >= 0;
+    if (deleted) {
+      list.splice(index, 1);
+      await this.saveChat(project, list);
+    }
     getProjectLogger(project.rootPath).info("chat", "删除单条聊天消息", {
       projectId,
       messageId,
       deleted
     });
-    return this.store.listMessages(projectId);
+    return [...list];
   }
 
   async clearMessages(projectId: string, agentId?: string): Promise<AgentMessage[]> {
     const project = await this.requireProject(projectId);
-    const removed = await this.store.clearMessages(projectId, agentId);
+    const list = await this.loadChat(project);
+    const kept = agentId === undefined ? [] : list.filter((message) => message.agentId !== agentId);
+    const removed = list.length - kept.length;
+    if (removed > 0) {
+      this.chatCache.set(project.id, kept);
+      await this.saveChat(project, kept);
+    }
     getProjectLogger(project.rootPath).info("chat", "清空聊天会话", {
       projectId,
       agentId: agentId ?? "(all)",
       removed
     });
-    return this.store.listMessages(projectId);
+    return [...(this.chatCache.get(project.id) ?? kept)];
   }
 
   /**
@@ -211,7 +339,7 @@ export class ProjectService {
    */
   async exportChatHistory(projectId: string): Promise<ExportChatResult> {
     const project = await this.requireProject(projectId);
-    const messages = await this.store.listMessages(projectId);
+    const messages = await this.loadChat(project);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const exportPath = path.join(project.rootPath, ".gameaistudio", `chat-export-${stamp}.md`);
 
@@ -290,6 +418,7 @@ export class ProjectService {
         "- Prefer small playable increments over broad rewrites.",
         "- Maintain Web export compatibility.",
         "- Read `.gameaistudio/agent-context.md` when GameAIStudio prepares an Agent turn.",
+        "- Write collaboration documents (plans, design specs, QA reports) into `docs/`, never into `.gameaistudio/`.",
         "- Record major design decisions in this file when useful."
       ].join("\n")
     );
@@ -312,8 +441,8 @@ export class ProjectService {
         "",
         "Useful project-local files:",
         "- GAMEAISTUDIO.md",
-        "- .gameaistudio/project.json",
-        "- .gameaistudio/agent-journal.md"
+        "- .gameaistudio/agent-journal.md",
+        "- docs/ (collaboration documents: plans, design specs, QA reports)"
       ].join("\n")
     );
     await writeUtf8BomFile(

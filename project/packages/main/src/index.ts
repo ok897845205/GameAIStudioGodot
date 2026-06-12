@@ -6,6 +6,8 @@ import { AgentService } from "./services/agent-service";
 import { AssetLibraryService } from "./services/asset-library-service";
 import { ImageGenerationService } from "./services/image-generation-service";
 import { MediaSettingsService } from "./services/media-settings-service";
+import { AudioSettingsService } from "./services/audio-settings-service";
+import { AudioGenerationService } from "./services/audio-generation-service";
 import { AutoPreviewService } from "./services/auto-preview-service";
 import { CliService } from "./services/cli-service";
 import { EnvironmentService } from "./services/environment-service";
@@ -240,8 +242,11 @@ app.whenReady().then(async () => {
   await mediaSettingsService.load();
   const assetLibraryService = new AssetLibraryService(projectService);
   const imageGenerationService = new ImageGenerationService(mediaSettingsService, projectService, assetLibraryService);
+  const audioSettingsService = new AudioSettingsService(paths.dataRoot);
+  await audioSettingsService.load();
+  const audioGenerationService = new AudioGenerationService(audioSettingsService, projectService, assetLibraryService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);
-  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService, projectLocks, imageGenerationService, assetLibraryService);
+  const workflowService = new WorkflowService(projectService, cliService, agentService, godotService, exportService, autoPreviewService, runService, gitService, projectLocks, imageGenerationService, assetLibraryService, audioGenerationService);
   const appUpdateService = new UpdateService({
     prepareQuitAndInstall: () => {
       allowQuitWithoutUpdateConfirm = true;
@@ -276,7 +281,9 @@ app.whenReady().then(async () => {
     intentRouter: new IntentRouterService(cliService),
     mediaSettingsService,
     imageGenerationService,
-    assetLibraryService
+    assetLibraryService,
+    audioSettingsService,
+    audioGenerationService
   });
 
   log.info("app", "服务装配完成，IPC 已注册");

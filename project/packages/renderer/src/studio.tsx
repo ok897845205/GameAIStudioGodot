@@ -592,6 +592,11 @@ export function StudioApp() {
     if (!ensureUpdateAllowsWork()) return;
     setProjectPending(project.id, "workflow");
     try {
+      // Audio is opt-in via the 音频 服务设置 switch; image asset pipeline is on by default.
+      const withAudioPipeline = await window.studio
+        .getAudioSettings()
+        .then((settings) => settings.autoGenerateInWorkflow)
+        .catch(() => false);
       const result = await window.studio.runStudioWorkflow({
         projectId: project.id,
         message,
@@ -602,6 +607,7 @@ export function StudioApp() {
         autoStartPreview: true,
         withQualityLoop: true,
         withAssetPipeline: true,
+        withAudioPipeline,
       });
       // Land the result only if the user is still looking at this project —
       // never yank them back from another project they switched to.

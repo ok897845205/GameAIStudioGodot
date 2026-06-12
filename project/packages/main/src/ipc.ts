@@ -1,6 +1,6 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
-import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteGeneratedAssetInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GenerateImageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SaveMediaModelInput, SaveMediaProviderInput, SelectDirectoryInput, SetGeneratedAssetSlotInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteGeneratedAssetInput, DeleteGeneratedAudioInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GenerateAudioInput, GenerateImageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SaveAudioProviderInput, SaveMediaModelInput, SaveMediaProviderInput, SelectDirectoryInput, SetGeneratedAssetSlotInput, SetGeneratedAudioSlotInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -29,6 +29,8 @@ import { StudioSettingsService } from "./services/studio-settings-service";
 import type { AssetLibraryService } from "./services/asset-library-service";
 import type { ImageGenerationService } from "./services/image-generation-service";
 import type { MediaSettingsService } from "./services/media-settings-service";
+import type { AudioSettingsService } from "./services/audio-settings-service";
+import type { AudioGenerationService } from "./services/audio-generation-service";
 
 interface IpcDependencies {
   paths: StudioPaths;
@@ -53,6 +55,8 @@ interface IpcDependencies {
   mediaSettingsService: MediaSettingsService;
   imageGenerationService: ImageGenerationService;
   assetLibraryService: AssetLibraryService;
+  audioSettingsService: AudioSettingsService;
+  audioGenerationService: AudioGenerationService;
 }
 
 type IpcHandler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>;
@@ -228,7 +232,8 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     projectService: deps.projectService,
     workflowService: deps.workflowService,
     runAgentTurn: (input) => runAgentTurnWithOptionalPreview(deps, input),
-    discoverTools: () => deps.cliService.discover()
+    discoverTools: () => deps.cliService.discover(),
+    audioAutoGenerate: () => deps.audioSettingsService.isAutoGenerateEnabled()
   });
   handle("agents:dispatch", async (_event, input: DispatchChatInput) => {
     const result = await dispatchService.dispatch(input);
@@ -257,6 +262,16 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   handle("media:list-assets", async (_event, projectId: string) => deps.assetLibraryService.listAssets(projectId));
   handle("media:delete-asset", async (_event, input: DeleteGeneratedAssetInput) => deps.assetLibraryService.deleteAsset(input));
   handle("media:set-asset-slot", async (_event, input: SetGeneratedAssetSlotInput) => deps.assetLibraryService.setSlot(input));
+
+  handle("audio:get-settings", async () => deps.audioSettingsService.getSettings());
+  handle("audio:save-provider", async (_event, input: SaveAudioProviderInput) => deps.audioSettingsService.saveProvider(input));
+  handle("audio:delete-provider", async (_event, providerId: string) => deps.audioSettingsService.deleteProvider(providerId));
+  handle("audio:set-auto-generate", async (_event, enabled: boolean) => deps.audioSettingsService.setAutoGenerate(enabled));
+  handle("audio:test-provider", async (_event, providerId: string) => deps.audioGenerationService.testProvider(providerId));
+  handle("audio:generate", async (_event, input: GenerateAudioInput) => deps.audioGenerationService.generateAudio(input));
+  handle("audio:list", async (_event, projectId: string) => deps.assetLibraryService.listAudio(projectId));
+  handle("audio:delete", async (_event, input: DeleteGeneratedAudioInput) => deps.assetLibraryService.deleteAudio(input));
+  handle("audio:set-slot", async (_event, input: SetGeneratedAudioSlotInput) => deps.assetLibraryService.setAudioSlot(input));
 
   handle("system:open-path", async (_event, targetPath: string) => {
     await openSystemPath(targetPath, (nextPath) => shell.openPath(nextPath));

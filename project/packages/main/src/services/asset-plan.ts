@@ -122,7 +122,7 @@ export function parseAssetPlan(content: string): AssetPlanItem[] {
   return [];
 }
 
-function extractJsonSpans(text: string): string[] {
+export function extractJsonSpans(text: string): string[] {
   const spans: string[] = [];
   const trimmed = text.trim();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {

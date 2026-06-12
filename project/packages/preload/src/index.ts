@@ -5,9 +5,11 @@ import type {
   CliToolId,
   CreateProjectInput,
   DeleteGeneratedAssetInput,
+  DeleteGeneratedAudioInput,
   DeleteProjectMessageInput,
   DispatchChatInput,
   EnvironmentToolId,
+  GenerateAudioInput,
   GenerateImageInput,
   GitCommitInput,
   GitRestoreInput,
@@ -15,10 +17,12 @@ import type {
   PreviewEvent,
   RunAgentTurnInput,
   RunStudioWorkflowInput,
+  SaveAudioProviderInput,
   SaveMediaModelInput,
   SaveMediaProviderInput,
   SelectDirectoryInput,
   SetGeneratedAssetSlotInput,
+  SetGeneratedAudioSlotInput,
   StudioApi,
   StudioRunEvent,
   UpdateEvent,
@@ -96,7 +100,16 @@ const api: StudioApi = {
   generateImage: (input: GenerateImageInput) => ipcRenderer.invoke("media:generate-image", input),
   listGeneratedAssets: (projectId: string) => ipcRenderer.invoke("media:list-assets", projectId),
   deleteGeneratedAsset: (input: DeleteGeneratedAssetInput) => ipcRenderer.invoke("media:delete-asset", input),
-  setGeneratedAssetSlot: (input: SetGeneratedAssetSlotInput) => ipcRenderer.invoke("media:set-asset-slot", input)
+  setGeneratedAssetSlot: (input: SetGeneratedAssetSlotInput) => ipcRenderer.invoke("media:set-asset-slot", input),
+  getAudioSettings: () => ipcRenderer.invoke("audio:get-settings"),
+  saveAudioProvider: (input: SaveAudioProviderInput) => ipcRenderer.invoke("audio:save-provider", input),
+  deleteAudioProvider: (providerId: string) => ipcRenderer.invoke("audio:delete-provider", providerId),
+  setAudioAutoGenerate: (enabled: boolean) => ipcRenderer.invoke("audio:set-auto-generate", enabled),
+  testAudioProvider: (providerId: string) => ipcRenderer.invoke("audio:test-provider", providerId),
+  generateAudio: (input: GenerateAudioInput) => ipcRenderer.invoke("audio:generate", input),
+  listGeneratedAudio: (projectId: string) => ipcRenderer.invoke("audio:list", projectId),
+  deleteGeneratedAudio: (input: DeleteGeneratedAudioInput) => ipcRenderer.invoke("audio:delete", input),
+  setGeneratedAudioSlot: (input: SetGeneratedAudioSlotInput) => ipcRenderer.invoke("audio:set-slot", input)
 };
 
 contextBridge.exposeInMainWorld("studio", api);

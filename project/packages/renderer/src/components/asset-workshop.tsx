@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   Library,
   Loader2,
+  Music,
   Palette,
   Plus,
   RefreshCw,
@@ -12,6 +13,7 @@ import {
   Sparkles,
   Trash2
 } from "lucide-react";
+import { AudioGeneratePanel, AudioLibrarySection, AudioSettingsSection } from "./audio-workshop";
 import type {
   GeneratedAssetAspect,
   GeneratedAssetPurpose,
@@ -26,7 +28,7 @@ import { GENERATED_ASSET_PURPOSE_LABELS } from "@gameaistudio/shared";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 
-type WorkshopTab = "generate" | "library" | "settings";
+type WorkshopTab = "generate" | "audio" | "library" | "settings";
 
 const PURPOSE_OPTIONS = Object.entries(GENERATED_ASSET_PURPOSE_LABELS) as Array<[GeneratedAssetPurpose, string]>;
 
@@ -491,9 +493,10 @@ export function AssetWorkshopView({
           {project ? `当前项目：${project.name}` : "未选择项目 — 生成功能需要先选择项目"}
         </span>
         <div className="flex items-center gap-1">
-          {tabButton("generate", <Sparkles className="size-3.5" />, "生成")}
-          {tabButton("library", <Library className="size-3.5" />, "素材库")}
+          {tabButton("generate", <ImageIcon className="size-3.5" />, "图片")}
+          {tabButton("audio", <Music className="size-3.5" />, "音频")}
           {tabButton("settings", <Settings2 className="size-3.5" />, "服务设置")}
+          {tabButton("library", <Library className="size-3.5" />, "素材库")}
         </div>
       </div>
 
@@ -644,39 +647,44 @@ export function AssetWorkshopView({
         </div>
       )}
 
+      {/* ── 音频 ── */}
+      {tab === "audio" && <AudioGeneratePanel project={project} onNotice={setNotice} />}
+
       {/* ── 素材库 ── */}
       {tab === "library" && (
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-sm font-medium">已生成 {assets.length} 个素材</span>
-            <Button variant="ghost" size="icon" title="刷新" onClick={() => void refreshLibrary()}>
-              {libraryLoading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              槽位（如 player.main）让 Agent 知道每张图的游戏角色；res:// 路径可直接用于场景。
-            </span>
-          </div>
-          {assets.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Library className="size-8" />
-              {project ? "还没有生成过素材。" : "请先选择一个项目。"}
+        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
+          <section>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-sm font-medium">图片素材 {assets.length}</span>
+              <Button variant="ghost" size="icon" title="刷新" onClick={() => void refreshLibrary()}>
+                {libraryLoading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                槽位（如 player.main）让 Agent 知道每张图的游戏角色；res:// 路径可直接用于场景。
+              </span>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
-              {assets.map((asset) => (
-                <AssetCard
-                  key={asset.id}
-                  asset={asset}
-                  thumb={thumbs[asset.id]}
-                  slotDraft={slotDrafts[asset.id] ?? ""}
-                  onSlotDraft={(value) => setSlotDrafts((current) => ({ ...current, [asset.id]: value }))}
-                  onSlotCommit={() => void commitSlot(asset)}
-                  onCopy={() => void copyResPath(asset)}
-                  onDelete={() => void deleteAsset(asset)}
-                />
-              ))}
-            </div>
-          )}
+            {assets.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+                {project ? "还没有生成过图片素材。" : "请先选择一个项目。"}
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
+                {assets.map((asset) => (
+                  <AssetCard
+                    key={asset.id}
+                    asset={asset}
+                    thumb={thumbs[asset.id]}
+                    slotDraft={slotDrafts[asset.id] ?? ""}
+                    onSlotDraft={(value) => setSlotDrafts((current) => ({ ...current, [asset.id]: value }))}
+                    onSlotCommit={() => void commitSlot(asset)}
+                    onCopy={() => void copyResPath(asset)}
+                    onDelete={() => void deleteAsset(asset)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+          <AudioLibrarySection project={project} onNotice={setNotice} />
         </div>
       )}
 
@@ -937,6 +945,8 @@ export function AssetWorkshopView({
               ))}
             </div>
           </section>
+
+          <AudioSettingsSection onNotice={setNotice} />
         </div>
       )}
 

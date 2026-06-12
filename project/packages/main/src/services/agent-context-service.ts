@@ -2,7 +2,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_PROFILES, CLI_TOOL_LABELS, type AgentMessage, type PreviewStatus, type ProjectDetails } from "@gameaistudio/shared";
 import { readAgentJournalTail } from "./agent-journal-service";
-import { buildAssetContextLines, readGeneratedAssetRecords } from "./asset-library-service";
+import { buildAssetContextLines, buildAudioContextLines, readGeneratedAssetRecords, readGeneratedAudioRecords } from "./asset-library-service";
 import { writeUtf8BomFile } from "./text-file-encoding";
 
 export interface AgentContextFile {
@@ -42,6 +42,8 @@ interface BuildMarkdownInput {
   lastError?: string;
   /** AI-generated asset manifest lines (role/slot/prompt per asset). */
   generatedAssets?: string[];
+  /** AI-generated audio manifest lines (kind/slot/duration per clip). */
+  generatedAudio?: string[];
 }
 
 const DEFAULT_MAX_FILES = 140;
@@ -297,6 +299,16 @@ export function buildAgentContextMarkdown(input: BuildMarkdownInput): string {
           ""
         ]
       : []),
+    ...(input.generatedAudio && input.generatedAudio.length > 0
+      ? [
+          "## Generated Audio Library (AI 音频库)",
+          "",
+          "These audio clips were AI-generated inside this project. Wire them via AudioStreamPlayer / AudioStreamPlayer2D using the res:// paths; the slot names the game role (e.g. bgm.main, sfx.jump). Set loop on streams marked 可循环.",
+          "",
+          ...input.generatedAudio,
+          ""
+        ]
+      : []),
     "## Recent Agent Journal",
     "",
     agentJournal,
@@ -326,6 +338,7 @@ export class AgentContextService {
     const recentMessages = summarizeRecentMessages(input.project.messages, this.options.maxMessages ?? DEFAULT_MAX_MESSAGES);
     const agentJournal = await readAgentJournalTail(input.project.rootPath);
     const generatedAssets = buildAssetContextLines(await readGeneratedAssetRecords(input.project.rootPath));
+    const generatedAudio = buildAudioContextLines(await readGeneratedAudioRecords(input.project.rootPath));
     // Lives in docs/ (the agent-readable area), not in the agent-forbidden
     // `.gameaistudio/`; gitignored there because it regenerates every turn.
     const contextPath = path.join(input.project.rootPath, "docs", "agent-context.md");
@@ -341,7 +354,8 @@ export class AgentContextService {
       ownMessages: summarizeAgentOwnMessages(input.project.messages, input.agentId),
       knownIssues: latestQaFindings(input.project.messages),
       lastError: latestAgentError(input.project.messages, input.agentId),
-      generatedAssets
+      generatedAssets,
+      generatedAudio
     });
 
     await mkdir(path.dirname(contextPath), { recursive: true });

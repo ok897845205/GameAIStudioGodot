@@ -47,6 +47,8 @@ export interface DispatchServiceDeps {
   /** The chat-turn path with preview/git orchestration (injected from IPC wiring). */
   runAgentTurn: (input: RunAgentTurnInput) => Promise<RunAgentTurnResult>;
   discoverTools: () => Promise<CliTool[]>;
+  /** Whether the team workflow should auto-generate audio (the 音频 设置 switch). */
+  audioAutoGenerate?: () => Promise<boolean>;
 }
 
 export class DispatchService {
@@ -76,6 +78,8 @@ export class DispatchService {
 
     if (decision.route === "team") {
       const small = decision.scope === "small";
+      // 大任务带美术角色才规划音频，且需用户在「音频 → 服务设置」开启自动生成。
+      const withAudioPipeline = !small && Boolean(await this.deps.audioAutoGenerate?.());
       const workflow: RunStudioWorkflowResult = await this.deps.workflowService.run({
         projectId: project.id,
         message: input.message,
@@ -89,6 +93,7 @@ export class DispatchService {
         withQualityLoop: true,
         // 大任务带美术角色，启用素材闭环（无生图配置时该阶段自动跳过）。
         withAssetPipeline: !small,
+        withAudioPipeline,
       });
       return { decision, kind: "workflow", workflow };
     }

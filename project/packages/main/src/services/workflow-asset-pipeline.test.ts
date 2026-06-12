@@ -6,10 +6,13 @@ import {
   type AgentMessage,
   type CliTool,
   type CliToolId,
+  type GenerateAudioInput,
   type GenerateImageInput,
   type GeneratedAssetRecord,
+  type GeneratedAudioRecord,
   type ProjectDetails,
   type SetGeneratedAssetSlotInput,
+  type SetGeneratedAudioSlotInput,
   type StudioProject
 } from "@gameaistudio/shared";
 import { describe, expect, it } from "vitest";
@@ -264,5 +267,159 @@ describe("workflow asset pipeline", () => {
     expect(result.run.steps[2]?.status).toBe("completed");
     expect(turnMessages.programmer).toContain("占位");
     expect(result.run.status).toBe("failed");
+  });
+});
+
+const ARTIST_AUDIO_REPLY = [
+  "音频方向：芯片音乐。",
+  "```json",
+  JSON.stringify({
+    audio: [
+      { key: "bgm_level", kind: "bgm", description: "loopable chiptune", durationSeconds: 40, loopable: true },
+      { key: "sfx_shoot", kind: "sfx", description: "retro laser", durationSeconds: 1 }
+    ]
+  }),
+  "```"
+].join("\n");
+
+function audioRecord(id: string): GeneratedAudioRecord {
+  return {
+    id,
+    projectId: "project_1",
+    kind: "bgm",
+    fileName: `${id}.mp3`,
+    projectRelativePath: `assets/audio/bgm/${id}.mp3`,
+    resPath: `res://assets/audio/bgm/${id}.mp3`,
+    prompt: "theme",
+    modelId: "ace",
+    format: "mp3",
+    mimeType: "audio/mpeg",
+    sizeBytes: 10,
+    createdAt: new Date().toISOString()
+  };
+}
+
+describe("buildWorkflowPhases (audio)", () => {
+  it("inserts asset then audio generation after the artist when both are enabled", () => {
+    const agents = [agent("artist"), agent("programmer")];
+    const phases = buildWorkflowPhases(agents, {
+      projectId: "p",
+      message: "m",
+      autoExportWeb: false,
+      autoPackageWebZip: false,
+      autoStartPreview: false,
+      withAssetPipeline: true,
+      withAudioPipeline: true
+    });
+    expect(phases.map((phase) => (phase.kind === "agent" ? phase.agent.id : phase.kind))).toEqual([
+      "artist",
+      "asset-generation",
+      "audio-generation",
+      "programmer"
+    ]);
+  });
+});
+
+describe("workflow audio pipeline", () => {
+  it("generates planned audio, binds slots and hands res:// paths to the programmer", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "gameaistudio-audio-flow-"));
+    const store = new StudioStore(path.join(dir, "state.json"));
+    const runService = new RunService(store);
+    const project = createProject(path.join(dir, "project"));
+    await store.upsertProject(project);
+    const messages: AgentMessage[] = [];
+    const turnMessages: Record<string, string> = {};
+    const audioSlotCalls: SetGeneratedAudioSlotInput[] = [];
+    const generateCalls: GenerateAudioInput[] = [];
+
+    const projectService = {
+      requireProject: async () => project,
+      getProject: async (): Promise<ProjectDetails> => ({ ...project, messages, runs: await runService.listRuns(project.id) }),
+      appendMessages: async (_projectId: string, next: AgentMessage[]) => {
+        messages.push(...next);
+        return messages;
+      }
+    };
+    const agentService = {
+      runTurn: async (input: { agentId: string; cliToolId: CliToolId; message: string }) => {
+        turnMessages[input.agentId] = input.message;
+        const message: AgentMessage = {
+          id: `msg_${input.agentId}`,
+          projectId: project.id,
+          agentId: input.agentId,
+          role: "agent",
+          content: input.agentId === "artist" ? ARTIST_AUDIO_REPLY : "done",
+          createdAt: new Date().toISOString(),
+          cliToolId: input.cliToolId,
+          exitCode: 0,
+          fileChanges: input.agentId === "programmer" ? [{ path: "main.tscn", kind: "modified" as const, isText: true }] : []
+        };
+        return { messages: [message], project: { ...project, messages: [message], runs: [] }, runs: [] };
+      }
+    };
+    const audioGenerationService = {
+      generateAudio: async (input: GenerateAudioInput) => {
+        generateCalls.push(input);
+        if (input.kind === "sfx") {
+          return { ok: false, audios: [], attempts: [], error: "上游超时" };
+        }
+        return { ok: true, audios: [audioRecord("bgm1")], attempts: [] };
+      }
+    };
+    const assetLibraryService = {
+      setSlot: async () => ({ projectId: project.id, assets: [] }),
+      setAudioSlot: async (input: SetGeneratedAudioSlotInput) => {
+        audioSlotCalls.push(input);
+        return { projectId: input.projectId, audios: [] };
+      }
+    };
+
+    try {
+      const workflow = new WorkflowService(
+        projectService as never,
+        { discover: async () => [tool("codex")] } as never,
+        agentService as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        runService,
+        undefined,
+        undefined,
+        undefined,
+        assetLibraryService as never,
+        audioGenerationService as never
+      );
+      const result = await workflow.run({
+        projectId: project.id,
+        message: "做一个像素风横版射击游戏",
+        agentIds: ["artist", "programmer"],
+        autoExportWeb: false,
+        autoPackageWebZip: false,
+        autoStartPreview: false,
+        withAudioPipeline: true
+      });
+
+      expect(result.run.steps.map((step) => step.title)).toEqual([
+        "1. 美术：视觉风格、素材清单、占位资产",
+        "AI 音频生成",
+        "2. 程序：Godot 脚本、场景、导出"
+      ]);
+      const audioStep = result.run.steps[1]!;
+      expect(audioStep.status).toBe("completed");
+      expect(audioStep.output).toContain("res://assets/audio/bgm/bgm1.mp3");
+      expect(audioStep.output).toContain("sfx_shoot 生成失败");
+
+      // Artist got the audio plan instruction; generation mirrored the plan.
+      expect(turnMessages.artist).toContain("音频计划");
+      expect(generateCalls.map((call) => call.kind)).toEqual(["bgm", "sfx"]);
+      expect(audioSlotCalls).toEqual([{ projectId: "project_1", audioId: "bgm1", slot: "bgm_level" }]);
+      // Programmer round received the audio note with res:// paths.
+      expect(turnMessages.programmer).toContain("bgm_level（bgm）→ res://assets/audio/bgm/bgm1.mp3");
+      expect(turnMessages.programmer).toContain("AudioStreamPlayer");
+      expect(messages.some((message) => message.kind === "workflow" && message.content.includes("AI 音频生成完成"))).toBe(true);
+      expect(result.run.status).toBe("completed");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

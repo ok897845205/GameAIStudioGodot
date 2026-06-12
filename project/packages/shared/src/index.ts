@@ -369,6 +369,13 @@ export interface RunStudioWorkflowInput {
    * guidance when generation is unavailable or fails.
    */
   withAssetPipeline?: boolean;
+  /**
+   * 音频闭环: the artist Agent also outputs an audio plan; the system
+   * generates a BGM + core SFX, saves them into assets/audio with slots and
+   * hands the res:// paths to the programmer/QA rounds. No-op when audio
+   * generation isn't configured or its auto-generate switch is off.
+   */
+  withAudioPipeline?: boolean;
 }
 
 /** One asset the artist Agent asks the system to generate (素材规划 item). */
@@ -950,6 +957,158 @@ export interface SetGeneratedAssetSlotInput {
   slot: string;
 }
 
+// ── AI 音频工坊（文生音频 / 音频素材库）──────────────────────────────────────
+
+/**
+ * Wire protocol spoken to an upstream audio-generation endpoint. Pluggable so
+ * the app can later route to several vendors:
+ * - `ace-music-v1` — ACE Music (acemusic.ai), OpenRouter-style synchronous
+ *   POST {base}/chat/completions with the audio output modality.
+ * Future: `elevenlabs-sfx-v1`, `mubert-music-v1`, `stable-audio-local`.
+ */
+export type AudioProtocolId = "ace-music-v1";
+
+export const AUDIO_PROTOCOL_IDS: AudioProtocolId[] = ["ace-music-v1"];
+
+/** The three generation modes; each maps to an asset subfolder and slot prefix. */
+export type AudioKind = "bgm" | "sfx" | "ambience";
+
+export const AUDIO_KIND_LABELS: Record<AudioKind, string> = {
+  bgm: "背景音乐",
+  sfx: "音效",
+  ambience: "环境音"
+};
+
+/** One configured audio provider (ACE Music etc.). Key never leaves main. */
+export interface AudioProviderConfig {
+  id: string;
+  name: string;
+  protocol: AudioProtocolId;
+  baseUrl: string;
+  /** Upstream model id, e.g. "acemusic/acestep-v1.5-turbo". */
+  modelId: string;
+  /** Preferred container; ACE currently returns mp3 regardless. */
+  outputFormat: string;
+  order: number;
+  enabled: boolean;
+  apiKey?: string;
+}
+
+export interface AudioProviderView {
+  id: string;
+  name: string;
+  protocol: AudioProtocolId;
+  baseUrl: string;
+  modelId: string;
+  outputFormat: string;
+  order: number;
+  enabled: boolean;
+  hasApiKey: boolean;
+}
+
+export interface SaveAudioProviderInput {
+  id?: string;
+  name: string;
+  protocol: AudioProtocolId;
+  baseUrl: string;
+  modelId: string;
+  outputFormat: string;
+  order: number;
+  enabled: boolean;
+  /** Omitted = keep stored key; "" = clear. */
+  apiKey?: string;
+}
+
+export interface AudioGenerationSettings {
+  providers: AudioProviderView[];
+  /** Generate a BGM + core SFX automatically during the team workflow. */
+  autoGenerateInWorkflow: boolean;
+}
+
+export interface GeneratedAudioRecord {
+  id: string;
+  projectId: string;
+  kind: AudioKind;
+  fileName: string;
+  /** Project-relative POSIX path, e.g. "assets/audio/bgm/main_theme.mp3". */
+  projectRelativePath: string;
+  /** Godot resource path, e.g. "res://assets/audio/bgm/main_theme.mp3". */
+  resPath: string;
+  prompt: string;
+  finalPrompt?: string;
+  /** Game role, e.g. "bgm.main", "sfx.jump", "ambience.forest". */
+  slot?: string;
+  durationSeconds?: number;
+  loopable?: boolean;
+  providerId?: string;
+  providerName?: string;
+  upstreamModelId?: string;
+  modelId: string;
+  format: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Usage/licence note captured for traceability. */
+  license?: string;
+  createdAt: string;
+}
+
+export interface GenerateAudioInput {
+  projectId: string;
+  kind: AudioKind;
+  prompt: string;
+  /** Common */
+  durationSeconds?: number;
+  loopable?: boolean;
+  /** BGM */
+  style?: string;
+  mood?: string;
+  bpm?: number;
+  instrumental?: boolean;
+  hasLyrics?: boolean;
+  /** SFX */
+  intensity?: "soft" | "medium" | "strong";
+  dry?: boolean;
+  /** Ambience */
+  ambienceKeywords?: string;
+  seamlessLoop?: boolean;
+  /** Provider id; omitted = first enabled audio provider. */
+  providerId?: string;
+  /** Used as the slot when generated from the manual panel with intent. */
+  slot?: string;
+}
+
+export interface GenerateAudioResult {
+  ok: boolean;
+  audios: GeneratedAudioRecord[];
+  attempts: GenerationAttempt[];
+  error?: string;
+}
+
+export interface ProjectAudioLibrary {
+  projectId: string;
+  audios: GeneratedAudioRecord[];
+}
+
+export interface DeleteGeneratedAudioInput {
+  projectId: string;
+  audioId: string;
+}
+
+export interface SetGeneratedAudioSlotInput {
+  projectId: string;
+  audioId: string;
+  slot: string;
+}
+
+/** One audio asset the artist/AI asks the system to generate (AudioPlan item). */
+export interface AudioPlanItem {
+  key: string;
+  kind: AudioKind;
+  description: string;
+  durationSeconds?: number;
+  loopable?: boolean;
+}
+
 export interface StudioApi {
   bootstrap(): Promise<StudioBootstrap>;
   getUpdateStatus(): Promise<UpdateInfo>;
@@ -1005,6 +1164,15 @@ export interface StudioApi {
   listGeneratedAssets(projectId: string): Promise<ProjectAssetLibrary>;
   deleteGeneratedAsset(input: DeleteGeneratedAssetInput): Promise<ProjectAssetLibrary>;
   setGeneratedAssetSlot(input: SetGeneratedAssetSlotInput): Promise<ProjectAssetLibrary>;
+  getAudioSettings(): Promise<AudioGenerationSettings>;
+  saveAudioProvider(input: SaveAudioProviderInput): Promise<AudioGenerationSettings>;
+  deleteAudioProvider(providerId: string): Promise<AudioGenerationSettings>;
+  setAudioAutoGenerate(enabled: boolean): Promise<AudioGenerationSettings>;
+  testAudioProvider(providerId: string): Promise<MediaProviderTestResult>;
+  generateAudio(input: GenerateAudioInput): Promise<GenerateAudioResult>;
+  listGeneratedAudio(projectId: string): Promise<ProjectAudioLibrary>;
+  deleteGeneratedAudio(input: DeleteGeneratedAudioInput): Promise<ProjectAudioLibrary>;
+  setGeneratedAudioSlot(input: SetGeneratedAudioSlotInput): Promise<ProjectAudioLibrary>;
 }
 
 export const AGENT_PROFILES: AgentProfile[] = [

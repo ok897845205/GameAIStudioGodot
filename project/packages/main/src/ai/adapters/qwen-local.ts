@@ -5,8 +5,8 @@ export const qwenLocalConfig: LocalCliConfig = {
   label: "Qwen Code",
   command: "qwen",
   versionArgs: ["--version"],
-  // Qwen Code is a Gemini CLI fork: piped stdin runs non-interactively and
-  // --yolo auto-approves tool actions.
+  // Qwen Code follows Gemini-style non-interactive CLI behavior: piped stdin
+  // runs a headless turn and --yolo auto-approves tool actions.
   promptArgs: ["--yolo"],
   installCommand: ["npm", "install", "-g", "@qwen-code/qwen-code"],
   installHint: "通过 npm 全局安装 Qwen Code，或把已安装的 qwen 加入 PATH。",

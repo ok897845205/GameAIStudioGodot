@@ -106,8 +106,8 @@ rl.on("line", (line) => {
       return;
     }
 
-    // Adapter-incompatibility shape: prompt fails before any output (e.g.
-    // claude-code-acp crashing on a fork's tool_use events).
+    // Adapter-incompatibility shape: prompt fails before any output, such as
+    // an ACP bridge rejecting an unexpected tool_use payload.
     if (mode === "prompt-error") {
       send({
         jsonrpc: "2.0",

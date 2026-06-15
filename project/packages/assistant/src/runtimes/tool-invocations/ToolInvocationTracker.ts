@@ -3,19 +3,16 @@ import type { ReadonlyJSONValue } from "../../stream/utils";
 import type { Tool, ToolModelContentPart } from "../../stream";
 
 /**
- * Minimal interface-faithful stub of upstream assistant-ui's
- * `ToolInvocationTracker`.
+ * Minimal internal `ToolInvocationTracker` implementation.
  *
- * The upstream tracker (~780 lines) drives the *client-side* tool-execution
- * pipeline (`streamCall` / `execute`, human-input interrupts, per-call status
- * tracking). GameAIStudio runs local CLI agents and never executes client-side
+ * Full client-side tool execution would handle `streamCall` / `execute`,
+ * human-input interrupts, and per-call status tracking. GameAIStudio runs
+ * local CLI agents and never executes client-side
  * tools, so it never sets `unstable_enableToolInvocations` — meaning the
  * external-store runtime constructs this tracker only on an opt-in that we do
- * not use. This stub preserves the exact public surface the runtime references
- * (constructor + setState/abort/resume/reset) so the ported
- * `ExternalStoreThreadRuntimeCore` stays byte-for-byte faithful and compiles,
- * while doing no work. If client-side tools are ever needed, replace this with
- * the full upstream port.
+ * not use. This implementation preserves the exact public surface the runtime
+ * references (constructor + setState/abort/resume/reset) while doing no work.
+ * If client-side tools are ever needed, this is the extension point.
  */
 
 export type ToolExecutionStatus =

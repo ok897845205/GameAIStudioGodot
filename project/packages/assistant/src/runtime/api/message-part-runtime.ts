@@ -67,7 +67,7 @@ export class MessagePartRuntimeImpl implements MessagePartRuntime {
 
     if (!this.messageApi)
       throw new Error(
-        "Message API is not available. This is likely a bug in assistant-ui.",
+        "Message API is not available. This is likely a bug in the assistant runtime.",
       );
     if (!this.threadApi) throw new Error("Thread API is not available");
 

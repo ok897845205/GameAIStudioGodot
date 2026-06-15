@@ -66,7 +66,7 @@ class ChatAttachmentAdapter {
 /**
  * Converts a GameAIStudio `AgentMessage` into the runtime's `ThreadMessageLike`.
  *
- * - `agent` role maps to `assistant` (assistant-ui's vocabulary).
+ * - `agent` role maps to `assistant` for the internal chat runtime.
  * - Content is the raw agent text; the runtime wraps it into a single text part.
  *   (File-change / image-attachment rendering is layered on later via custom
  *   parts — kept out of the core conversion so it stays a pure, testable map.)

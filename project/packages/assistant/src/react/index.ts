@@ -1,9 +1,7 @@
 "use client";
-// Lean React runtime bindings for GameAIStudio, built directly on the ported
-// runtime/api (AssistantRuntimeImpl / ThreadRuntime / MessageRuntime /
-// ComposerRuntime) + a minimal `useSubscribable`. This replaces upstream
-// assistant-ui's store framework + core/react + primitives (~24k lines) with a
-// thin layer tailored to our chat UI.
+// Lean React runtime bindings for GameAIStudio, built directly on the runtime
+// API (AssistantRuntimeImpl / ThreadRuntime / MessageRuntime / ComposerRuntime)
+// plus a minimal `useSubscribable` layer tailored to our chat UI.
 
 export { AssistantRuntimeProvider } from "./AssistantRuntimeProvider";
 export { MessageRuntimeProvider } from "./MessageRuntimeProvider";

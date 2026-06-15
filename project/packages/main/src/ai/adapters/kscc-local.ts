@@ -7,8 +7,8 @@ export const ksccLocalConfig: LocalCliConfig = {
   versionArgs: ["--version"],
   promptArgs: ["--print", "-", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
   outputFormat: "claude-stream-json",
-  // KSCC is a Claude Code fork: `--resume <id>` continues the same session,
-  // with the id parsed from the previous turn's stream-json output.
+  // KSCC supports Claude Code-compatible resume semantics: `--resume <id>`
+  // continues the same session, with the id parsed from the previous turn.
   resumeArgs: (sessionId) => ["--resume", sessionId],
   installCommand: ["npm", "i", "-g", "bun@1.3.14", "@seasun/kscc", "--registry=http://npmhub.ksyun.com"],
   installHint:

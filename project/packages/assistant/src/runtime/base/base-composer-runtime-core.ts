@@ -349,7 +349,7 @@ export abstract class BaseComposerRuntimeCore
       });
     } catch (subscriberError) {
       console.error(
-        "[assistant-ui] attachmentAddError subscriber threw:",
+        "[assistant-runtime] attachmentAddError subscriber threw:",
         subscriberError,
       );
     }

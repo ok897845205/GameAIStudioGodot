@@ -25,7 +25,7 @@ export type ToolResponseLike<TResult> = {
   /**
    * Explicit model-visible content to send back after the tool call.
    *
-   * When omitted, assistant-ui derives model output from `result` or a tool's
+   * When omitted, the assistant runtime derives model output from `result` or a tool's
    * {@link ToolModelOutputFunction}.
    */
   modelContent?: readonly ToolModelContentPart[] | undefined;

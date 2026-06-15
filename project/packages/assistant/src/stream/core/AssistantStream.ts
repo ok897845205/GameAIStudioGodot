@@ -1,7 +1,7 @@
 import type { AssistantStreamChunk } from "./AssistantStreamChunk";
 
 /**
- * Stream of assistant-ui protocol chunks.
+ * Stream of GameAIStudio assistant protocol chunks.
  *
  * `AssistantStream` is the normalized internal stream format used by
  * encoders, decoders, accumulators, and tool execution transforms.

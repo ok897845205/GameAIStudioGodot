@@ -19,7 +19,7 @@ const ACP_BROKEN_TTL_MS = 30 * 60 * 1000;
  * ACP agent executable is present on this machine, and fall back to the
  * proven one-shot headless invocation otherwise.
  *
- * Resilience over purity: user environments vary wildly (forks, adapter
+ * Resilience over purity: user environments vary wildly (CLI builds, adapter
  * version drift, exotic models). If an ACP turn fails before producing ANY
  * text, the same turn is automatically retried over the headless path, and
  * the ACP path is benched for a while so later turns don't keep paying for a

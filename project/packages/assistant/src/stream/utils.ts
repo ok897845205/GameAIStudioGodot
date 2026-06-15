@@ -1,6 +1,5 @@
 // Public `@gameaistudio/assistant/stream/utils` surface — JSON helpers and the
-// async-iterable stream adapter consumed by the runtime/store layers. The
-// AI-SDK transform-stream exports from upstream are intentionally omitted.
+// async-iterable stream adapter consumed by the runtime/store layers.
 export {
   parsePartialJsonObject,
   getPartialJsonObjectFieldState,

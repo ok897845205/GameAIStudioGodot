@@ -67,8 +67,8 @@ const ACP_UPGRADES: Partial<Record<CliToolId, Parameters<typeof createAcpAgentAd
     installHint:
       "安装 ACP 适配器以启用 Codex 的 ACP 模式：npm install -g @zed-industries/codex-acp（复用已有 codex 登录）。",
   },
-  // KSCC is a Claude Code fork — the same claude-code-acp adapter drives it
-  // via the CLAUDE_CODE_EXECUTABLE override (resolved to the kscc binary).
+  // KSCC exposes a Claude Code-compatible ACP surface, driven through the
+  // CLAUDE_CODE_EXECUTABLE override resolved to the kscc binary.
   kscc: {
     id: "kscc",
     label: "KSCC",

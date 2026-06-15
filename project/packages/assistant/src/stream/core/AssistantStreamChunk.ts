@@ -41,7 +41,7 @@ export type PartInit =
     };
 
 /**
- * Normalized assistant-ui streaming protocol chunk.
+ * Normalized GameAIStudio assistant streaming protocol chunk.
  *
  * `path` identifies the part or nested position the chunk belongs to. Encoders
  * may translate these chunks into provider-specific wire formats, while

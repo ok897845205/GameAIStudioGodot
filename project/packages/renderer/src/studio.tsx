@@ -79,6 +79,15 @@ type AgentCliToolIds = Partial<Record<string, CliToolId>>;
 
 // 美术先于程序：素材闭环（美术规划 → 自动生图 → 程序引用）依赖这个顺序。
 const DEFAULT_WORKFLOW_AGENT_IDS = ["producer", "designer", "artist", "programmer", "qa"];
+
+// 设置弹窗左侧分类导航（功能不变，仅把原本一长条拆成分类）。
+type SettingsTab = "directories" | "cli" | "env" | "update";
+const SETTINGS_NAV: { id: SettingsTab; label: string; icon: typeof FolderOpen }[] = [
+  { id: "directories", label: "目录与日志", icon: FolderOpen },
+  { id: "cli", label: "AI CLI", icon: Terminal },
+  { id: "env", label: "系统环境", icon: Hammer },
+  { id: "update", label: "软件更新", icon: Download },
+];
 /** Pseudo-agent id for the auto-dispatch chat mode (intent routing). */
 const AUTO_AGENT_ID = "auto";
 
@@ -273,6 +282,7 @@ export function StudioApp() {
   const [previewNotice, setPreviewNotice] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("directories");
   const [aboutOpen, setAboutOpen] = useState(false);
   const [form, setForm] = useState(initialForm);
   const [rightTab, setRightTab] = useState<RightTab>("build");
@@ -2444,11 +2454,30 @@ export function StudioApp() {
           setSettingsOpen(false);
         }}
         closable={!updateDialogLocked}
-        title={directorySetupRequired ? "首次配置 · 设置" : "设置 · 环境诊断"}
+        className="max-w-4xl"
+        title={directorySetupRequired ? "首次配置 · 设置" : "设置"}
         description={directorySetupRequired ? "请确认软件数据目录和游戏项目目录。热更新后会继续沿用这里的配置。" : undefined}
       >
-        <div className="space-y-5 text-sm">
-          {bootstrap && currentDirectorySettings && (
+        <div className="flex min-h-[56vh] gap-5 text-sm">
+          <nav className="w-40 shrink-0 space-y-0.5">
+            {SETTINGS_NAV.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setSettingsTab(item.id)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-medium transition-colors",
+                  settingsTab === item.id ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"
+                )}
+              >
+                <item.icon className="size-4 shrink-0" /> {item.label}
+                {item.id === "directories" && directorySetupRequired && (
+                  <span className="ml-auto size-1.5 rounded-full bg-amber-500" />
+                )}
+              </button>
+            ))}
+          </nav>
+          <div className="min-w-0 flex-1 space-y-5">
+          {settingsTab === "directories" && bootstrap && currentDirectorySettings && (
             <section>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 font-medium">
@@ -2563,6 +2592,7 @@ export function StudioApp() {
             </section>
           )}
 
+          {settingsTab === "update" && (
           <section>
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-medium">
@@ -2630,7 +2660,9 @@ export function StudioApp() {
               </Button>
             </div>
           </section>
+          )}
 
+          {settingsTab === "cli" && (
           <section>
             <div className="mb-2 flex items-center gap-2 font-medium">
               <Terminal className="size-4" /> 本地 AI CLI
@@ -2745,7 +2777,9 @@ export function StudioApp() {
             </div>
           </section>
 
-          {bootstrap?.environment && (
+          )}
+
+          {settingsTab === "env" && bootstrap?.environment && (
             <section>
               <div className="mb-2 font-medium">系统环境</div>
               <div className="space-y-1.5">
@@ -2785,7 +2819,7 @@ export function StudioApp() {
             </section>
           )}
 
-          {bootstrap && (
+          {settingsTab === "env" && bootstrap && (
             <section>
               <div className="mb-2 font-medium">Godot 运行时</div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
@@ -2805,14 +2839,17 @@ export function StudioApp() {
             </section>
           )}
 
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => loadBootstrap()}
-            disabled={isBusy}
-          >
-            <RefreshCw /> 重新检测环境
-          </Button>
+          {settingsTab === "env" && (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => loadBootstrap()}
+              disabled={isBusy}
+            >
+              <RefreshCw /> 重新检测环境
+            </Button>
+          )}
+          </div>
         </div>
       </Dialog>
 

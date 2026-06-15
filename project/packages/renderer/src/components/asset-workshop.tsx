@@ -477,9 +477,13 @@ export function AssetWorkshopView({
   const tabButton = (id: WorkshopTab, icon: ReactNode, label: string) => (
     <button
       onClick={() => setTab(id)}
+      aria-pressed={tab === id}
+      // Inline colors so the segmented control reads clearly as buttons
+      // regardless of how Tailwind compiles arbitrary tokens.
+      style={tab === id ? { backgroundColor: "#ffffff", color: "#2f6fdb" } : undefined}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-        tab === id ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"
+        "inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition-colors",
+        tab === id ? "shadow-sm ring-1 ring-black/10" : "text-muted-foreground hover:bg-background/70 hover:text-foreground"
       )}
     >
       {icon}
@@ -495,7 +499,7 @@ export function AssetWorkshopView({
       )}
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <Button variant="ghost" size="sm" onClick={onClose} title="返回工作台">
+        <Button variant="outline" size="sm" onClick={onClose} title="返回工作台">
           <ArrowLeft /> 返回
         </Button>
         <span className="inline-flex items-center gap-1.5 text-sm font-medium">
@@ -504,7 +508,8 @@ export function AssetWorkshopView({
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {project ? `当前项目：${project.name}` : "未选择项目 — 生成功能需要先选择项目"}
         </span>
-        <div className="flex items-center gap-1">
+        {/* Segmented control: grey track makes each tab read as a button. */}
+        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/60 p-1">
           {tabButton("generate", <ImageIcon className="size-3.5" />, "图片")}
           {tabButton("audio", <Music className="size-3.5" />, "音频")}
           {SHOW_SERVICE_SETTINGS && tabButton("settings", <Settings2 className="size-3.5" />, "服务设置")}

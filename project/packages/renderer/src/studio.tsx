@@ -1558,7 +1558,12 @@ export function StudioApp() {
                   setImageLabActive(false);
                 }}
                 title={`为「${selectedProject.name}」生成图片/音频素材，自动入库并交给 Agent 使用`}
-                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[#7c5cff] px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#6b4ce0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7c5cff] focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                // Inline colors so the button is always visible regardless of how
+                // Tailwind compiles arbitrary color values.
+                style={{ backgroundColor: "#7c5cff", color: "#ffffff" }}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-xs font-semibold shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#6b4ce0")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "#7c5cff")}
               >
                 <Sparkles className="size-4" />
                 AI 素材工坊

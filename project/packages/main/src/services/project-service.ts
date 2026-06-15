@@ -13,6 +13,7 @@ import {
 import { getAppLogger, getProjectLogger } from "./logger";
 import { createMessageId, createProjectDirectoryName, createProjectId } from "./naming";
 import { getTemplatePath, type StudioPaths } from "./resource-paths";
+import { removeProjectDir } from "./project-dir-cleanup";
 import { StudioStore } from "./store";
 import { writeUtf8BomFile } from "./text-file-encoding";
 
@@ -314,7 +315,7 @@ export class ProjectService {
       projectId,
       rootPath: project.rootPath,
     });
-    await rm(project.rootPath, { recursive: true, force: true });
+    await removeProjectDir(project.rootPath);
     this.chatCache.delete(projectId);
     await this.store.deleteProject(projectId);
     return project;

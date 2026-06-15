@@ -17,7 +17,7 @@ import { IntentRouterService } from "./services/intent-router";
 import { GodotRuntimeService } from "./services/godot-runtime-service";
 import { GodotService } from "./services/godot-service";
 import { PreviewServer } from "./services/preview-server";
-import { ProcessRegistry } from "./services/process-runner";
+import { ProcessRegistry, terminateAllLiveChildren } from "./services/process-runner";
 import { ProjectFileChangeService } from "./services/project-file-change-service";
 import { ProjectFilePreviewService } from "./services/project-file-preview-service";
 import { ProjectLockService } from "./services/project-lock";
@@ -316,9 +316,13 @@ app.on("before-quit", (event) => {
   quitCleanupStarted = true;
 
   const log = getAppLogger();
-  log.info("app", "应用退出，清理预览服务");
+  log.info("app", "应用退出，清理预览与子进程");
   void (async () => {
     try {
+      // Kill every spawned child (CLI/ACP agents, Godot editor/export) so none
+      // outlives the app holding a project directory locked (Windows EBUSY).
+      const killed = terminateAllLiveChildren();
+      if (killed > 0) log.info("app", "已终止残留子进程", { killed });
       await autoPreviewService?.stopAll();
       await previewServer?.stopAll();
       log.info("app", "退出清理完成");

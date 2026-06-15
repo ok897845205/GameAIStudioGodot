@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { buildProcessLaunch } from "../../services/process-runner";
+import { buildProcessLaunch, registerLiveChild, unregisterLiveChild } from "../../services/process-runner";
 
 /**
  * Minimal Agent Client Protocol (ACP) client.
@@ -87,6 +87,10 @@ export class AcpClient {
       windowsHide: true,
       windowsVerbatimArguments: launch.windowsVerbatimArguments,
     });
+    // Track for app-shutdown cleanup so a half-finished turn can't leave an
+    // orphan holding the project directory (cwd) locked.
+    registerLiveChild(this.child);
+    this.child.once("close", () => unregisterLiveChild(this.child));
     this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdin.on("error", () => undefined);

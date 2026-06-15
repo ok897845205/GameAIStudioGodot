@@ -5,7 +5,7 @@ import path from "node:path";
 import type { GodotOpenResult, GodotRunResult } from "@gameaistudio/shared";
 import { ProjectService } from "./project-service";
 import type { StudioPaths } from "./resource-paths";
-import { runProcess } from "./process-runner";
+import { registerLiveChild, runProcess } from "./process-runner";
 import { getProjectLogger } from "./logger";
 import { ensureWebExportTemplates, godotSpawnEnv, missingTemplatesMessage } from "./godot-export-templates";
 
@@ -80,6 +80,9 @@ export class GodotService {
         windowsHide: false,
         env: { ...process.env, ...godotSpawnEnv(this.paths.dataRoot) }
       });
+      // Track it: a detached editor (cwd = project dir) would otherwise keep
+      // running after the app closes and lock the project against deletion.
+      registerLiveChild(child);
       child.unref();
       log.info("godot", "Godot 编辑器已启动", {
         projectId: project.id,

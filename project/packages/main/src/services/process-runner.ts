@@ -1,5 +1,39 @@
 import { spawn } from "node:child_process";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
+
+/**
+ * Every live child process the app spawns (CLI/agent turns, ACP agents, the
+ * Godot editor/export) is registered here so a single call can terminate them
+ * all on app quit. Orphaned children keep the project directory locked on
+ * Windows (their cwd lives inside it / they hold open file handles), which
+ * later blocks deleting the project with EBUSY — so nothing may outlive the app.
+ */
+const liveChildren = new Set<ChildProcess>();
+
+export function registerLiveChild(child: ChildProcess): void {
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
+  child.once("close", () => liveChildren.delete(child));
+}
+
+export function unregisterLiveChild(child: ChildProcess): void {
+  liveChildren.delete(child);
+}
+
+/** Kill every still-running spawned child. Called during app shutdown. */
+export function terminateAllLiveChildren(): number {
+  let killed = 0;
+  for (const child of [...liveChildren]) {
+    try {
+      child.kill("SIGKILL");
+      killed += 1;
+    } catch {
+      // already gone
+    }
+    liveChildren.delete(child);
+  }
+  return killed;
+}
 
 interface ProcessLaunch {
   command: string;
@@ -127,6 +161,7 @@ export function runProcess(command: string, args: string[], options: ProcessRunO
     if (options.processKey && options.registry) {
       options.registry.register(options.processKey, child);
     }
+    registerLiveChild(child);
     child.stdin.on("error", () => undefined);
     child.stdin.end(options.stdin ?? "");
     const timeout = options.timeoutMs

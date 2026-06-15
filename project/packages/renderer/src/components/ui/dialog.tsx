@@ -6,6 +6,7 @@ export function Dialog({
   open,
   onClose,
   closable = true,
+  dismissable = true,
   title,
   description,
   children,
@@ -14,6 +15,12 @@ export function Dialog({
   open: boolean;
   onClose: () => void;
   closable?: boolean;
+  /**
+   * Whether clicking the backdrop or pressing Esc dismisses the dialog.
+   * Set false for forms with user input (e.g. New Game) so an accidental
+   * outside-click can't discard what was typed; the × button still closes.
+   */
+  dismissable?: boolean;
   title?: ReactNode;
   description?: ReactNode;
   children: ReactNode;
@@ -22,18 +29,18 @@ export function Dialog({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && closable) onClose();
+      if (e.key === "Escape" && closable && dismissable) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closable, open, onClose]);
+  }, [closable, dismissable, open, onClose]);
 
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-      onClick={closable ? onClose : undefined}
+      onClick={closable && dismissable ? onClose : undefined}
       role="dialog"
       aria-modal="true"
     >

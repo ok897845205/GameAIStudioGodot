@@ -2215,6 +2215,7 @@ export function StudioApp() {
       <Dialog
         open={createOpen}
         onClose={() => setCreateOpen(false)}
+        dismissable={false}
         title="新建游戏"
         description="用一句话描述你的游戏想法，AI 团队会立即开始工作。"
       >

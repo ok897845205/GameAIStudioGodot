@@ -181,6 +181,42 @@ describe("ImageGenerationService", () => {
     expect(result.assets[0]?.providerName).toBe("backup");
   });
 
+  it("regenerates an asset in place — same path & slot, new bytes", async () => {
+    const provider = await addProvider("openai", "openai-images-v1", "sk-1");
+    await settings.saveModel({
+      id: "gpt-image-2",
+      kind: "image",
+      displayName: "GPT Image 2",
+      order: 0,
+      enabled: true,
+      bindings: [{ providerId: provider.id, upstreamModelId: "gpt-image-1", order: 1, enabled: true }]
+    });
+    let call = 0;
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { data: [{ b64_json: Buffer.from(`bytes-${call++}`).toString("base64") }] })
+    );
+    const service = new ImageGenerationService(settings, projectService, assetLibrary, { fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const first = await service.generateImage({ projectId: "project_1", prompt: "a cat", purpose: "character", count: 1 });
+    expect(first.ok).toBe(true);
+    const original = first.assets[0]!;
+    await assetLibrary.setSlot({ projectId: "project_1", assetId: original.id, slot: "player.main" });
+    const originalBytes = await readFile(path.join(projectRoot, original.projectRelativePath));
+
+    const regen = await service.regenerateImage({ projectId: "project_1", assetId: original.id });
+    expect(regen.ok).toBe(true);
+    const updated = regen.assets[0]!;
+    // Same id, same path, slot preserved.
+    expect(updated.id).toBe(original.id);
+    expect(updated.projectRelativePath).toBe(original.projectRelativePath);
+    expect(updated.slot).toBe("player.main");
+    // New bytes written to the same file.
+    const newBytes = await readFile(path.join(projectRoot, updated.projectRelativePath));
+    expect(newBytes.equals(originalBytes)).toBe(false);
+    // Library still has exactly one asset (replaced, not appended).
+    expect((await assetLibrary.listAssets("project_1")).assets).toHaveLength(1);
+  });
+
   it("rejects an oversized image download advertised by content-length", async () => {
     const provider = await addProvider("openai", "openai-images-v1", "sk-1");
     await settings.saveModel({

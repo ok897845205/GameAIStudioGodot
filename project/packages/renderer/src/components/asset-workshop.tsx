@@ -149,6 +149,7 @@ export function AssetWorkshopView({
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [slotDrafts, setSlotDrafts] = useState<Record<string, string>>({});
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [regeneratingId, setRegeneratingId] = useState<string>();
 
   // ── settings tab ──────────────────────────────────────────────────────
   const [settings, setSettings] = useState<MediaGenerationSettings>();
@@ -314,6 +315,31 @@ export function AssetWorkshopView({
       setSlotDrafts(Object.fromEntries(library.assets.map((entry) => [entry.id, entry.slot ?? ""])));
     } catch (error) {
       setNotice(errText(error));
+    }
+  };
+
+  const regenerateAsset = async (asset: GeneratedAssetRecord) => {
+    if (!project) return;
+    setRegeneratingId(asset.id);
+    try {
+      const result = await window.studio.regenerateImage({ projectId: project.id, assetId: asset.id });
+      if (!result.ok) {
+        setNotice(`重新生成失败：${result.error}`);
+        return;
+      }
+      // Same res:// path & slot; just refresh the thumbnail and library.
+      setThumbs((current) => {
+        const next = { ...current };
+        delete next[asset.id];
+        return next;
+      });
+      for (const updated of result.assets) void loadThumb(updated);
+      await refreshLibrary();
+      setNotice(`已重新生成「${asset.prompt.slice(0, 16)}」，路径和槽位不变。`);
+    } catch (error) {
+      setNotice(errText(error));
+    } finally {
+      setRegeneratingId(undefined);
     }
   };
 
@@ -648,6 +674,8 @@ export function AssetWorkshopView({
                         onSlotCommit={() => void commitSlot(asset)}
                         onCopy={() => void copyResPath(asset)}
                         onDelete={() => void deleteAsset(asset)}
+                        onRegenerate={() => void regenerateAsset(asset)}
+                        regenerating={regeneratingId === asset.id}
                       />
                     ))}
                   </div>
@@ -696,6 +724,8 @@ export function AssetWorkshopView({
                     onSlotCommit={() => void commitSlot(asset)}
                     onCopy={() => void copyResPath(asset)}
                     onDelete={() => void deleteAsset(asset)}
+                    onRegenerate={() => void regenerateAsset(asset)}
+                    regenerating={regeneratingId === asset.id}
                   />
                 ))}
               </div>
@@ -994,7 +1024,9 @@ function AssetCard({
   onSlotDraft,
   onSlotCommit,
   onCopy,
-  onDelete
+  onDelete,
+  onRegenerate,
+  regenerating
 }: {
   asset: GeneratedAssetRecord;
   thumb?: string;
@@ -1003,6 +1035,8 @@ function AssetCard({
   onSlotCommit: () => void;
   onCopy: () => void;
   onDelete: () => void;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
 }) {
   return (
     <div className="flex flex-col overflow-hidden rounded-md border border-border">
@@ -1041,6 +1075,18 @@ function AssetCard({
           <Button size="sm" variant="outline" className="h-7 flex-1" title={asset.resPath} onClick={onCopy}>
             <Copy /> res:// 路径
           </Button>
+          {onRegenerate && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              title="重新生成（替换原图，保持 res:// 路径和槽位不变，已接入的代码不受影响）"
+              disabled={regenerating}
+              onClick={onRegenerate}
+            >
+              {regenerating ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            </Button>
+          )}
           <Button size="sm" variant="ghost" className="h-7" title="删除素材" onClick={onDelete}>
             <Trash2 />
           </Button>

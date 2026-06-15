@@ -461,6 +461,27 @@ function AudioCard({
     }
   };
 
+  const [regenerating, setRegenerating] = useState(false);
+  const regenerate = async () => {
+    setRegenerating(true);
+    try {
+      const result = await window.studio.regenerateAudio({ projectId, audioId: audio.id });
+      if (!result.ok) {
+        onNotice(`重新生成失败：${result.error}`);
+        return;
+      }
+      setDataUrl(undefined); // reload the new clip at the same path
+      const preview = await window.studio.readProjectFile({ projectId, relativePath: audio.projectRelativePath });
+      if (preview.dataUrl) setDataUrl(preview.dataUrl);
+      onChanged?.();
+      onNotice("已重新生成音频，路径和槽位不变。");
+    } catch (error) {
+      onNotice(errText(error));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   return (
     <div className="rounded-md border border-border p-2.5">
       <div className="flex items-center gap-2">
@@ -518,6 +539,18 @@ function AudioCard({
             >
               <Copy />
             </Button>
+            {withControls && (
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                title="重新生成（替换音频，保持 res:// 路径和槽位不变）"
+                disabled={regenerating}
+                onClick={() => void regenerate()}
+              >
+                {regenerating ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              </Button>
+            )}
             {withControls && (
               <Button variant="ghost" size="icon" className="size-7" title="删除" onClick={() => void remove()}>
                 <Trash2 />

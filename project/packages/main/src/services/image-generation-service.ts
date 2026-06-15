@@ -6,10 +6,12 @@ import type {
   MediaModelConfig,
   MediaProtocolId,
   MediaProviderConfig,
-  MediaProviderTestResult
+  MediaProviderTestResult,
+  RegenerateAssetInput
 } from "@gameaistudio/shared";
 import { getAppLogger } from "./logger";
 import type { AssetLibraryService } from "./asset-library-service";
+import { removeSolidBackground } from "./image-background";
 import {
   buildImageRequest,
   buildProbeRequest,
@@ -86,10 +88,84 @@ export class ImageGenerationService {
       };
     }
 
+    const produced = await this.produceImages(model, prompt, input, count);
+    if (!produced.ok || !produced.provider) {
+      return { ok: false, modelId: model.id, assets: [], attempts: produced.attempts, error: produced.error };
+    }
+    const assets = await this.assetLibrary.saveGeneratedImages({
+      project,
+      images: produced.images,
+      meta: {
+        prompt,
+        finalPrompt: this.buildFinalPrompt(prompt, input, produced.provider.protocol),
+        purpose: input.purpose,
+        style: input.style,
+        aspectRatio: input.aspectRatio,
+        transparentBackground: input.transparentBackground,
+        modelId: model.id,
+        providerId: produced.provider.id,
+        providerName: produced.provider.name,
+        upstreamModelId: produced.upstreamModelId
+      }
+    });
+    return { ok: true, modelId: model.id, assets, attempts: produced.attempts };
+  }
+
+  /**
+   * Regenerate one library asset IN PLACE: same res:// path, same slot, new
+   * image bytes (re-runs the original prompt/model). Keeps any code the
+   * programmer Agent already wired to that path valid — the "保持全自动 + 事后
+   * 替换" flow: let the pipeline auto-bind, then swap images you don't like.
+   */
+  async regenerateImage(input: RegenerateAssetInput): Promise<GenerateImageResult> {
+    const record = await this.assetLibrary.getAsset(input.projectId, input.assetId);
+    if (!record) {
+      return { ok: false, modelId: "", assets: [], attempts: [], error: "素材不存在或已删除。" };
+    }
+    const model = await this.resolveModel(record.modelId);
+    if (!model) {
+      return { ok: false, modelId: record.modelId, assets: [], attempts: [], error: "该素材使用的图片模型已不可用，请到服务设置检查。" };
+    }
+    const synthInput: GenerateImageInput = {
+      projectId: input.projectId,
+      prompt: record.prompt,
+      purpose: record.purpose,
+      style: record.style,
+      aspectRatio: record.aspectRatio,
+      transparentBackground: record.transparentBackground,
+      modelId: model.id,
+      count: 1
+    };
+    const produced = await this.produceImages(model, record.prompt, synthInput, 1);
+    if (!produced.ok || !produced.images[0]) {
+      return { ok: false, modelId: model.id, assets: [], attempts: produced.attempts, error: produced.error };
+    }
+    const updated = await this.assetLibrary.replaceAsset({
+      projectId: input.projectId,
+      assetId: input.assetId,
+      bytes: produced.images[0].bytes
+    });
+    return { ok: true, modelId: model.id, assets: [updated], attempts: produced.attempts };
+  }
+
+  /** Runs the model's bindings in order, returning the first success's images (no save). */
+  private async produceImages(
+    model: MediaModelConfig,
+    prompt: string,
+    input: GenerateImageInput,
+    count: number
+  ): Promise<{
+    ok: boolean;
+    images: ResolvedImage[];
+    attempts: GenerationAttempt[];
+    provider?: MediaProviderConfig;
+    upstreamModelId?: string;
+    error?: string;
+  }> {
     const attempts: GenerationAttempt[] = [];
     const bindings = model.bindings.filter((binding) => binding.enabled);
     if (bindings.length === 0) {
-      return { ok: false, modelId: model.id, assets: [], attempts, error: `模型 ${model.displayName} 没有启用任何 API 绑定。` };
+      return { ok: false, images: [], attempts, error: `模型 ${model.displayName} 没有启用任何 API 绑定。` };
     }
 
     for (const binding of bindings) {
@@ -117,60 +193,29 @@ export class ImageGenerationService {
         });
         continue;
       }
-
       try {
-        const images = await this.generateWithProvider(provider, binding.upstreamModelId, prompt, input, count);
-        attempts.push({
-          providerId: provider.id,
-          providerName: provider.name,
-          upstreamModelId: binding.upstreamModelId,
-          ok: true,
-          durationMs: Date.now() - started
-        });
-        const assets = await this.assetLibrary.saveGeneratedImages({
-          project,
-          images,
-          meta: {
-            prompt,
-            finalPrompt: this.buildFinalPrompt(prompt, input, provider.protocol),
-            purpose: input.purpose,
-            style: input.style,
-            aspectRatio: input.aspectRatio,
-            transparentBackground: input.transparentBackground,
-            modelId: model.id,
-            providerId: provider.id,
-            providerName: provider.name,
-            upstreamModelId: binding.upstreamModelId
-          }
-        });
-        return { ok: true, modelId: model.id, assets, attempts };
+        let images = await this.generateWithProvider(provider, binding.upstreamModelId, prompt, input, count);
+        // Most models can't emit real alpha — strip the solid fill ourselves so
+        // sprites drop into scenes as cutouts, not opaque squares. Backgrounds
+        // (transparentBackground=false) are never touched.
+        if (input.transparentBackground) {
+          images = images.map((image) =>
+            image.mimeType.toLowerCase().includes("png")
+              ? { ...image, bytes: removeSolidBackground(image.bytes) }
+              : image
+          );
+        }
+        attempts.push({ providerId: provider.id, providerName: provider.name, upstreamModelId: binding.upstreamModelId, ok: true, durationMs: Date.now() - started });
+        return { ok: true, images, attempts, provider, upstreamModelId: binding.upstreamModelId };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        attempts.push({
-          providerId: provider.id,
-          providerName: provider.name,
-          upstreamModelId: binding.upstreamModelId,
-          ok: false,
-          durationMs: Date.now() - started,
-          error: message
-        });
-        getAppLogger().warn("media", "生图绑定失败，尝试下一个", {
-          modelId: model.id,
-          providerName: provider.name,
-          upstreamModelId: binding.upstreamModelId,
-          error: message
-        });
+        attempts.push({ providerId: provider.id, providerName: provider.name, upstreamModelId: binding.upstreamModelId, ok: false, durationMs: Date.now() - started, error: message });
+        getAppLogger().warn("media", "生图绑定失败，尝试下一个", { modelId: model.id, providerName: provider.name, upstreamModelId: binding.upstreamModelId, error: message });
       }
     }
 
     const failures = attempts.filter((attempt) => !attempt.ok);
-    return {
-      ok: false,
-      modelId: model.id,
-      assets: [],
-      attempts,
-      error: `全部 ${failures.length} 个 API 绑定都失败了。最后错误：${failures[failures.length - 1]?.error ?? "未知"}`
-    };
+    return { ok: false, images: [], attempts, error: `全部 ${failures.length} 个 API 绑定都失败了。最后错误：${failures[failures.length - 1]?.error ?? "未知"}` };
   }
 
   /**
@@ -240,10 +285,13 @@ export class ImageGenerationService {
     if (input.style) {
       parts.push(`Art style: ${input.style}.`);
     }
-    // Only the openai-images protocol can request a real alpha channel; for
-    // the others the best we can do is ask for a clean solid background.
+    // Only the openai-images protocol can request a real alpha channel. For the
+    // others we ask for a single flat pure-white background with NO shadow and
+    // NO gradient, so our post-processing flood-fill can cleanly knock it out.
     if (input.transparentBackground && protocol !== "openai-images-v1") {
-      parts.push("Isolated on a plain solid background, easy to cut out.");
+      parts.push(
+        "The subject must be fully inside the frame, centered, not cropped. Place it on a single flat pure white (#FFFFFF) background. No drop shadow, no ground shadow, no gradient, no scenery, no extra props — only the subject on flat white."
+      );
     }
     return parts.join(" ");
   }

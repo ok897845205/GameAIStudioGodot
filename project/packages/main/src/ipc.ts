@@ -1,6 +1,6 @@
 import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
-import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteGeneratedAssetInput, DeleteGeneratedAudioInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GenerateAudioInput, GenerateImageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RunAgentTurnInput, RunStudioWorkflowInput, SaveAudioProviderInput, SaveMediaModelInput, SaveMediaProviderInput, SelectDirectoryInput, SetGeneratedAssetSlotInput, SetGeneratedAudioSlotInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
+import type { ClearProjectMessagesInput, CliToolId, CreateProjectInput, DeleteGeneratedAssetInput, DeleteGeneratedAudioInput, DeleteProjectMessageInput, DispatchChatInput, EnvironmentToolId, GenerateAudioInput, GenerateImageInput, GitCommitInput, GitRestoreInput, ProjectFilePreviewInput, RegenerateAssetInput, RegenerateAudioInput, RunAgentTurnInput, RunStudioWorkflowInput, SaveAudioProviderInput, SaveMediaModelInput, SaveMediaProviderInput, SelectDirectoryInput, SetGeneratedAssetSlotInput, SetGeneratedAudioSlotInput, StudioProject, UpdateProjectAgentClisInput, UpdateStudioDirectorySettingsInput } from "@gameaistudio/shared";
 import { getAppLogger, type LogMeta } from "./services/logger";
 import { AGENT_PROFILES } from "@gameaistudio/shared";
 import { AgentService } from "./services/agent-service";
@@ -259,6 +259,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   handle("media:delete-model", async (_event, modelId: string) => deps.mediaSettingsService.deleteModel(modelId));
   handle("media:test-provider", async (_event, providerId: string) => deps.imageGenerationService.testProvider(providerId));
   handle("media:generate-image", async (_event, input: GenerateImageInput) => deps.imageGenerationService.generateImage(input));
+  handle("media:regenerate-image", async (_event, input: RegenerateAssetInput) => deps.imageGenerationService.regenerateImage(input));
   handle("media:list-assets", async (_event, projectId: string) => deps.assetLibraryService.listAssets(projectId));
   handle("media:delete-asset", async (_event, input: DeleteGeneratedAssetInput) => deps.assetLibraryService.deleteAsset(input));
   handle("media:set-asset-slot", async (_event, input: SetGeneratedAssetSlotInput) => deps.assetLibraryService.setSlot(input));
@@ -269,6 +270,7 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   handle("audio:set-auto-generate", async (_event, enabled: boolean) => deps.audioSettingsService.setAutoGenerate(enabled));
   handle("audio:test-provider", async (_event, providerId: string) => deps.audioGenerationService.testProvider(providerId));
   handle("audio:generate", async (_event, input: GenerateAudioInput) => deps.audioGenerationService.generateAudio(input));
+  handle("audio:regenerate", async (_event, input: RegenerateAudioInput) => deps.audioGenerationService.regenerateAudio(input));
   handle("audio:list", async (_event, projectId: string) => deps.assetLibraryService.listAudio(projectId));
   handle("audio:delete", async (_event, input: DeleteGeneratedAudioInput) => deps.assetLibraryService.deleteAudio(input));
   handle("audio:set-slot", async (_event, input: SetGeneratedAudioSlotInput) => deps.assetLibraryService.setAudioSlot(input));

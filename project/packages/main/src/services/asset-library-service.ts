@@ -283,6 +283,39 @@ export class AssetLibraryService {
     return { projectId, assets: [...manifest.assets].reverse() };
   }
 
+  async getAsset(projectId: string, assetId: string): Promise<GeneratedAssetRecord | undefined> {
+    const project = await this.projectService.requireProject(projectId);
+    return (await readManifest(project.rootPath)).assets.find((asset) => asset.id === assetId);
+  }
+
+  /**
+   * Overwrites an existing asset's file with new bytes, keeping its id, res://
+   * path and slot. Drops the Godot `.import` sidecar so the engine re-imports
+   * the replaced texture on the next export/preview.
+   */
+  async replaceAsset(input: { projectId: string; assetId: string; bytes: Buffer }): Promise<GeneratedAssetRecord> {
+    const project = await this.projectService.requireProject(input.projectId);
+    return this.runExclusive(project.rootPath, async () => {
+      const manifest = await readManifest(project.rootPath);
+      const record = manifest.assets.find((asset) => asset.id === input.assetId);
+      if (!record) {
+        throw new Error(`素材不存在：${input.assetId}`);
+      }
+      const absolutePath = path.join(project.rootPath, record.projectRelativePath);
+      await writeFile(absolutePath, input.bytes);
+      await rm(`${absolutePath}.import`, { force: true });
+      record.sizeBytes = input.bytes.length;
+      record.createdAt = new Date().toISOString();
+      await writeManifest(project.rootPath, manifest);
+      getProjectLogger(project.rootPath).info("media", "替换生成素材（保持路径与槽位）", {
+        assetId: record.id,
+        path: record.projectRelativePath,
+        slot: record.slot ?? "(none)"
+      });
+      return record;
+    });
+  }
+
   async deleteAsset(input: DeleteGeneratedAssetInput): Promise<ProjectAssetLibrary> {
     const project = await this.projectService.requireProject(input.projectId);
     return this.runExclusive(project.rootPath, async () => {
@@ -383,6 +416,36 @@ export class AssetLibraryService {
     const project = await this.projectService.requireProject(projectId);
     const manifest = await readManifest(project.rootPath);
     return { projectId, audios: [...manifest.audio].reverse() };
+  }
+
+  async getAudio(projectId: string, audioId: string): Promise<GeneratedAudioRecord | undefined> {
+    const project = await this.projectService.requireProject(projectId);
+    return (await readManifest(project.rootPath)).audio.find((audio) => audio.id === audioId);
+  }
+
+  /** Overwrites an existing audio clip's file, keeping its id, res:// path and slot. */
+  async replaceAudio(input: { projectId: string; audioId: string; bytes: Buffer; durationSeconds?: number }): Promise<GeneratedAudioRecord> {
+    const project = await this.projectService.requireProject(input.projectId);
+    return this.runExclusive(project.rootPath, async () => {
+      const manifest = await readManifest(project.rootPath);
+      const record = manifest.audio.find((audio) => audio.id === input.audioId);
+      if (!record) {
+        throw new Error(`音频不存在：${input.audioId}`);
+      }
+      const absolutePath = path.join(project.rootPath, record.projectRelativePath);
+      await writeFile(absolutePath, input.bytes);
+      await rm(`${absolutePath}.import`, { force: true });
+      record.sizeBytes = input.bytes.length;
+      if (input.durationSeconds) record.durationSeconds = input.durationSeconds;
+      record.createdAt = new Date().toISOString();
+      await writeManifest(project.rootPath, manifest);
+      getProjectLogger(project.rootPath).info("audio", "替换生成音频（保持路径与槽位）", {
+        audioId: record.id,
+        path: record.projectRelativePath,
+        slot: record.slot ?? "(none)"
+      });
+      return record;
+    });
   }
 
   async deleteAudio(input: DeleteGeneratedAudioInput): Promise<ProjectAudioLibrary> {

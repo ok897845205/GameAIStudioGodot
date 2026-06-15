@@ -4,7 +4,8 @@ import type {
   GenerateAudioResult,
   GeneratedAudioRecord,
   GenerationAttempt,
-  MediaProviderTestResult
+  MediaProviderTestResult,
+  RegenerateAudioInput
 } from "@gameaistudio/shared";
 import { getAppLogger } from "./logger";
 import type { AssetLibraryService } from "./asset-library-service";
@@ -52,7 +53,7 @@ export class AudioGenerationService {
   constructor(
     private readonly settingsService: AudioSettingsService,
     private readonly projectService: ProjectService,
-    private readonly assetLibrary: Pick<AssetLibraryService, "saveGeneratedAudio">,
+    private readonly assetLibrary: Pick<AssetLibraryService, "saveGeneratedAudio" | "getAudio" | "replaceAudio">,
     options: AudioGenerationServiceOptions = {}
   ) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -146,6 +147,45 @@ export class AudioGenerationService {
       attempts,
       error: `全部 ${failures.length} 个音频服务商都失败了。最后错误：${failures[failures.length - 1]?.error ?? "未知"}`
     };
+  }
+
+  /**
+   * Regenerate one library clip IN PLACE: same res:// path & slot, new audio
+   * (re-runs the original prompt/kind). Keeps any AudioStreamPlayer the
+   * programmer Agent already wired to that path valid.
+   */
+  async regenerateAudio(input: RegenerateAudioInput): Promise<GenerateAudioResult> {
+    const record = await this.assetLibrary.getAudio(input.projectId, input.audioId);
+    if (!record) {
+      return { ok: false, audios: [], attempts: [], error: "音频不存在或已删除。" };
+    }
+    const providers = await this.settingsService.listEnabledProviders();
+    const attempts: GenerationAttempt[] = [];
+    const synthInput: GenerateAudioInput = {
+      projectId: input.projectId,
+      kind: record.kind,
+      prompt: record.prompt,
+      durationSeconds: record.durationSeconds,
+      loopable: record.loopable
+    };
+    for (const provider of providers) {
+      const started = Date.now();
+      if (!provider.apiKey) {
+        attempts.push({ providerId: provider.id, providerName: provider.name, upstreamModelId: provider.modelId, ok: false, durationMs: 0, error: "未配置 API Key" });
+        continue;
+      }
+      try {
+        const audio = await this.generateWithProvider(provider, synthInput);
+        attempts.push({ providerId: provider.id, providerName: provider.name, upstreamModelId: provider.modelId, ok: true, durationMs: Date.now() - started });
+        const updated = await this.assetLibrary.replaceAudio({ projectId: input.projectId, audioId: input.audioId, bytes: audio.bytes });
+        return { ok: true, audios: [updated], attempts };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        attempts.push({ providerId: provider.id, providerName: provider.name, upstreamModelId: provider.modelId, ok: false, durationMs: Date.now() - started, error: message });
+      }
+    }
+    const failures = attempts.filter((attempt) => !attempt.ok);
+    return { ok: false, audios: [], attempts, error: `重新生成失败：${failures[failures.length - 1]?.error ?? "没有可用的音频服务商"}` };
   }
 
   private async generateWithProvider(provider: AudioProviderConfig, input: GenerateAudioInput): Promise<ResolvedAudio> {

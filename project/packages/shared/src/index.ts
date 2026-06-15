@@ -950,6 +950,12 @@ export interface DeleteGeneratedAssetInput {
   assetId: string;
 }
 
+/** Regenerate an image in place — same res:// path & slot, new bytes. */
+export interface RegenerateAssetInput {
+  projectId: string;
+  assetId: string;
+}
+
 export interface SetGeneratedAssetSlotInput {
   projectId: string;
   assetId: string;
@@ -1094,6 +1100,12 @@ export interface DeleteGeneratedAudioInput {
   audioId: string;
 }
 
+/** Regenerate an audio clip in place — same res:// path & slot, new bytes. */
+export interface RegenerateAudioInput {
+  projectId: string;
+  audioId: string;
+}
+
 export interface SetGeneratedAudioSlotInput {
   projectId: string;
   audioId: string;
@@ -1161,6 +1173,7 @@ export interface StudioApi {
   deleteMediaModel(modelId: string): Promise<MediaGenerationSettings>;
   testMediaProvider(providerId: string): Promise<MediaProviderTestResult>;
   generateImage(input: GenerateImageInput): Promise<GenerateImageResult>;
+  regenerateImage(input: RegenerateAssetInput): Promise<GenerateImageResult>;
   listGeneratedAssets(projectId: string): Promise<ProjectAssetLibrary>;
   deleteGeneratedAsset(input: DeleteGeneratedAssetInput): Promise<ProjectAssetLibrary>;
   setGeneratedAssetSlot(input: SetGeneratedAssetSlotInput): Promise<ProjectAssetLibrary>;
@@ -1170,6 +1183,7 @@ export interface StudioApi {
   setAudioAutoGenerate(enabled: boolean): Promise<AudioGenerationSettings>;
   testAudioProvider(providerId: string): Promise<MediaProviderTestResult>;
   generateAudio(input: GenerateAudioInput): Promise<GenerateAudioResult>;
+  regenerateAudio(input: RegenerateAudioInput): Promise<GenerateAudioResult>;
   listGeneratedAudio(projectId: string): Promise<ProjectAudioLibrary>;
   deleteGeneratedAudio(input: DeleteGeneratedAudioInput): Promise<ProjectAudioLibrary>;
   setGeneratedAudioSlot(input: SetGeneratedAudioSlotInput): Promise<ProjectAudioLibrary>;

@@ -31,11 +31,13 @@
   },
   "dependencies": {
     "@uiw/react-textarea-code-editor": "^3.1.1",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.0",
     "@types/node": "^22.15.21",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.0",

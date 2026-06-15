@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,6 +15,42 @@ describe("MediaSettingsService", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("seeds built-in providers/models on first load and stores keys encrypted at rest", async () => {
+    const seeded = new MediaSettingsService(dir, { seedBuiltins: true });
+    const settings = await seeded.getSettings();
+    // Built-in image providers + models present.
+    expect(settings.providers.map((provider) => provider.name)).toContain("OpenRouter");
+    expect(settings.models.map((model) => model.id)).toContain("nano-banana");
+    // In-memory keys are usable (decrypted).
+    const provider = await seeded.getProviderWithSecret(settings.providers.find((p) => p.name === "OpenRouter")!.id);
+    expect(provider?.apiKey?.startsWith("sk-or-")).toBe(true);
+    // On disk the key is ciphertext, not plaintext.
+    const raw = await readFile(path.join(dir, "media-generation.json"), "utf8");
+    expect(raw).toContain("enc:v1:");
+    expect(raw).not.toContain("sk-or-v1-");
+  });
+
+  it("does not seed built-ins when the option is off (tests / clean slate)", async () => {
+    const settings = await service.getSettings();
+    expect(settings.providers).toHaveLength(0);
+    expect(settings.models).toHaveLength(0);
+  });
+
+  it("encrypts a user-saved key at rest and decrypts it back in memory", async () => {
+    const created = (await service.saveProvider({
+      name: "P",
+      protocol: "openai-images-v1",
+      baseUrl: "https://example.com/v1",
+      enabled: true,
+      apiKey: "sk-plain-123"
+    })).providers[0]!;
+    const raw = await readFile(path.join(dir, "media-generation.json"), "utf8");
+    expect(raw).not.toContain("sk-plain-123");
+    expect(raw).toContain("enc:v1:");
+    const reloaded = new MediaSettingsService(dir);
+    expect((await reloaded.getProviderWithSecret(created.id))?.apiKey).toBe("sk-plain-123");
   });
 
   it("masks API keys in renderer-facing settings but keeps them internally", async () => {

@@ -85,6 +85,12 @@ export function AudioGeneratePanel({ project, onNotice }: { project?: StudioProj
       .catch((error) => onNotice(errText(error)));
   }, [onNotice]);
 
+  // Clear the previous project's generation result when the project changes.
+  const projectId = project?.id;
+  useEffect(() => {
+    setResult(undefined);
+  }, [projectId]);
+
   const update = (patch: Partial<DraftState>) => setDraft((cur) => ({ ...cur, ...patch }));
 
   const uses = kind === "bgm" ? BGM_USES : kind === "sfx" ? SFX_USES : AMBIENCE_USES;

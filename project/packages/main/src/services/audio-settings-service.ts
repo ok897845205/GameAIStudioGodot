@@ -9,12 +9,27 @@ import {
   type SaveAudioProviderInput
 } from "@gameaistudio/shared";
 import { getAppLogger } from "./logger";
+import { BUILTIN_AUDIO_VERSION, builtinAudioDefaults } from "./builtin-audio-defaults";
+import { decryptSecret, encryptSecret } from "./secret-box";
 
 const SETTINGS_FILE = "audio-generation.json";
 
 interface StoredAudioSettings {
   providers: AudioProviderConfig[];
   autoGenerateInWorkflow: boolean;
+  builtinVersion?: number;
+}
+
+export interface AudioSettingsServiceOptions {
+  seedBuiltins?: boolean;
+}
+
+function decryptKey(value: string | undefined): string | undefined {
+  return value ? decryptSecret(value) : undefined;
+}
+
+function encryptKey(value: string | undefined): string | undefined {
+  return value ? encryptSecret(value) : undefined;
 }
 
 function cleanBaseUrl(value: string): string {
@@ -53,25 +68,44 @@ export class AudioSettingsService {
   private settings: StoredAudioSettings = { providers: [], autoGenerateInWorkflow: false };
   private loaded = false;
 
-  constructor(private readonly dataRoot: string) {}
+  constructor(private readonly dataRoot: string, private readonly options: AudioSettingsServiceOptions = {}) {}
 
   private get settingsPath(): string {
     return path.join(this.dataRoot, SETTINGS_FILE);
   }
 
   async load(): Promise<void> {
+    let parsed: Partial<StoredAudioSettings> = {};
     try {
-      const raw = await readFile(this.settingsPath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<StoredAudioSettings>;
-      this.settings = {
-        providers: Array.isArray(parsed.providers)
-          ? parsed.providers.filter((provider) => AUDIO_PROTOCOL_IDS.includes(provider.protocol))
-          : [],
-        autoGenerateInWorkflow: parsed.autoGenerateInWorkflow === true
-      };
+      parsed = JSON.parse(await readFile(this.settingsPath, "utf8")) as Partial<StoredAudioSettings>;
     } catch {
-      this.settings = { providers: [], autoGenerateInWorkflow: false };
+      parsed = {};
     }
+
+    const needsSeed = this.options.seedBuiltins === true && parsed.builtinVersion !== BUILTIN_AUDIO_VERSION;
+    if (needsSeed) {
+      const defaults = builtinAudioDefaults();
+      this.settings = {
+        providers: defaults.providers.map((provider) => ({ ...provider, apiKey: decryptKey(provider.apiKey) })),
+        // Preserve a user's existing auto-generate choice across re-seeds.
+        autoGenerateInWorkflow: parsed.autoGenerateInWorkflow === true || defaults.autoGenerateInWorkflow,
+        builtinVersion: BUILTIN_AUDIO_VERSION
+      };
+      this.loaded = true;
+      await this.persist();
+      getAppLogger().info("audio", "已写入内置音频服务商", { version: BUILTIN_AUDIO_VERSION, providers: defaults.providers.length });
+      return;
+    }
+
+    this.settings = {
+      providers: Array.isArray(parsed.providers)
+        ? parsed.providers
+            .filter((provider) => AUDIO_PROTOCOL_IDS.includes(provider.protocol))
+            .map((provider) => ({ ...provider, apiKey: decryptKey(provider.apiKey) }))
+        : [],
+      autoGenerateInWorkflow: parsed.autoGenerateInWorkflow === true,
+      builtinVersion: parsed.builtinVersion
+    };
     this.loaded = true;
   }
 
@@ -81,7 +115,12 @@ export class AudioSettingsService {
 
   private async persist(): Promise<void> {
     await mkdir(this.dataRoot, { recursive: true });
-    await writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), "utf8");
+    const toStore: StoredAudioSettings = {
+      builtinVersion: this.settings.builtinVersion,
+      providers: this.settings.providers.map((provider) => ({ ...provider, apiKey: encryptKey(provider.apiKey) })),
+      autoGenerateInWorkflow: this.settings.autoGenerateInWorkflow
+    };
+    await writeFile(this.settingsPath, JSON.stringify(toStore, null, 2), "utf8");
   }
 
   async getSettings(): Promise<AudioGenerationSettings> {

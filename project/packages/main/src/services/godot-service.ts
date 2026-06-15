@@ -7,6 +7,7 @@ import { ProjectService } from "./project-service";
 import type { StudioPaths } from "./resource-paths";
 import { runProcess } from "./process-runner";
 import { getProjectLogger } from "./logger";
+import { ensureWebExportTemplates, godotSpawnEnv, missingTemplatesMessage } from "./godot-export-templates";
 
 export interface GodotEditorLaunchPlan {
   ok: boolean;
@@ -69,11 +70,15 @@ export class GodotService {
     }
 
     try {
+      // Same managed data dir as headless runs, so the GUI editor sees the
+      // bundled export templates and stays isolated from the user's own Godot.
+      await ensureWebExportTemplates(this.paths.engineRoot, this.paths.dataRoot).catch(() => undefined);
       const child = spawn(launch.command, launch.args, {
         cwd: project.rootPath,
         detached: true,
         stdio: "ignore",
-        windowsHide: false
+        windowsHide: false,
+        env: { ...process.env, ...godotSpawnEnv(this.paths.dataRoot) }
       });
       child.unref();
       log.info("godot", "Godot 编辑器已启动", {
@@ -128,12 +133,36 @@ export class GodotService {
       return result;
     }
 
+    // Web export needs the export templates. Godot runs against the managed
+    // data dir (env redirection, see godot-export-templates.ts), so install
+    // the bundled templates there first; never touch the user's real Godot
+    // dir and never modify project files.
+    const templateStatus = await ensureWebExportTemplates(this.paths.engineRoot, this.paths.dataRoot);
+    if (templateStatus.copied.length > 0) {
+      log.info("godot", "已安装内置 Web 导出模板", {
+        copied: templateStatus.copied,
+        source: templateStatus.source,
+        managedDir: templateStatus.managedDir
+      });
+    }
+    if (!templateStatus.ok) {
+      const result = {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: missingTemplatesMessage(this.paths.engineRoot, templateStatus),
+        durationMs: Date.now() - startedAt
+      };
+      this.logRunResult(project, "Godot Web 导出失败", result);
+      return result;
+    }
+
     await mkdir(project.webBuildPath, { recursive: true });
     const exportPath = path.join(project.webBuildPath, "index.html");
     const result = await runProcess(
       this.paths.godotConsolePath,
       ["--headless", "--path", project.rootPath, "--export-release", "Web", exportPath],
-      { timeoutMs: 20 * 60 * 1000 }
+      { timeoutMs: 20 * 60 * 1000, env: godotSpawnEnv(this.paths.dataRoot) }
     );
     const runResult = {
       ok: result.exitCode === 0,
@@ -171,7 +200,7 @@ export class GodotService {
     const result = await runProcess(
       this.paths.godotConsolePath,
       ["--headless", "--path", project.rootPath, "-s", "tools/ci/validate_project.gd"],
-      { timeoutMs: 10 * 60 * 1000 }
+      { timeoutMs: 10 * 60 * 1000, env: godotSpawnEnv(this.paths.dataRoot) }
     );
     const runResult = {
       ok: result.exitCode === 0,

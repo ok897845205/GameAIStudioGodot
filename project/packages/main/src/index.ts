@@ -238,11 +238,11 @@ app.whenReady().then(async () => {
   });
   const exportService = new ExportService(projectService);
   const filePreviewService = new ProjectFilePreviewService(projectService);
-  const mediaSettingsService = new MediaSettingsService(paths.dataRoot);
+  const mediaSettingsService = new MediaSettingsService(paths.dataRoot, { seedBuiltins: true });
   await mediaSettingsService.load();
   const assetLibraryService = new AssetLibraryService(projectService);
   const imageGenerationService = new ImageGenerationService(mediaSettingsService, projectService, assetLibraryService);
-  const audioSettingsService = new AudioSettingsService(paths.dataRoot);
+  const audioSettingsService = new AudioSettingsService(paths.dataRoot, { seedBuiltins: true });
   await audioSettingsService.load();
   const audioGenerationService = new AudioGenerationService(audioSettingsService, projectService, assetLibraryService);
   const webExportPipelineService = new WebExportPipelineService(projectService, godotService, exportService, runService);

@@ -30,6 +30,10 @@ import { cn } from "../lib/utils";
 
 type WorkshopTab = "generate" | "audio" | "library" | "settings";
 
+// 服务设置已内置（金山云/OpenRouter/ACE，密钥加密内置），暂时隐藏配置入口。
+// 需要恢复用户自配时，把这个改回 true 即可（无需删代码）。
+const SHOW_SERVICE_SETTINGS = false;
+
 const PURPOSE_OPTIONS = Object.entries(GENERATED_ASSET_PURPOSE_LABELS) as Array<[GeneratedAssetPurpose, string]>;
 
 const STYLE_PRESETS: Array<{ label: string; value?: string }> = [
@@ -126,7 +130,7 @@ export function AssetWorkshopView({
   project?: StudioProject;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<WorkshopTab>("generate");
+  const [tab, setTab] = useState<WorkshopTab>("library");
   const [notice, setNotice] = useState("");
 
   // ── generate tab ──────────────────────────────────────────────────────
@@ -229,11 +233,19 @@ export function AssetWorkshopView({
     }
   }, [project, thumbs, loadThumb]);
 
-  // Reload the library when the workshop becomes visible for a project.
+  // The workshop is mounted once and visibility-toggled, so switching the
+  // selected project must clear the previous project's generated results and
+  // thumbnails — the workshop belongs to whichever project is selected.
   const projectId = project?.id;
   useEffect(() => {
+    setLastResult(undefined);
+    setThumbs({});
+    setSlotDrafts({});
+  }, [projectId]);
+
+  // Reload the library when the workshop becomes visible for a project.
+  useEffect(() => {
     if (active && projectId) {
-      setThumbs({});
       void refreshLibrary();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -495,7 +507,7 @@ export function AssetWorkshopView({
         <div className="flex items-center gap-1">
           {tabButton("generate", <ImageIcon className="size-3.5" />, "图片")}
           {tabButton("audio", <Music className="size-3.5" />, "音频")}
-          {tabButton("settings", <Settings2 className="size-3.5" />, "服务设置")}
+          {SHOW_SERVICE_SETTINGS && tabButton("settings", <Settings2 className="size-3.5" />, "服务设置")}
           {tabButton("library", <Library className="size-3.5" />, "素材库")}
         </div>
       </div>
@@ -689,12 +701,12 @@ export function AssetWorkshopView({
       )}
 
       {/* ── 服务设置 ── */}
-      {tab === "settings" && (
+      {SHOW_SERVICE_SETTINGS && tab === "settings" && (
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
           <section>
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-sm font-medium">API 服务商</h3>
-              <span className="text-xs text-muted-foreground">填你自己的厂商地址和 Key，Key 只保存在本机。</span>
+              <span className="text-xs text-muted-foreground">填你自己的厂商地址和 Key，Key 只保存在本机；服务设置为全局，所有项目共用，生成的素材保存进当前项目。</span>
               <div className="ml-auto flex items-center gap-1">
                 {PROVIDER_PRESETS.map((preset) => (
                   <Button key={preset.name} variant="outline" size="sm" onClick={() => addProvider(preset)}>

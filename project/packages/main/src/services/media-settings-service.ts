@@ -11,6 +11,8 @@ import type {
   SaveMediaProviderInput
 } from "@gameaistudio/shared";
 import { getAppLogger } from "./logger";
+import { BUILTIN_MEDIA_VERSION, builtinMediaDefaults } from "./builtin-media-defaults";
+import { decryptSecret, encryptSecret } from "./secret-box";
 
 const SETTINGS_FILE = "media-generation.json";
 const PROTOCOL_IDS: MediaProtocolId[] = ["openai-images-v1", "openai-chat-image-v1", "gemini-image-v1"];
@@ -18,10 +20,27 @@ const PROTOCOL_IDS: MediaProtocolId[] = ["openai-images-v1", "openai-chat-image-
 interface StoredMediaSettings {
   providers: MediaProviderConfig[];
   models: MediaModelConfig[];
+  /** Built-in seed version that produced these providers (for re-seeding). */
+  builtinVersion?: number;
+}
+
+export interface MediaSettingsServiceOptions {
+  /** Seed built-in providers/models on first load (production); off for tests. */
+  seedBuiltins?: boolean;
 }
 
 function sortByOrder<T extends { order: number }>(items: T[]): T[] {
   return [...items].sort((left, right) => left.order - right.order);
+}
+
+/** Decrypt a stored key into the in-memory plaintext used by generation. */
+function decryptKey(value: string | undefined): string | undefined {
+  return value ? decryptSecret(value) : undefined;
+}
+
+/** Encrypt an in-memory plaintext key for writing to disk. */
+function encryptKey(value: string | undefined): string | undefined {
+  return value ? encryptSecret(value) : undefined;
 }
 
 function cleanBaseUrl(value: string): string {
@@ -63,25 +82,45 @@ export class MediaSettingsService {
   private settings: StoredMediaSettings = { providers: [], models: [] };
   private loaded = false;
 
-  constructor(private readonly dataRoot: string) {}
+  constructor(private readonly dataRoot: string, private readonly options: MediaSettingsServiceOptions = {}) {}
 
   private get settingsPath(): string {
     return path.join(this.dataRoot, SETTINGS_FILE);
   }
 
   async load(): Promise<void> {
+    let parsed: Partial<StoredMediaSettings> = {};
     try {
-      const raw = await readFile(this.settingsPath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<StoredMediaSettings>;
-      this.settings = {
-        providers: Array.isArray(parsed.providers)
-          ? parsed.providers.filter((provider) => PROTOCOL_IDS.includes(provider.protocol))
-          : [],
-        models: Array.isArray(parsed.models) ? parsed.models : []
-      };
+      parsed = JSON.parse(await readFile(this.settingsPath, "utf8")) as Partial<StoredMediaSettings>;
     } catch {
-      this.settings = { providers: [], models: [] };
+      parsed = {};
     }
+
+    // Seed (or re-seed) built-in providers when enabled and the stored seed
+    // version is behind — lets key rotation / routing changes reach installs.
+    const needsSeed = this.options.seedBuiltins === true && parsed.builtinVersion !== BUILTIN_MEDIA_VERSION;
+    if (needsSeed) {
+      const defaults = builtinMediaDefaults();
+      this.settings = {
+        providers: defaults.providers.map((provider) => ({ ...provider, apiKey: decryptKey(provider.apiKey) })),
+        models: defaults.models,
+        builtinVersion: BUILTIN_MEDIA_VERSION
+      };
+      this.loaded = true;
+      await this.persist();
+      getAppLogger().info("media", "已写入内置图片服务商", { version: BUILTIN_MEDIA_VERSION, providers: defaults.providers.length });
+      return;
+    }
+
+    this.settings = {
+      providers: Array.isArray(parsed.providers)
+        ? parsed.providers
+            .filter((provider) => PROTOCOL_IDS.includes(provider.protocol))
+            .map((provider) => ({ ...provider, apiKey: decryptKey(provider.apiKey) }))
+        : [],
+      models: Array.isArray(parsed.models) ? parsed.models : [],
+      builtinVersion: parsed.builtinVersion
+    };
     this.loaded = true;
   }
 
@@ -93,7 +132,13 @@ export class MediaSettingsService {
 
   private async persist(): Promise<void> {
     await mkdir(this.dataRoot, { recursive: true });
-    await writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), "utf8");
+    // Encrypt API keys at rest — never write plaintext keys to disk.
+    const toStore: StoredMediaSettings = {
+      builtinVersion: this.settings.builtinVersion,
+      providers: this.settings.providers.map((provider) => ({ ...provider, apiKey: encryptKey(provider.apiKey) })),
+      models: this.settings.models
+    };
+    await writeFile(this.settingsPath, JSON.stringify(toStore, null, 2), "utf8");
   }
 
   async getSettings(): Promise<MediaGenerationSettings> {

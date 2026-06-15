@@ -19,7 +19,10 @@
 - `yield(get_tree(), "idle_frame")`
 
 ## Validation
-```powershell
-& "e:\Godot_v462_stable_win64\Godot_v4.6.2-stable_win64_console.exe" --headless --path . --import
-& "e:\Godot_v462_stable_win64\Godot_v4.6.2-stable_win64_console.exe" --headless --path . -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
-```
+GameAIStudio runs Godot for you after each round — headless `--import`, the
+project validation script (`res://tools/ci/validate_project.gd`), GUT tests,
+and the Web export. Do **not** invoke Godot yourself: the console binary is
+bundled inside the app, not on PATH, and its location differs per machine, so
+hardcoded paths will fail. Focus on writing correct GDScript per the API rules
+above; the workflow's "Godot 可运行校验" and "Web 导出" steps surface any
+parse/runtime errors for the next round to fix.

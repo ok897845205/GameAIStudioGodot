@@ -13,7 +13,6 @@ import {
   Info,
   Loader2,
   Moon,
-  Palette,
   PanelRightClose,
   PanelRightOpen,
   Play,
@@ -22,6 +21,7 @@ import {
   Save,
   Search,
   Settings,
+  Sparkles,
   StopCircle,
   Sun,
   Terminal,
@@ -1486,19 +1486,6 @@ export function StudioApp() {
             size="sm"
             className="w-full justify-start"
             onClick={() => {
-              setWorkshopMounted(true);
-              setWorkshopActive(true);
-              setImageLabActive(false);
-            }}
-            title="打开 AI 素材工坊：生成游戏素材、管理素材库、配置生图模型"
-          >
-            <Palette /> AI 素材工坊
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start"
-            onClick={() => {
               setImageLabMounted(true);
               setImageLabActive(true);
               setWorkshopActive(false);
@@ -1562,6 +1549,20 @@ export function StudioApp() {
               <Badge tone="outline">
                 {selectedProject.dimension.toUpperCase()}
               </Badge>
+            )}
+            {selectedProject && (
+              <button
+                onClick={() => {
+                  setWorkshopMounted(true);
+                  setWorkshopActive(true);
+                  setImageLabActive(false);
+                }}
+                title={`为「${selectedProject.name}」生成图片/音频素材，自动入库并交给 Agent 使用`}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-[#7c5cff] px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#6b4ce0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7c5cff] focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              >
+                <Sparkles className="size-4" />
+                AI 素材工坊
+              </button>
             )}
           </div>
           <div className="flex items-center gap-1">

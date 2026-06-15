@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,6 +26,21 @@ describe("AudioSettingsService", () => {
     order: 0,
     enabled: true
   };
+
+  it("seeds the built-in ACE Music provider and stores the key encrypted at rest", async () => {
+    const seeded = new AudioSettingsService(dir, { seedBuiltins: true });
+    const settings = await seeded.getSettings();
+    expect(settings.providers.map((provider) => provider.name)).toContain("ACE Music");
+    const provider = await seeded.getProviderWithSecret(settings.providers[0]!.id);
+    expect(provider?.apiKey?.length).toBeGreaterThan(0);
+    const raw = await readFile(path.join(dir, "audio-generation.json"), "utf8");
+    expect(raw).toContain("enc:v1:");
+    expect(raw).not.toContain(provider!.apiKey!);
+  });
+
+  it("does not seed without the option", async () => {
+    expect((await service.getSettings()).providers).toHaveLength(0);
+  });
 
   it("masks the API key and normalizes the base URL", async () => {
     const settings = await service.saveProvider({ ...aceInput, apiKey: "secret-key" });

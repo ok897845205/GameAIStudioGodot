@@ -56,8 +56,34 @@ async function assertLocalElectronDist() {
   }
 }
 
+// Web export needs the bundled templates inside engine/; without them every
+// install fails to export. Guard the build so a broken installer never ships.
+async function assertBundledExportTemplates() {
+  const dir = path.join(projectRoot, "engine", "export_templates", "4.6.2.stable");
+  const required = ["web_nothreads_debug.zip", "web_nothreads_release.zip"];
+  const missing = [];
+  for (const name of required) {
+    try {
+      await access(path.join(dir, name));
+    } catch {
+      missing.push(name);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      [
+        "缺少 Godot Web 导出模板，打包会得到无法导出的安装包。",
+        `目录：${dir}`,
+        `缺失：${missing.join("、")}`,
+        "请把这两个模板（来自 Godot_v4.6.2-stable_export_templates.tpz，或 %APPDATA%/Godot/export_templates/4.6.2.stable/）放进上述目录后重试。",
+      ].join("\n"),
+    );
+  }
+}
+
 async function main() {
   await assertLocalElectronDist();
+  await assertBundledExportTemplates();
   await run("pnpm", ["build"]);
 
   const env = offline
